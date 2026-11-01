@@ -9,6 +9,7 @@ use std::f32::consts::TAU;
 use std::time::Instant;
 
 const DMAX: f32 = 80.0;
+const SIGNAL_LEEWAY_DB: f32 = 4.0; // a pinged device only moves if its signal changed by at least this much
 const GROUP_PX: f32 = 38.0; // nodes closer than this on screen merge into one group icon
 
 struct N {
@@ -22,7 +23,9 @@ struct N {
 struct G {
     key: String,
     members: Vec<usize>,
-    center: Pos2,
+    center0: Pos2,  // natural centre of the members
+    center: Pos2,   // displayed centre (eased shift applied)
+    center_t: Pos2, // where the centre is heading
     open: bool,
     fan_r: f32,
     halo_r: f32,
@@ -33,6 +36,19 @@ struct Ev {
     over: Vec<(String, (f32, f32))>,
     drag_end: bool,
     hover: Option<usize>,
+    dragging: Option<String>,
+}
+
+struct Burst {
+    pos: Pos2,
+    col: Color32,
+    t0: f32,
+}
+
+/// Orbit slot `k` of `nn` around a group icon.
+fn slot(c: Pos2, k: usize, nn: usize, t: f32, s: f32) -> Pos2 {
+    let a = t * 0.35 + k as f32 * TAU / nn.max(1) as f32;
+    c + vec2(a.cos(), a.sin()) * 27.0 * s
 }
 
 /// An interactive area with the pointing-hand cursor (like a link on a web page).
@@ -52,11 +68,11 @@ fn soft_halo(p: &egui::Painter, c: Pos2, r: f32, amt: f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos: Pos2, t: f32, sw: f32, sel: bool, label: bool, interactive: bool, can_drag: bool, c: Pos2, big: f32, ev: &mut Ev) {
+fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos: Pos2, t: f32, sw: f32, sel: bool, label: bool, interactive: bool, can_drag: bool, scale: f32, c: Pos2, big: f32, ev: &mut Ev) {
     let col = if n.dim { shade(kind_col(d.kind), 0.5) } else { kind_col(d.kind) };
     let diff = (sw - n.ang).rem_euclid(TAU);
     let hot = if diff < 0.9 { 1.0 - diff / 0.9 } else { 0.0 };
-    let rad = if d.known { 17.0 } else { 4.0 + ((d.dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0 };
+    let rad = scale * if d.known { 17.0 } else { 4.0 + ((d.dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0 };
     let mut hovered = false;
     if interactive {
         let sense = if can_drag { Sense::click_and_drag() } else { Sense::click() };
@@ -66,6 +82,7 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
             ev.hover = Some(ni);
         }
         if can_drag && resp.dragged() {
+            ev.dragging = Some(d.id.clone());
             if let Some(pp) = resp.interact_pointer_pos() {
                 let v = pp - c;
                 ev.over.push((d.id.clone(), (v.y.atan2(v.x), dmap(v.length(), big).clamp(0.6, DMAX))));
@@ -141,6 +158,16 @@ struct App {
     gscale: HashMap<String, f32>,  // 0..1 pop-in of each group icon
     reveal: Option<String>,        // device picked in the list: open its group once
     reset_view: bool,              // easing back to the default zoom/pan
+    latched: Vec<Dev>,             // device data as of each device's last radar ping
+    sw_prev: f32,
+    sdist: HashMap<String, f32>,   // eased displayed distance
+    appear: HashMap<String, f32>,  // 0..1 pop-in of new devices
+    bursts: Vec<Burst>,
+    last_pos: HashMap<String, Pos2>,
+    dragging: Option<String>,
+    prev_groups: Vec<(String, Vec<String>)>,
+    formed: HashSet<String>,       // groups whose icon is already showing
+    gshift: HashMap<String, Vec2>, // eased push-away shift per group
 }
 
 fn cfg_path() -> Option<std::path::PathBuf> {
@@ -214,6 +241,16 @@ impl App {
             gscale: HashMap::new(),
             reveal: None,
             reset_view: false,
+            latched: vec![],
+            sw_prev: 0.0,
+            sdist: HashMap::new(),
+            appear: HashMap::new(),
+            bursts: vec![],
+            last_pos: HashMap::new(),
+            dragging: None,
+            prev_groups: vec![],
+            formed: HashSet::new(),
+            gshift: HashMap::new(),
         }
     }
 
@@ -329,6 +366,60 @@ impl App {
 
     // ---------- radar ----------
 
+    /// Radar behaviour: a device's data (signal, position, details) is only refreshed when the
+    /// sweep passes it ("ping"). New devices appear at once. Nothing refreshes while a group is
+    /// open or a drag is in progress, so the layout never changes under the user's hands.
+    fn latch(&mut self, sw_prev: f32, sw: f32, t: f32) {
+        let freeze = !self.open.is_empty() || self.dragging.is_some();
+        let span = (sw - sw_prev).rem_euclid(TAU);
+        let crossed = |a: f32| {
+            let d1 = (a - sw_prev).rem_euclid(TAU);
+            d1 <= span && span < 1.0
+        };
+        let angle = |d: &Dev, over: &HashMap<String, (f32, f32)>| over.get(&d.id).map(|o| o.0).unwrap_or_else(|| layout_of(d).0).rem_euclid(TAU);
+        let idx: HashMap<String, usize> = self.latched.iter().enumerate().map(|(i, d)| (d.id.clone(), i)).collect();
+        for d in &self.devs {
+            match idx.get(&d.id) {
+                None => {
+                    self.appear.insert(d.id.clone(), 0.0);
+                    self.latched.push(d.clone());
+                }
+                Some(&i) => {
+                    if !freeze && crossed(angle(d, &self.over)) {
+                        // leeway: ignore small signal wiggles so dots only move on a real change
+                        let old = &self.latched[i];
+                        let mut nd = d.clone();
+                        if let (Some(a), Some(b)) = (old.dbm, d.dbm) {
+                            if (a - b).abs() < SIGNAL_LEEWAY_DB {
+                                nd.dbm = old.dbm;
+                                nd.dist_m = old.dist_m;
+                            }
+                        }
+                        self.latched[i] = nd;
+                    }
+                }
+            }
+        }
+        if !freeze {
+            let live: HashSet<&str> = self.devs.iter().map(|d| d.id.as_str()).collect();
+            let mut gone: Vec<(String, Kind)> = vec![];
+            let over = &self.over;
+            self.latched.retain(|d| {
+                if !live.contains(d.id.as_str()) && crossed(angle(d, over)) {
+                    gone.push((d.id.clone(), d.kind));
+                    false
+                } else {
+                    true
+                }
+            });
+            for (id, kind) in gone {
+                if let Some(&pos) = self.last_pos.get(&id) {
+                    self.bursts.push(Burst { pos, col: kind_col(kind), t0: t });
+                }
+            }
+        }
+    }
+
     fn radar(&mut self, ui: &mut egui::Ui, t: f32) {
         let rect = ui.max_rect();
         let p = ui.painter_at(rect);
@@ -340,6 +431,7 @@ impl App {
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let dt = ui.input(|i| i.stable_dt).min(0.05);
         let k = 1.0 - (-dt * 18.0).exp(); // ~150 ms ease for node transitions
+        let k_slow = 1.0 - (-dt * 5.0).exp(); // ~0.5 s ease for signal-driven moves
         if bg.dragged() {
             self.pan += bg.drag_delta();
             self.reset_view = false; // taking over cancels a running reset
@@ -375,6 +467,14 @@ impl App {
         let big = base * self.zoom;
         let ro = rmap(DMAX, big);
 
+        // --- sweep + pings
+        let sw = (t * 0.9) % TAU;
+        let sw_prev = std::mem::replace(&mut self.sw_prev, sw);
+        self.latch(sw_prev, sw, t);
+        if !ui.input(|i| i.pointer.any_down()) {
+            self.dragging = None; // failsafe: a drag cannot outlive the mouse button
+        }
+
         // --- backdrop
         for i in 0..18 {
             let kk = i as f32 / 18.0;
@@ -398,7 +498,6 @@ impl App {
             FontId::monospace(10.0),
             alpha(CYAN, 0.45),
         );
-        let sw = (t * 0.9) % TAU;
         let mut m = egui::Mesh::default();
         let n = 36;
         for kk in 0..n {
@@ -414,24 +513,34 @@ impl App {
         p.add(egui::Shape::mesh(m));
         p.line_segment([c, c + vec2(sw.cos(), sw.sin()) * ro], Stroke::new(1.5, alpha(CYAN, 0.55)));
 
-        // --- placement (screen space, far first)
+        // --- placement (screen space, far first). Distance eases toward the latest pinged value.
+        let drag_id = self.dragging.clone();
         let mut nodes: Vec<N> = self
-            .devs
+            .latched
             .iter()
             .enumerate()
             .map(|(i, d)| {
                 let (mut a, mut dd, dim) = layout_of(d);
-                if let Some(&(oa, od)) = self.over.get(&d.id) {
+                let over = self.over.get(&d.id).copied();
+                if let Some((oa, od)) = over {
                     a = oa;
                     dd = od;
                 }
-                N { i, pos: c + vec2(a.cos(), a.sin()) * rmap(dd, big), ang: a.rem_euclid(TAU), dist: dd, dim }
+                let sd = self.sdist.entry(d.id.clone()).or_insert(dd);
+                if over.is_some() {
+                    *sd = dd; // user-placed: follows the pointer exactly
+                } else {
+                    *sd += (dd - *sd) * k_slow;
+                }
+                N { i, pos: c + vec2(a.cos(), a.sin()) * rmap(*sd, big), ang: a.rem_euclid(TAU), dist: *sd, dim }
             })
             .collect();
         nodes.sort_by(|a, b| b.dist.partial_cmp(&a.dist).unwrap());
         let cnt = nodes.len();
+        let drag_ni = drag_id.as_ref().and_then(|id| nodes.iter().position(|n| &self.latched[n.i].id == id));
 
-        // --- grouping: nodes closer than GROUP_PX on screen merge (union-find)
+        // --- grouping: nodes closer than GROUP_PX on screen merge (union-find).
+        // A node being dragged is left out until it is dropped.
         let mut parent: Vec<usize> = (0..cnt).collect();
         fn find(p: &mut [usize], mut x: usize) -> usize {
             while p[x] != x {
@@ -442,6 +551,9 @@ impl App {
         }
         for i in 0..cnt {
             for j in (i + 1)..cnt {
+                if Some(i) == drag_ni || Some(j) == drag_ni {
+                    continue;
+                }
                 if (nodes[i].pos - nodes[j].pos).length() < GROUP_PX {
                     let (a, b) = (find(&mut parent, i), find(&mut parent, j));
                     if a != b {
@@ -455,16 +567,51 @@ impl App {
             let r = find(&mut parent, i);
             by_root.entry(r).or_default().push(i);
         }
+        let mut raw: Vec<Vec<usize>> = by_root.into_values().filter(|m| m.len() > 1).collect();
+        for m in raw.iter_mut() {
+            m.sort_by(|&a, &b| self.latched[nodes[a].i].id.cmp(&self.latched[nodes[b].i].id));
+        }
+        // stable group identity: inherit the key of the previous group with the most members in common
+        let mut cand: Vec<(usize, usize, usize)> = vec![];
+        for (ri, m) in raw.iter().enumerate() {
+            let ids: HashSet<&str> = m.iter().map(|&i| self.latched[nodes[i].i].id.as_str()).collect();
+            for (pi, (_, pids)) in self.prev_groups.iter().enumerate() {
+                let ov = pids.iter().filter(|x| ids.contains(x.as_str())).count();
+                if ov > 0 {
+                    cand.push((ov, ri, pi));
+                }
+            }
+        }
+        cand.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut key_of: Vec<Option<String>> = vec![None; raw.len()];
+        let mut used_prev: HashSet<usize> = HashSet::new();
+        let mut used_keys: HashSet<String> = HashSet::new();
+        for (_, ri, pi) in cand {
+            if key_of[ri].is_none() && !used_prev.contains(&pi) {
+                used_prev.insert(pi);
+                used_keys.insert(self.prev_groups[pi].0.clone());
+                key_of[ri] = Some(self.prev_groups[pi].0.clone());
+            }
+        }
+        for (ri, m) in raw.iter().enumerate() {
+            if key_of[ri].is_none() {
+                let mut key = self.latched[nodes[m[0]].i].id.clone();
+                while used_keys.contains(&key) {
+                    key.push('\'');
+                }
+                used_keys.insert(key.clone());
+                key_of[ri] = Some(key);
+            }
+        }
+        self.prev_groups = raw.iter().enumerate().map(|(ri, m)| (key_of[ri].clone().unwrap(), m.iter().map(|&i| self.latched[nodes[i].i].id.clone()).collect())).collect();
+
         let reveal = self.reveal.take();
         let mut groups: Vec<G> = vec![];
-        let mut target: Vec<Pos2> = nodes.iter().map(|n| n.pos).collect();
-        let mut hidden = vec![false; cnt];
-        let mut in_open = vec![false; cnt];
-        for (_, mem) in by_root.into_iter().filter(|(_, m)| m.len() > 1) {
-            let center = pos2(mem.iter().map(|&i| nodes[i].pos.x).sum::<f32>() / mem.len() as f32, mem.iter().map(|&i| nodes[i].pos.y).sum::<f32>() / mem.len() as f32);
-            let key = mem.iter().map(|&i| self.devs[nodes[i].i].id.clone()).min().unwrap();
+        for (ri, mem) in raw.into_iter().enumerate() {
+            let center0 = pos2(mem.iter().map(|&i| nodes[i].pos.x).sum::<f32>() / mem.len() as f32, mem.iter().map(|&i| nodes[i].pos.y).sum::<f32>() / mem.len() as f32);
+            let key = key_of[ri].clone().unwrap();
             if let Some(r) = &reveal {
-                if mem.iter().any(|&i| &self.devs[nodes[i].i].id == r) {
+                if mem.iter().any(|&i| &self.latched[nodes[i].i].id == r) {
                     self.open.insert(key.clone()); // a device picked from the list must be visible
                 }
             }
@@ -473,39 +620,127 @@ impl App {
             }
             let open = self.open.contains(&key);
             let fan_r = (mem.len() as f32 * 46.0 / TAU).max(58.0);
-            let mut ordered = mem.clone();
-            ordered.sort_by(|&a, &b| {
-                let (va, vb) = (nodes[a].pos - center, nodes[b].pos - center);
-                va.y.atan2(va.x).partial_cmp(&vb.y.atan2(vb.x)).unwrap()
-            });
-            if open {
-                let v0 = nodes[ordered[0]].pos - center;
+            groups.push(G { key, members: mem, center0, center: center0, center_t: center0, open, fan_r, halo_r: fan_r + 40.0 });
+        }
+        groups.sort_by(|a, b| a.key.cmp(&b.key));
+        self.open.retain(|key| groups.iter().any(|g| &g.key == key));
+        for g in &groups {
+            if g.open {
+                self.formed.remove(&g.key); // an opened group's icon re-forms after it collapses again
+            }
+        }
+        let mut group_of: Vec<Option<usize>> = vec![None; cnt];
+        for (gi, g) in groups.iter().enumerate() {
+            for &i in &g.members {
+                group_of[i] = Some(gi);
+            }
+        }
+
+        // --- make room: an open group keeps clear of the PC (which never moves), and everything else
+        // that would sit under its circle is pushed out of the way.
+        let pc_clear = 48.0;
+        let mut shift_t: Vec<Vec2> = vec![Vec2::ZERO; groups.len()];
+        let mut open_circles: Vec<(Pos2, f32)> = vec![];
+        for (gi, g) in groups.iter().enumerate().filter(|(_, g)| g.open) {
+            let v = g.center0 - c;
+            let need = g.halo_r + pc_clear;
+            if v.length() < need {
+                let dir = if v.length() > 1.0 { v / v.length() } else { vec2(0.0, -1.0) };
+                shift_t[gi] = c + dir * need - g.center0;
+            }
+            open_circles.push((g.center0 + shift_t[gi], g.halo_r));
+        }
+        let push = |q: Pos2| -> Vec2 {
+            let mut q2 = q;
+            let mut moved = false;
+            for _ in 0..2 {
+                for (gc, hr) in &open_circles {
+                    let v = q2 - *gc;
+                    let d = v.length();
+                    let lim = hr + 26.0;
+                    if d < lim {
+                        let dir = if d > 1.0 { v / d } else { vec2(1.0, 0.0) };
+                        q2 = *gc + dir * lim;
+                        moved = true;
+                    }
+                }
+                if moved {
+                    let vc = q2 - c;
+                    let dc = vc.length();
+                    if dc < pc_clear {
+                        q2 = c + if dc > 1.0 { vc / dc * pc_clear } else { vec2(pc_clear, 0.0) };
+                    }
+                }
+            }
+            q2 - q
+        };
+        for (gi, g) in groups.iter().enumerate().filter(|(_, g)| !g.open) {
+            shift_t[gi] = push(g.center0);
+        }
+        let mut push_node = vec![Vec2::ZERO; cnt];
+        for i in 0..cnt {
+            if group_of[i].is_none() && Some(i) != drag_ni {
+                push_node[i] = push(nodes[i].pos);
+            }
+        }
+        for (gi, g) in groups.iter_mut().enumerate() {
+            let s = self.gshift.entry(g.key.clone()).or_insert(shift_t[gi]);
+            *s += (shift_t[gi] - *s) * k;
+            g.center = g.center0 + *s;
+            g.center_t = g.center0 + shift_t[gi];
+        }
+        self.gshift.retain(|key, _| groups.iter().any(|g| &g.key == key));
+
+        // --- targets: free nodes sit at their base (plus push); collapsed members orbit their icon;
+        // open members fan out around the (shifted) centre.
+        let mut target: Vec<Pos2> = (0..cnt).map(|i| nodes[i].pos + push_node[i]).collect();
+        let mut hidden = vec![false; cnt];
+        let mut in_open = vec![false; cnt];
+        for g in &groups {
+            let nn = g.members.len().min(10);
+            if g.open {
+                let mut ordered = g.members.clone();
+                ordered.sort_by(|&a, &b| {
+                    let (va, vb) = (nodes[a].pos - g.center0, nodes[b].pos - g.center0);
+                    va.y.atan2(va.x).partial_cmp(&vb.y.atan2(vb.x)).unwrap()
+                });
+                let v0 = nodes[ordered[0]].pos - g.center0;
                 let a0 = if v0.length() > 0.5 { v0.y.atan2(v0.x) } else { -1.2 };
                 for (kk, &i) in ordered.iter().enumerate() {
                     let a = a0 + kk as f32 * TAU / ordered.len() as f32;
-                    target[i] = center + vec2(a.cos(), a.sin()) * fan_r;
+                    target[i] = g.center_t + vec2(a.cos(), a.sin()) * g.fan_r;
                     in_open[i] = true;
                 }
             } else {
-                for &i in &mem {
-                    target[i] = center;
+                for (kk, &i) in g.members.iter().enumerate() {
+                    target[i] = slot(g.center_t, kk, nn, t, 1.0);
                     hidden[i] = true;
                 }
             }
-            groups.push(G { key, members: mem, center, open, fan_r, halo_r: fan_r + 40.0 });
         }
-        groups.sort_by(|a, b| a.key.cmp(&b.key));
 
         // --- smooth positions: each node eases its offset from its base position toward its target.
-        // Pan/zoom move the base instantly (no lag); fan-out, collapse and regrouping glide.
+        // Pan/zoom move the base instantly (no lag); fan-out, collapse, drops and pings glide.
         let mut disp: Vec<Pos2> = vec![Pos2::ZERO; cnt];
-        let mut settled = vec![false; cnt]; // collapsed into its group icon and arrived
+        let mut settled = vec![false; cnt];
+        let mut fscale = vec![1.0f32; cnt];
         for ni in 0..cnt {
+            let id = self.latched[nodes[ni].i].id.clone();
             let tgt = target[ni] - nodes[ni].pos;
-            let off = self.offs.entry(self.devs[nodes[ni].i].id.clone()).or_insert(tgt);
-            *off += (tgt - *off) * k;
+            let off = self.offs.entry(id.clone()).or_insert(tgt);
+            if Some(ni) == drag_ni {
+                *off = Vec2::ZERO; // follows the pointer exactly
+            } else {
+                *off += (tgt - *off) * k;
+            }
             disp[ni] = nodes[ni].pos + *off;
-            settled[ni] = hidden[ni] && (disp[ni] - target[ni]).length() < 3.0;
+            let remain = (disp[ni] - target[ni]).length();
+            settled[ni] = hidden[ni] && remain < 3.0;
+            if hidden[ni] {
+                fscale[ni] = (remain / 70.0).clamp(0.15, 1.0); // shrink into the orbit dot
+            }
+            let ap = self.appear.entry(id).or_insert(1.0);
+            *ap += (1.0 - *ap) * k;
         }
         for g in &groups {
             let a = self.halo.entry(g.key.clone()).or_insert(0.0);
@@ -513,41 +748,40 @@ impl App {
         }
         self.halo.retain(|key, _| groups.iter().any(|g| &g.key == key));
 
-        // closing groups: members glide back to the centre (drawn on top, inside the fading circle),
-        // and the group icon only appears once they have all arrived
-        let mut group_of: Vec<Option<usize>> = vec![None; cnt];
+        // --- when does a collapsed group show its icon? once its members arrive (and thereafter, so
+        // a newcomer flying in does not make the icon vanish)
+        let arrived: Vec<bool> = groups.iter().map(|g| !g.open && g.members.iter().all(|&i| settled[i])).collect();
         for (gi, g) in groups.iter().enumerate() {
-            for &i in &g.members {
-                group_of[i] = Some(gi);
+            if arrived[gi] {
+                self.formed.insert(g.key.clone());
             }
         }
-        let arrived: Vec<bool> = groups.iter().map(|g| !g.open && g.members.iter().all(|&i| settled[i])).collect();
-        let vis1: Vec<bool> = (0..cnt).map(|i| !in_open[i] && group_of[i].map_or(true, |gi| !arrived[gi])).collect();
-        let closing: Vec<bool> = groups.iter().enumerate().map(|(gi, g)| !g.open && !arrived[gi] && self.halo.get(&g.key).copied().unwrap_or(0.0) >= 0.01).collect();
+        self.formed.retain(|key| groups.iter().any(|g| &g.key == key));
+        let iconshown: Vec<bool> = groups.iter().enumerate().map(|(gi, g)| !g.open && (arrived[gi] || self.formed.contains(&g.key))).collect();
+        let vis1: Vec<bool> = (0..cnt).map(|i| !in_open[i] && !group_of[i].map_or(false, |gi| iconshown[gi] && settled[i])).collect();
+        let closing: Vec<bool> = groups.iter().enumerate().map(|(gi, g)| !g.open && !iconshown[gi] && self.halo.get(&g.key).copied().unwrap_or(0.0) >= 0.01).collect();
         for (gi, g) in groups.iter().enumerate() {
-            if !arrived[gi] {
-                self.gscale.insert(g.key.clone(), 0.0); // icon pops in from nothing after arrival
+            if !iconshown[gi] {
+                self.gscale.insert(g.key.clone(), 0.0); // icon pops in from nothing
             }
         }
 
         // anything sitting under an open group's circle is obscured and not clickable
-        let masked: Vec<bool> = (0..cnt)
-            .map(|i| !in_open[i] && groups.iter().filter(|g| g.open).any(|g| (disp[i] - g.center).length() < g.halo_r))
-            .collect();
+        let masked: Vec<bool> = (0..cnt).map(|i| !in_open[i] && groups.iter().filter(|g| g.open).any(|g| (disp[i] - g.center).length() < g.halo_r)).collect();
 
         // --- which labels fit (connected and strongest first)
-        let mut allow: std::collections::HashSet<usize> = Default::default();
+        let mut allow: HashSet<usize> = Default::default();
         {
-            let mut placed: Vec<Rect> = (0..cnt).filter(|&i| !settled[i]).map(|i| Rect::from_center_size(disp[i], Vec2::splat(30.0))).collect();
-            placed.extend(groups.iter().filter(|g| !g.open).map(|g| Rect::from_center_size(g.center, Vec2::splat(44.0))));
+            let mut placed: Vec<Rect> = (0..cnt).filter(|&i| vis1[i]).map(|i| Rect::from_center_size(disp[i], Vec2::splat(30.0))).collect();
+            placed.extend(groups.iter().enumerate().filter(|(gi, _)| iconshown[*gi]).map(|(_, g)| Rect::from_center_size(g.center, Vec2::splat(44.0))));
             placed.push(Rect::from_center_size(c, Vec2::splat(120.0)));
-            let mut order: Vec<usize> = (0..cnt).filter(|&i| !hidden[i] && !masked[i] && self.devs[nodes[i].i].known && !nodes[i].dim).collect();
+            let mut order: Vec<usize> = (0..cnt).filter(|&i| !hidden[i] && !masked[i] && self.latched[nodes[i].i].known && !nodes[i].dim).collect();
             order.sort_by(|&a, &b| {
-                let (da, db) = (&self.devs[nodes[a].i], &self.devs[nodes[b].i]);
+                let (da, db) = (&self.latched[nodes[a].i], &self.latched[nodes[b].i]);
                 db.connected.cmp(&da.connected).then(db.dbm.unwrap_or(-120.0).partial_cmp(&da.dbm.unwrap_or(-120.0)).unwrap())
             });
             for i in order {
-                let g = p.layout_no_wrap(self.devs[nodes[i].i].name.clone(), FontId::proportional(11.5), TEXT);
+                let g = p.layout_no_wrap(self.latched[nodes[i].i].name.clone(), FontId::proportional(11.5), TEXT);
                 let r = Rect::from_center_size(disp[i] + vec2(0.0, 30.0), g.size() + vec2(8.0, 4.0));
                 if placed.iter().all(|q| !q.intersects(r)) {
                     placed.push(r);
@@ -557,13 +791,13 @@ impl App {
         }
 
         let view = rect.expand(70.0);
-        let mut ev = Ev { clicked: None, over: vec![], drag_end: false, hover: None };
+        let mut ev = Ev { clicked: None, over: vec![], drag_end: false, hover: None, dragging: None };
         let sel_id = self.sel.clone();
 
         // --- links from the PC to connected Bluetooth devices, with travelling pulses
         for (ni, n) in nodes.iter().enumerate() {
-            let d = &self.devs[n.i];
-            if d.kind == Kind::Bt && d.connected && !settled[ni] {
+            let d = &self.latched[n.i];
+            if d.kind == Kind::Bt && d.connected && vis1[ni] {
                 let col = kind_col(d.kind);
                 p.line_segment([c, disp[ni]], Stroke::new(5.0, add(col, 0.06)));
                 p.line_segment([c, disp[ni]], Stroke::new(1.5, alpha(col, 0.55)));
@@ -581,18 +815,20 @@ impl App {
             if !vis1[ni] || group_of[ni].map_or(false, |gi| closing[gi]) || !view.contains(disp[ni]) {
                 continue;
             }
-            let d = &self.devs[n.i];
+            let d = &self.latched[n.i];
+            self.last_pos.insert(d.id.clone(), disp[ni]);
             let interactive = !hidden[ni] && !masked[ni];
             let sel = sel_id.as_deref() == Some(d.id.as_str());
-            node_widget(ui, &p, d, n, ni, disp[ni], t, sw, sel, allow.contains(&ni), interactive, true, c, big, &mut ev);
+            let sc = fscale[ni] * self.appear.get(&d.id).copied().unwrap_or(1.0);
+            node_widget(ui, &p, d, n, ni, disp[ni], t, sw, sel, allow.contains(&ni), interactive, true, sc, c, big, &mut ev);
         }
         let mut toggle: Vec<(String, bool)> = vec![]; // (key, open?)
         let mut group_hover: Option<usize> = None;
         for (gi, g) in groups.iter().enumerate() {
-            if g.open || !arrived[gi] || !view.contains(g.center) {
+            if !iconshown[gi] || !view.contains(g.center) {
                 continue;
             }
-            let kinds: Vec<Kind> = g.members.iter().map(|&i| self.devs[nodes[i].i].kind).collect();
+            let kinds: Vec<Kind> = g.members.iter().map(|&i| self.latched[nodes[i].i].kind).collect();
             let col = if kinds.iter().all(|x| *x == kinds[0]) { kind_col(kinds[0]) } else { Color32::from_rgb(190, 212, 240) };
             let masked_icon = groups.iter().filter(|o| o.open).any(|o| (g.center - o.center).length() < o.halo_r);
             let mut hovered = false;
@@ -605,13 +841,16 @@ impl App {
             }
             let sc = self.gscale.entry(g.key.clone()).or_insert(0.0);
             *sc += (1.0 - *sc) * k;
-            let r = 19.0 * (0.55 + 0.45 * *sc);
+            let sc = *sc;
+            let r = 19.0 * (0.55 + 0.45 * sc);
             orb(&p, g.center, r, col, if hovered { 0.9 } else { 0.25 });
             let nn = g.members.len().min(10);
             for kk in 0..nn {
-                let a = t * 0.35 + kk as f32 * TAU / nn as f32;
-                let kc = kind_col(self.devs[nodes[g.members[kk]].i].kind);
-                p.circle_filled(g.center + vec2(a.cos(), a.sin()) * 27.0 * (0.55 + 0.45 * *sc), 2.6, kc);
+                if !settled[g.members[kk]] {
+                    continue; // still flying in: drawn as a shrinking node instead
+                }
+                let kc = kind_col(self.latched[nodes[g.members[kk]].i].kind);
+                p.circle_filled(slot(g.center, kk, nn, t, 0.55 + 0.45 * sc), 2.6, kc);
             }
             p.text(g.center, Align2::CENTER_CENTER, g.members.len().to_string(), FontId::monospace(15.0), Color32::from_rgb(8, 16, 30));
             if hovered {
@@ -619,7 +858,34 @@ impl App {
             }
         }
 
-        // --- this PC
+        // --- while dragging: show which group/device the drop would join
+        if let Some(di) = drag_ni {
+            let q = nodes[di].pos;
+            let mut best: Option<(f32, Pos2)> = None;
+            for (ni, n) in nodes.iter().enumerate() {
+                if ni != di && group_of[ni].is_none() {
+                    let d = (n.pos - q).length();
+                    if d < GROUP_PX * 1.15 && best.map_or(true, |b| d < b.0) {
+                        best = Some((d, disp[ni]));
+                    }
+                }
+            }
+            for (gi, g) in groups.iter().enumerate() {
+                if iconshown[gi] {
+                    let d = (g.center - q).length();
+                    if d < GROUP_PX * 1.15 && best.map_or(true, |b| d < b.0) {
+                        best = Some((d, g.center));
+                    }
+                }
+            }
+            if let Some((_, tp)) = best {
+                let pulse = (t * 6.0).sin() * 0.5 + 0.5;
+                p.circle_stroke(tp, 28.0 + pulse * 4.0, Stroke::new(2.0, add(CYAN, 0.55)));
+                p.circle_stroke(tp, 34.0 + pulse * 6.0, Stroke::new(1.0, add(CYAN, 0.2)));
+            }
+        }
+
+        // --- this PC (never moves)
         let pc_r = 25.0;
         let pulse = (t * 1.3).sin() * 0.5 + 0.5;
         p.circle_stroke(c, pc_r + 8.0 + pulse * 8.0, Stroke::new(1.5, add(CYAN, 0.3 * (1.0 - pulse))));
@@ -636,14 +902,14 @@ impl App {
             soft_halo(&p, g.center, g.halo_r, amt);
             if !g.open {
                 if closing[gi] {
-                    // reverse of the fan-out: members glide back to the centre, circle fading
+                    // reverse of the fan-out: members glide back toward the icon, circle fading
                     for &i in &g.members {
                         p.line_segment([g.center, disp[i]], Stroke::new(1.2, alpha(CYAN, 0.5 * amt)));
                     }
                     for &i in &g.members {
-                        let d = &self.devs[nodes[i].i];
+                        let d = &self.latched[nodes[i].i];
                         let sel = sel_id.as_deref() == Some(d.id.as_str());
-                        node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, false, false, false, c, big, &mut ev);
+                        node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, false, false, false, fscale[i], c, big, &mut ev);
                     }
                 }
                 continue;
@@ -653,26 +919,31 @@ impl App {
                 p.line_segment([g.center, disp[i]], Stroke::new(1.2, alpha(CYAN, 0.5)));
             }
             for &i in &g.members {
-                let d = &self.devs[nodes[i].i];
+                let d = &self.latched[nodes[i].i];
                 let sel = sel_id.as_deref() == Some(d.id.as_str());
-                node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, allow.contains(&i), true, false, c, big, &mut ev);
+                self.last_pos.insert(d.id.clone(), disp[i]);
+                node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, allow.contains(&i), true, false, 1.0, c, big, &mut ev);
             }
-            let kinds: Vec<Kind> = g.members.iter().map(|&i| self.devs[nodes[i].i].kind).collect();
+            let kinds: Vec<Kind> = g.members.iter().map(|&i| self.latched[nodes[i].i].kind).collect();
             let col = if kinds.iter().all(|x| *x == kinds[0]) { kind_col(kinds[0]) } else { Color32::from_rgb(190, 212, 240) };
             let resp = hit(ui, Rect::from_center_size(g.center, Vec2::splat(40.0)), ui.scope_id().with(("gc", &g.key)), Sense::click());
             orb(&p, g.center, 11.0, col, if resp.hovered() { 0.9 } else { 0.2 });
             p.line_segment([g.center - vec2(5.0, 0.0), g.center + vec2(5.0, 0.0)], Stroke::new(2.2, shade(col, 0.15)));
-            if resp.hovered() {
-                group_hover = None;
-            }
             if resp.clicked() {
                 toggle.push((g.key.clone(), false));
             }
         }
 
+        // --- bursts (a device left the air)
+        self.bursts.retain(|b| t - b.t0 < 0.6);
+        for b in &self.bursts {
+            let age = (t - b.t0) / 0.6;
+            p.circle_stroke(b.pos, 8.0 + age * 46.0, Stroke::new(2.0, add(b.col, 0.6 * (1.0 - age))));
+        }
+
         // --- hover pills (always on top)
         if let Some(ni) = ev.hover {
-            let d = &self.devs[nodes[ni].i];
+            let d = &self.latched[nodes[ni].i];
             let sub = match d.dbm {
                 Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
                 None => d.vendor.clone(),
@@ -680,7 +951,7 @@ impl App {
             pill(&p, disp[ni] + vec2(0.0, -24.0), &d.name, &sub, kind_col(d.kind));
         } else if let Some(gi) = group_hover {
             let g = &groups[gi];
-            let names: Vec<String> = g.members.iter().take(4).map(|&i| self.devs[nodes[i].i].name.clone()).collect();
+            let names: Vec<String> = g.members.iter().take(4).map(|&i| self.latched[nodes[i].i].name.clone()).collect();
             let more = if g.members.len() > 4 { format!(" +{}", g.members.len() - 4) } else { String::new() };
             pill(&p, g.center + vec2(0.0, -34.0), &format!("{} devices close together", g.members.len()), &format!("{}{} · click to expand", names.join(", "), more), CYAN);
         }
@@ -702,7 +973,11 @@ impl App {
         for (id, v) in ev.over {
             self.over.insert(id, v);
         }
+        if let Some(id) = ev.dragging {
+            self.dragging = Some(id);
+        }
         if ev.drag_end {
+            self.dragging = None;
             self.save_over();
         }
         for (key, open) in toggle {
@@ -716,9 +991,9 @@ impl App {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
         }
         if let Some(id) = self.sel.clone() {
-            if let Some(ni) = nodes.iter().enumerate().find(|(_, n)| self.devs[n.i].id == id).map(|(ni, _)| ni) {
+            if let Some(ni) = nodes.iter().enumerate().find(|(_, n)| self.latched[n.i].id == id).map(|(ni, _)| ni) {
                 if !settled[ni] {
-                    let d = self.devs[nodes[ni].i].clone();
+                    let d = self.latched[nodes[ni].i].clone();
                     let mut close = false;
                     popup(ui.ctx(), &d, disp[ni], rect, &mut close, kind_col(d.kind));
                     if close {
@@ -741,8 +1016,6 @@ impl App {
             self.reset_view = true;
         }
     }
-
-    // ---------- Bluetooth channel strip ----------
 
     fn strip(&self, ui: &mut egui::Ui, t: f32) {
         let rect = ui.max_rect();

@@ -1,7 +1,7 @@
 //! Visual toolkit: glow, bevel, shadow, LED bars, LCD text, orbs, icons.
 //! Everything is drawn with egui's painter; "glow" is additive (premultiplied alpha 0).
 use crate::data::Icon;
-use eframe::egui::{pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use eframe::egui::{pos2, vec2, Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 use std::f32::consts::{PI, TAU};
 
 pub const BG: Color32 = Color32::from_rgb(5, 9, 18);
@@ -112,31 +112,67 @@ pub fn arc(p: &Painter, c: Pos2, r: f32, a0: f32, a1: f32, stroke: Stroke) {
     p.add(Shape::line(pts, stroke));
 }
 
+/// Smooth shaded sphere: a mesh with a bright off-centre vertex, a mid ring and a dark rim.
+/// The GPU interpolates the vertex colours, so there is no banding.
+pub fn sphere(p: &Painter, c: Pos2, r: f32, col: Color32, segs: usize) {
+    let hi = mix(col, Color32::WHITE, 0.50);
+    let rim = shade(col, 0.22);
+    let f = vec2(-0.30, -0.36) * r; // highlight position
+    let mut m = Mesh::default();
+    m.colored_vertex(c + f, hi); // 0
+    for i in 0..segs {
+        let a = i as f32 / segs as f32 * TAU;
+        m.colored_vertex(c + f * 0.35 + vec2(a.cos(), a.sin()) * r * 0.62, col); // ring A
+    }
+    for i in 0..segs {
+        let a = i as f32 / segs as f32 * TAU;
+        m.colored_vertex(c + vec2(a.cos(), a.sin()) * r, rim); // ring B (rim)
+    }
+    let s = segs as u32;
+    for i in 0..s {
+        let (a0, a1) = (1 + i, 1 + (i + 1) % s);
+        let (b0, b1) = (1 + s + i, 1 + s + (i + 1) % s);
+        m.add_triangle(0, a0, a1);
+        m.add_triangle(a0, b0, b1);
+        m.add_triangle(a0, b1, a1);
+    }
+    p.add(Shape::mesh(m));
+}
+
+/// Soft white highlight: opaque in the middle, fully transparent at the edge (no hard outline needed).
+fn blob(p: &Painter, c: Pos2, r: f32, a: f32) {
+    let segs = 20u32;
+    let mut m = Mesh::default();
+    let k = (a.clamp(0.0, 1.0) * 255.0) as u8;
+    m.colored_vertex(c, Color32::from_rgba_premultiplied(k, k, k, k));
+    for i in 0..segs {
+        let t = i as f32 / segs as f32 * TAU;
+        m.colored_vertex(c + vec2(t.cos(), t.sin()) * r, Color32::TRANSPARENT);
+    }
+    for i in 0..segs {
+        m.add_triangle(0, 1 + i, 1 + (i + 1) % segs);
+    }
+    p.add(Shape::mesh(m));
+}
+
 /// Shiny bevelled sphere with halo. `hot` (0..1) boosts the glow (sweep pings, selection).
 pub fn orb(p: &Painter, c: Pos2, r: f32, col: Color32, hot: f32) {
     glow(p, c, r, col, 0.55 + hot * 1.1);
     p.circle_filled(c + vec2(0.0, 2.5), r + 1.5, Color32::from_black_alpha(110));
-    const N: usize = 9;
-    for i in 0..N {
-        let t = i as f32 / (N - 1) as f32;
-        let rr = r * (1.0 - t * 0.82);
-        let off = vec2(-0.22, -0.28) * r * t;
-        p.circle_filled(c + off, rr, mix(shade(col, 0.22), mix(col, Color32::WHITE, 0.22), t));
-    }
-    // bevel: light upper-left rim, dark lower-right rim
-    arc(p, c, r - 0.8, PI * 0.95, PI * 1.85, Stroke::new(1.6, add(Color32::WHITE, 0.55)));
-    arc(p, c, r - 0.8, -PI * 0.05, PI * 0.85, Stroke::new(1.6, Color32::from_black_alpha(140)));
-    // specular
-    p.circle_filled(c + vec2(-0.34, -0.42) * r, r * 0.17, add(Color32::WHITE, 0.55));
-    p.circle_filled(c + vec2(-0.34, -0.42) * r, r * 0.09, Color32::from_white_alpha(200));
+    sphere(p, c, r, col, 48);
+    // anti-aliased rim (the mesh edge itself is not smoothed) and bevel
+    p.circle_stroke(c, r - 0.5, Stroke::new(1.2, shade(col, 0.22)));
+    arc(p, c, r - 0.8, PI * 0.95, PI * 1.85, Stroke::new(1.6, add(Color32::WHITE, 0.5)));
+    arc(p, c, r - 0.8, -PI * 0.05, PI * 0.85, Stroke::new(1.6, Color32::from_black_alpha(130)));
+    blob(p, c + vec2(-0.34, -0.42) * r, r * 0.34, 0.85);
 }
 
 /// Small shaded dot for unidentified signals.
 pub fn dot(p: &Painter, c: Pos2, r: f32, col: Color32, hot: f32) {
     glow(p, c, r, col, 0.45 + hot);
-    p.circle_filled(c, r, shade(col, 0.55));
-    p.circle_filled(c + vec2(-0.15, -0.18) * r, r * 0.7, col);
-    p.circle_filled(c + vec2(-0.3, -0.35) * r, r * 0.28, add(Color32::WHITE, 0.6));
+    sphere(p, c, r, col, 28);
+    p.circle_stroke(c, r - 0.4, Stroke::new(1.0, shade(col, 0.3)));
+    blob(p, c + vec2(-0.3, -0.35) * r, r * 0.5, 0.8);
 }
 
 pub fn icon(p: &Painter, ic: Icon, c: Pos2, s: f32, col: Color32) {
