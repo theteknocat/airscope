@@ -183,6 +183,12 @@ struct App {
     prev_groups: Vec<(String, Vec<String>)>,
     formed: HashSet<String>,       // groups whose icon is already showing
     gshift: HashMap<String, Vec2>, // eased push-away shift per group
+    mine: Vec<String>,             // SSID prefixes of your own Wi-Fi networks (~/.config/airscope/mine.txt)
+    q: String,                     // device list filters
+    show: [bool; 3],
+    scope: u8,
+    hide_unnamed: bool,
+    collapsed: HashSet<usize>,
 }
 
 fn cfg_path() -> Option<std::path::PathBuf> {
@@ -243,7 +249,7 @@ impl App {
             bt_at: None,
             lan_at: None,
             errs: vec![],
-            screen: Screen::Radar,
+            screen: match std::env::var("AIRSCOPE_SCREEN").as_deref() { Ok("spectrum") => Screen::Spectrum, Ok("devices") => Screen::Devices, _ => Screen::Radar }, // debug aid
             sel: None,
             over,
             host: if host.is_empty() { "this PC".into() } else { host },
@@ -266,6 +272,12 @@ impl App {
             prev_groups: vec![],
             formed: HashSet::new(),
             gshift: HashMap::new(),
+            mine: std::env::var("HOME").ok().and_then(|h| std::fs::read_to_string(format!("{}/.config/airscope/mine.txt", h)).ok()).map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_else(|| vec!["Pointynose".to_string()]),
+            q: String::new(),
+            show: [true; 3],
+            scope: 0,
+            hide_unnamed: false,
+            collapsed: HashSet::from([4]),
         }
     }
 
@@ -1032,143 +1044,464 @@ impl App {
         }
     }
 
-    fn strip(&self, ui: &mut egui::Ui, t: f32) {
+    // ---------- shared Wi-Fi / Bluetooth helpers ----------
+
+    fn is_mine(&self, d: &Dev) -> bool {
+        match d.kind {
+            Kind::Wifi => d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())),
+            _ => true,
+        }
+    }
+
+    /// 2.4 GHz networks (one per name+channel; unnamed access points are lumped per channel).
+    fn nets(&self) -> Vec<Net> {
+        let mut m: HashMap<(String, u32), Net> = HashMap::new();
+        for d in self.devs.iter().filter(|d| d.kind == Kind::Wifi) {
+            let (Some(f), Some(dbm), Some(ch)) = (d.freq, d.dbm, d.chan) else { continue };
+            if f >= 3000 {
+                continue;
+            }
+            let hidden = !d.known;
+            let name = if hidden { "(unnamed)".to_string() } else { d.name.clone() };
+            let mine = self.is_mine(d);
+            let e = m.entry((name.clone(), ch)).or_insert(Net { name, chan: ch, f: f as f32, dbm, aps: 0, mine, hidden });
+            e.aps += 1;
+            e.dbm = e.dbm.max(dbm);
+        }
+        let mut v: Vec<Net> = m.into_values().collect();
+        v.sort_by(|a, b| b.dbm.partial_cmp(&a.dbm).unwrap().then(a.name.cmp(&b.name)));
+        v
+    }
+
+    /// Bluetooth channel i (0..78) sits at 2402+i MHz. How crowded is Wi-Fi there? (0 = quiet)
+    fn load_at(nets: &[Net], f: f32) -> f32 {
+        nets.iter().map(|n| n.strength() * hill((f - n.f).abs())).sum()
+    }
+
+    fn bt_rows(&self, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, end_x: f32, mut y: f32) -> f32 {
+        if self.links.is_empty() {
+            p.text(pos2(xl(0), y + 10.0), Align2::LEFT_CENTER, "No Bluetooth link is connected right now.", FontId::proportional(12.0), DIM);
+            return y + 26.0;
+        }
+        for l in &self.links {
+            p.text(pos2(label_x, y + 9.0), Align2::RIGHT_CENTER, if l.name.is_empty() { &l.mac } else { &l.name }, FontId::proportional(12.0), TEXT);
+            for i in 0..79usize {
+                let r = Rect::from_min_size(pos2(xl(i), y), vec2((cw - 1.5).max(1.0), 18.0));
+                if l.afh.as_ref().map(|m| m[i]).unwrap_or(true) {
+                    p.rect_filled(r.expand(3.5), 5.0, add(GREEN, 0.04));
+                    p.rect_filled(r.expand(2.0), 3.5, add(GREEN, 0.09));
+                    p.rect_filled(r, 2.0, GREEN);
+                    p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.22));
+                } else {
+                    p.rect_stroke(r, 2.0, Stroke::new(1.0, alpha(DIM, 0.45)), StrokeKind::Inside);
+                }
+            }
+            let txt = match &l.afh {
+                Some(m) => format!("{}/79 in use", m.iter().filter(|x| **x).count()),
+                None => "no AFH · hops on all".to_string(),
+            };
+            p.text(pos2(end_x + 6.0, y + 9.0), Align2::LEFT_CENTER, txt, FontId::monospace(10.0), DIM);
+            y += 26.0;
+        }
+        y
+    }
+
+    // ---------- radar strip ----------
+
+    fn strip(&mut self, ui: &mut egui::Ui, _t: f32) {
         let rect = ui.max_rect();
         let p = ui.painter().clone();
         p.rect_filled(rect, 0.0, shade(BG, 1.35));
         p.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, alpha(CYAN, 0.15)));
         lcd(&p, pos2(rect.left() + 22.0, rect.top() + 20.0), Align2::LEFT_CENTER, "BLUETOOTH CHANNEL MAP", 13.0, CYAN);
-        p.text(
-            pos2(rect.left() + 250.0, rect.top() + 20.0),
-            Align2::LEFT_CENTER,
-            "lit = channels the controller hops on · red = avoided · amber bands = Wi-Fi 2.4 GHz networks",
-            FontId::proportional(11.5),
-            DIM,
-        );
+        p.text(pos2(rect.left() + 250.0, rect.top() + 20.0), Align2::LEFT_CENTER, "green = channel in use · dark = avoided · top row = how crowded Wi-Fi is on that frequency (click for details)", FontId::proportional(11.5), DIM);
         let x0 = rect.left() + 200.0;
-        let x1 = rect.right() - 84.0;
+        let x1 = rect.right() - 150.0;
         let cw = (x1 - x0) / 79.0;
-        // Wi-Fi footprints
         let yw = rect.top() + 36.0;
-        p.text(pos2(x0 - 12.0, yw + 12.0), Align2::RIGHT_CENTER, "Wi-Fi 2.4 GHz", FontId::proportional(12.0), AMBER);
-        let mut bands: Vec<(i32, i32, f32, &Dev)> = vec![];
-        for d in self.devs.iter().filter(|d| d.kind == Kind::Wifi) {
-            if let (Some(f), Some(dbm)) = (d.freq, d.dbm) {
-                if f < 3000 {
-                    bands.push((f as i32 - 10 - 2402, f as i32 + 10 - 2402, ((dbm + 100.0) / 50.0).clamp(0.05, 1.0), d));
+        let nets = self.nets();
+        let row = Rect::from_min_max(pos2(x0, yw), pos2(x1, yw + 24.0));
+        p.text(pos2(x0 - 12.0, yw + 12.0), Align2::RIGHT_CENTER, "Wi-Fi crowding", FontId::proportional(12.0), AMBER);
+        for i in 0..79usize {
+            let v = (Self::load_at(&nets, 2402.0 + i as f32) / 2.2).clamp(0.0, 1.0);
+            let r = Rect::from_min_size(pos2(x0 + i as f32 * cw, yw), vec2(cw - 1.5, 24.0));
+            p.rect_filled(r, 2.0, mix(shade(BG, 1.8), mix(AMBER, RED, ((v - 0.4) * 1.7).clamp(0.0, 1.0)), 0.12 + 0.88 * v));
+        }
+        for n in 1..=13 {
+            let i = (2407 + 5 * n - 2402) as f32;
+            p.text(pos2(x0 + i * cw + cw / 2.0, yw + 12.0), Align2::CENTER_CENTER, n.to_string(), FontId::monospace(10.0), alpha(Color32::WHITE, 0.55));
+        }
+        let rr = hit(ui, row, ui.scope_id().with("heat"), Sense::click());
+        if rr.hovered() {
+            p.rect_stroke(row.expand(2.0), 4.0, Stroke::new(1.5, alpha(CYAN, 0.7)), StrokeKind::Outside);
+        }
+        if rr.clicked() {
+            self.screen = Screen::Spectrum;
+        }
+        self.bt_rows(&p, x0 - 12.0, &|i| x0 + i as f32 * cw, cw, x1, yw + 34.0);
+    }
+
+    // ---------- spectrum ----------
+
+    fn spectrum(&mut self, ui: &mut egui::Ui, _t: f32) {
+        let rect = ui.max_rect();
+        let p = ui.painter().clone();
+        p.rect_filled(rect, 0.0, BG);
+        let nets = self.nets();
+        let mut names: Vec<&str> = nets.iter().filter(|n| !n.hidden).map(|n| n.name.as_str()).collect();
+        names.sort();
+        names.dedup();
+        let col_of = |n: &Net| -> Color32 {
+            if n.hidden {
+                return Color32::from_gray(140);
+            }
+            const PAL: [(u8, u8, u8); 8] = [(90, 220, 255), (255, 140, 90), (200, 120, 255), (120, 255, 160), (255, 220, 90), (255, 110, 170), (110, 150, 255), (170, 230, 80)];
+            let i = names.iter().position(|x| *x == n.name).unwrap_or(0) % PAL.len();
+            Color32::from_rgb(PAL[i].0, PAL[i].1, PAL[i].2)
+        };
+        let l = rect.left() + 24.0;
+        p.text(pos2(l, rect.top() + 26.0), Align2::LEFT_CENTER, "2.4 GHz: Wi-Fi networks as hills on the frequencies they use, with Bluetooth's channels directly underneath", FontId::proportional(12.0), DIM);
+
+        let legend_w = 300.0;
+        let n_links = self.links.len().max(1) as f32;
+        let bt_h = n_links * 26.0 + 34.0;
+        let gh = (rect.height() - 60.0 - 40.0 - bt_h - 200.0).clamp(150.0, 330.0);
+        let gx0 = l + 130.0;
+        let gx1 = rect.right() - legend_w - 170.0;
+        let gw = gx1 - gx0;
+        let base = rect.top() + 60.0 + gh;
+        let fx = |f: f32| gx0 + (f - 2399.0) / 87.0 * gw;
+        let frame = Rect::from_min_max(pos2(l, rect.top() + 52.0), pos2(gx1 + 134.0, base + 30.0 + bt_h));
+        panel(&p, frame, 14.0, CYAN);
+        // gridlines + axes
+        for (dbm, lbl) in [(-85.0, "-85"), (-70.0, "-70"), (-55.0, "-55")] {
+            let y = base - ((dbm + 95.0) / 55.0) * (gh - 20.0);
+            p.line_segment([pos2(gx0, y), pos2(gx1, y)], Stroke::new(1.0, alpha(CYAN, 0.07)));
+            p.text(pos2(gx0 - 6.0, y), Align2::RIGHT_CENTER, lbl, FontId::monospace(9.5), DIM);
+        }
+        p.text(pos2(l + 8.0, rect.top() + 66.0), Align2::LEFT_TOP, "dBm", FontId::monospace(9.5), DIM);
+        for n in 1..=13 {
+            let f = 2407.0 + 5.0 * n as f32;
+            p.line_segment([pos2(fx(f), rect.top() + 62.0), pos2(fx(f), base)], Stroke::new(1.0, alpha(CYAN, if [1, 6, 11].contains(&n) { 0.16 } else { 0.06 })));
+            p.text(pos2(fx(f), base + 9.0), Align2::CENTER_CENTER, n.to_string(), FontId::monospace(11.0), if [1, 6, 11].contains(&n) { CYAN } else { DIM });
+        }
+        p.text(pos2(gx0 - 6.0, base + 9.0), Align2::RIGHT_CENTER, "Wi-Fi ch", FontId::proportional(10.5), DIM);
+        p.line_segment([pos2(gx0, base), pos2(gx1, base)], Stroke::new(1.5, alpha(CYAN, 0.35)));
+
+        // hover target: from the legend, else from the graph
+        let ptr = ui.input(|i| i.pointer.hover_pos());
+        let hh = |n: &Net, dx: f32| n.strength() * (gh - 20.0) * hill(dx);
+        let mut hover: Option<usize> = None;
+        let lx = gx1 + 154.0;
+        let mut ly = rect.top() + 62.0;
+        let mut legend: Vec<(Rect, usize)> = vec![];
+        let max_rows = (((base + 30.0 - ly) / 24.0) as usize).saturating_sub(2).max(4);
+        for (i, _) in nets.iter().enumerate().take(max_rows) {
+            legend.push((Rect::from_min_size(pos2(lx, ly), vec2(rect.right() - lx - 20.0, 22.0)), i));
+            ly += 24.0;
+        }
+        for (r, i) in &legend {
+            if hit(ui, *r, ui.scope_id().with(("lg", *i)), Sense::hover()).hovered() {
+                hover = Some(*i);
+            }
+        }
+        if hover.is_none() {
+            if let Some(q) = ptr.filter(|q| q.x > gx0 && q.x < gx1 && q.y < base && q.y > rect.top() + 62.0) {
+                let f = 2399.0 + (q.x - gx0) / gw * 87.0;
+                for (i, n) in nets.iter().enumerate() {
+                    if base - q.y <= hh(n, f - n.f) && hover.map_or(true, |_| false) {
+                        hover = Some(i); // strongest first
+                    }
                 }
             }
         }
-        for (lo, hi, s, _) in &bands {
-            let r = Rect::from_min_max(pos2(x0 + (*lo).max(0) as f32 * cw, yw), pos2(x0 + (*hi).min(78) as f32 * cw + cw, yw + 24.0));
-            p.rect_filled(r, 6.0, add(AMBER, 0.05 + 0.16 * s));
-            p.rect_stroke(r, 6.0, Stroke::new(1.0, alpha(AMBER, 0.15 + 0.4 * s)), StrokeKind::Inside);
+        // hills, weakest first so strong ones sit on top
+        for (i, n) in nets.iter().enumerate().rev() {
+            let col = col_of(n);
+            let dim = hover.map_or(1.0, |h| if h == i { 1.0 } else { 0.28 });
+            let pts: Vec<Pos2> = (-22..=22).map(|k| {
+                let dx = k as f32 / 2.0;
+                pos2(fx(n.f + dx), base - hh(n, dx))
+            }).collect();
+            let mut m = egui::Mesh::default();
+            for q in &pts {
+                m.colored_vertex(*q, Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), (95.0 * dim) as u8));
+                m.colored_vertex(pos2(q.x, base), Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), (14.0 * dim) as u8));
+            }
+            for k in 0..pts.len() as u32 - 1 {
+                let a = k * 2;
+                m.add_triangle(a, a + 1, a + 2);
+                m.add_triangle(a + 1, a + 3, a + 2);
+            }
+            p.add(egui::Shape::mesh(m));
+            let w = if n.mine { 2.6 } else { 1.6 };
+            p.add(egui::Shape::line(pts, Stroke::new(w, alpha(col, 0.95 * dim))));
         }
-        let mut top: Vec<&(i32, i32, f32, &Dev)> = bands.iter().filter(|b| b.3.known).collect();
-        top.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
-        let mut seen: Vec<&str> = vec![];
-        let mut spans: Vec<(f32, f32)> = vec![];
-        for b in top.iter().take(8) {
-            if seen.contains(&b.3.cluster.as_str()) {
+        // labels above the peaks (strongest first, shifted up when they would collide)
+        let mut placed: Vec<Rect> = vec![];
+        for (i, n) in nets.iter().enumerate().filter(|(_, n)| !n.hidden) {
+            let g = p.layout_no_wrap(if n.mine { format!("{} · yours", n.name) } else { n.name.clone() }, FontId::proportional(11.5), Color32::WHITE);
+            let mut y = base - hh(n, 0.0) - 12.0;
+            let mut r = Rect::from_center_size(pos2(fx(n.f), y), g.size() + vec2(10.0, 4.0));
+            let mut tries = 0;
+            while placed.iter().any(|q| q.intersects(r)) && tries < 6 {
+                y -= 15.0;
+                r = Rect::from_center_size(pos2(fx(n.f), y), g.size() + vec2(10.0, 4.0));
+                tries += 1;
+            }
+            if tries >= 6 && hover != Some(i) || r.top() < rect.top() + 56.0 {
                 continue;
             }
-            seen.push(&b.3.cluster);
-            let cx = x0 + ((b.0 + b.1) as f32 / 2.0 + 0.5) * cw;
-            let g = p.layout_no_wrap(b.3.name.clone(), FontId::proportional(11.0), Color32::WHITE);
-            let span = (cx - g.size().x / 2.0 - 6.0, cx + g.size().x / 2.0 + 6.0);
-            if spans.iter().any(|q: &(f32, f32)| span.0 < q.1 && span.1 > q.0) {
-                continue;
+            placed.push(r);
+            let col = col_of(n);
+            p.rect_filled(r, 6.0, Color32::from_rgba_unmultiplied(6, 12, 26, 190));
+            p.rect_stroke(r, 6.0, Stroke::new(1.0, alpha(col, if hover.map_or(true, |h| h == i) { 0.9 } else { 0.3 })), StrokeKind::Inside);
+            p.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
+        }
+        // Bluetooth channels aligned under the same frequency axis
+        p.text(pos2(l + 12.0, base + 30.0 + 8.0), Align2::LEFT_CENTER, "BLUETOOTH · same frequencies, channel 0-78", FontId::proportional(10.5), DIM);
+        let bcw = gw / 87.0;
+        self.bt_rows(&p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, base + 46.0);
+
+        // legend
+        lcd(&p, pos2(lx, rect.top() + 36.0 + 12.0), Align2::LEFT_CENTER, "NETWORKS", 12.0, CYAN);
+        for (r, i) in &legend {
+            let n = &nets[*i];
+            let col = col_of(n);
+            if hover == Some(*i) {
+                p.rect_filled(*r, 6.0, alpha(col, 0.16));
             }
-            spans.push(span);
-            p.galley(pos2(cx - g.size().x / 2.0, yw + 12.0 - g.size().y / 2.0), g, alpha(Color32::WHITE, 0.9));
+            p.circle_filled(pos2(r.left() + 10.0, r.center().y), 5.5, col);
+            let nm = if n.mine { format!("{} · yours", n.name) } else if n.aps > 1 && n.hidden { format!("{} ×{}", n.name, n.aps) } else { n.name.clone() };
+            p.text(pos2(r.left() + 24.0, r.center().y), Align2::LEFT_CENTER, nm, FontId::proportional(12.0), if n.hidden { DIM } else { TEXT });
+            p.text(pos2(r.right() - 4.0, r.center().y), Align2::RIGHT_CENTER, format!("ch{} {:.0}", n.chan, n.dbm), FontId::monospace(10.5), DIM);
         }
-        // link rows
-        let mut y = yw + 34.0;
-        if self.links.is_empty() {
-            p.text(pos2(x0, y + 10.0), Align2::LEFT_CENTER, "No Bluetooth link is connected right now.", FontId::proportional(12.0), DIM);
+        if nets.len() > legend.len() {
+            p.text(pos2(lx, ly + 8.0), Align2::LEFT_CENTER, format!("+ {} weaker networks (hover the graph)", nets.len() - legend.len()), FontId::proportional(11.0), DIM);
         }
-        for l in &self.links {
-            p.text(pos2(x0 - 12.0, y + 9.0), Align2::RIGHT_CENTER, if l.name.is_empty() { &l.mac } else { &l.name }, FontId::proportional(12.0), TEXT);
-            for i in 0..79usize {
-                let r = Rect::from_min_size(pos2(x0 + i as f32 * cw, y), vec2(cw - 1.5, 18.0));
-                let used = l.afh.as_ref().map(|m| m[i]).unwrap_or(true);
-                let col = if l.afh.is_none() { MAGENTA } else { CYAN };
-                // is a strong Wi-Fi network sitting on this channel?
-                let under = bands.iter().any(|(lo, hi, s, _)| *s > 0.55 && (i as i32) >= *lo && (i as i32) <= *hi);
-                if used {
-                    p.rect_filled(r.expand(1.5), 2.0, add(col, if under { 0.06 } else { 0.10 }));
-                    p.rect_filled(r, 2.0, if under { mix(col, RED, 0.45) } else { col });
-                    p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.2));
-                } else {
-                    p.rect_filled(r, 2.0, alpha(RED, 0.20));
-                }
+        let n5 = self.devs.iter().filter(|d| d.kind == Kind::Wifi && d.freq.map_or(false, |f| f >= 3000)).count();
+        p.text(pos2(lx, base + 14.0), Align2::LEFT_CENTER, format!("{} access points on 5 GHz not shown", n5), FontId::proportional(10.5), DIM);
+        p.text(pos2(lx, base + 28.0), Align2::LEFT_CENTER, "(5 GHz doesn't affect Bluetooth)", FontId::proportional(10.5), DIM);
+
+        // hover tooltip
+        if let (Some(h), Some(q)) = (hover, ptr) {
+            let n = &nets[h];
+            let ov: Vec<&Net> = nets.iter().enumerate().filter(|(j, o)| *j != h && (o.f - n.f).abs() < 22.0 && o.dbm > -85.0).map(|(_, o)| o).collect();
+            let same = ov.iter().filter(|o| (o.f - n.f).abs() < 1.0).count();
+            let sub = format!("ch {} · {:.0} dBm · {} on same channel, {} partly overlapping", n.chan, n.dbm, same, ov.len() - same);
+            pill(&p, pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y - 14.0), &format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() }), &sub, col_of(n));
+        }
+
+        // explanation cards
+        let cy = frame.bottom() + 12.0;
+        let ch = (rect.bottom() - cy - 12.0).clamp(60.0, 190.0);
+        let cwid = (rect.width() - 48.0 - 24.0) / 3.0;
+        let card = |i: usize, title: &str, text: &str, col: Color32| {
+            let r = Rect::from_min_size(pos2(l + i as f32 * (cwid + 12.0), cy), vec2(cwid, ch));
+            panel(&p, r, 12.0, col);
+            lcd(&p, pos2(r.left() + 14.0, r.top() + 16.0), Align2::LEFT_CENTER, title, 11.5, col);
+            let g = p.layout(text.to_string(), FontId::proportional(12.0), TEXT, r.width() - 28.0);
+            p.galley(pos2(r.left() + 14.0, r.top() + 32.0), g, TEXT);
+        };
+        card(0, "HOW TO READ IT", "Each hill is one Wi-Fi network. A hill is as wide as the radio frequencies it occupies (about 22 MHz, five channels' worth) and as tall as its signal is strong at this PC. Grey hills are access points that don't broadcast a name.", CYAN);
+        card(1, "WHAT OVERLAP MEANS", "Where hills overlap, those networks share the same airwaves. Same channel: they politely take turns, so each gets less speed. Partly overlapping channels are worse: they can't coordinate and just garble each other. Only channels 1, 6 and 11 never overlap. Bluetooth hops across all of it, so channels under a tall, crowded hill are the ones that get disturbed.", AMBER);
+        let mine_txt = match nets.iter().find(|n| n.mine && !n.name.contains("Guest")).or_else(|| nets.iter().find(|n| n.mine)) {
+            None => "None of your own networks are visible on 2.4 GHz.".to_string(),
+            Some(m) => {
+                let others: Vec<&Net> = nets.iter().filter(|o| !std::ptr::eq(*o, m) && !o.mine && o.dbm > -85.0 && (o.f - m.f).abs() < 22.0).collect();
+                let same: Vec<&str> = others.iter().filter(|o| (o.f - m.f).abs() < 1.0).map(|o| o.name.as_str()).collect();
+                let part: Vec<&str> = others.iter().filter(|o| (o.f - m.f).abs() >= 1.0).map(|o| o.name.as_str()).collect();
+                let q = [(1, 2412.0), (6, 2437.0), (11, 2462.0)].into_iter().min_by(|a, b| Self::load_at(&nets, a.1).partial_cmp(&Self::load_at(&nets, b.1)).unwrap()).unwrap().0;
+                let list = |v: &[&str]| v.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+                format!("{} is on channel {}. It shares that channel with {} other network{}{} and partly overlaps {} more{}. The quietest of the clean channels (1, 6, 11) right now is channel {}.", m.name, m.chan, same.len(), if same.len() == 1 { "" } else { "s" }, if same.is_empty() { String::new() } else { format!(" ({})", list(&same)) }, part.len(), if part.is_empty() { String::new() } else { format!(" ({})", list(&part)) }, q)
             }
-            let txt = match &l.afh {
-                Some(m) => format!("{}/79", m.iter().filter(|x| **x).count()),
-                None => "no AFH".to_string(),
-            };
-            p.text(pos2(x1 + 4.0, y + 9.0), Align2::LEFT_CENTER, txt, FontId::monospace(10.0), DIM);
-            y += 26.0;
-        }
-        let _ = t;
+        };
+        card(2, "YOUR NETWORK", &mine_txt, GREEN);
     }
 
     // ---------- devices ----------
 
     fn devices(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
+        ui.painter().rect_filled(rect, 0.0, BG);
+        // --- toolbar: search + filter chips
+        let (tb, _) = ui.allocate_exact_size(vec2(rect.width(), 74.0), Sense::hover());
         let p = ui.painter().clone();
-        p.rect_filled(rect, 0.0, BG);
-        let mut order: Vec<usize> = (0..self.devs.len()).collect();
-        order.sort_by_key(|&i| (self.devs[i].kind as u8, !self.devs[i].connected as u8, std::cmp::Reverse(self.devs[i].dbm.map(|x| x as i32).unwrap_or(-200))));
+        let search = Rect::from_min_size(tb.min + vec2(18.0, 10.0), vec2(300.0, 28.0));
+        ui.put(search, egui::TextEdit::singleline(&mut self.q).hint_text("Search name, vendor, MAC…"));
+        let mut x = search.right() + 18.0;
+        let chip = |ui: &egui::Ui, x: &mut f32, y: f32, label: &str, on: bool, col: Color32| -> bool {
+            let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(12.5), Color32::WHITE);
+            let r = Rect::from_min_size(pos2(*x, y), vec2(g.size().x + 26.0, 28.0));
+            *x = r.right() + 8.0;
+            let resp = hit(ui, r, ui.scope_id().with(("chip", label)), Sense::click());
+            let pp = ui.painter();
+            pp.rect_filled(r, 14.0, if on { alpha(col, if resp.hovered() { 0.42 } else { 0.30 }) } else { alpha(Color32::WHITE, if resp.hovered() { 0.10 } else { 0.04 }) });
+            pp.rect_stroke(r, 14.0, Stroke::new(1.2, if on { alpha(col, 0.9) } else { alpha(Color32::WHITE, 0.18) }), StrokeKind::Inside);
+            pp.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.5), if on { Color32::WHITE } else { DIM });
+            resp.clicked()
+        };
+        let y1 = tb.top() + 10.0;
+        for (k, (lbl, col)) in [("Wi-Fi", AMBER), ("Bluetooth", BLUE), ("Network", GREEN)].into_iter().enumerate() {
+            if chip(ui, &mut x, y1, lbl, self.show[k], col) {
+                self.show[k] = !self.show[k];
+            }
+        }
+        x += 14.0;
+        for (k, lbl) in ["All", "Mine", "Others"].into_iter().enumerate() {
+            if chip(ui, &mut x, y1, lbl, self.scope == k as u8, CYAN) {
+                self.scope = k as u8;
+            }
+        }
+        x += 14.0;
+        if chip(ui, &mut x, y1, "Hide unnamed", self.hide_unnamed, MAGENTA) {
+            self.hide_unnamed = !self.hide_unnamed;
+        }
+        // --- filter + group
+        let q = self.q.to_lowercase();
+        let groups: [(&str, &str, Color32); 5] = [
+            ("YOURS", "Bluetooth devices", BLUE),
+            ("YOURS", "Network devices (LAN)", GREEN),
+            ("YOURS", "Your Wi-Fi", AMBER),
+            ("NEARBY · not yours", "Neighbouring Wi-Fi networks", AMBER),
+            ("NEARBY · not yours", "Unnamed access points", DIM),
+        ];
+        let mut items: Vec<Vec<usize>> = vec![vec![]; 5];
+        let mut total = 0;
+        for (i, d) in self.devs.iter().enumerate() {
+            let mine = self.is_mine(d);
+            let ok = self.show[d.kind as usize]
+                && match self.scope {
+                    1 => mine,
+                    2 => !mine,
+                    _ => true,
+                }
+                && !(self.hide_unnamed && !d.known)
+                && (q.is_empty() || d.name.to_lowercase().contains(&q) || d.vendor.to_lowercase().contains(&q) || d.id.to_lowercase().contains(&q) || d.details.iter().any(|(_, v)| v.to_lowercase().contains(&q)));
+            if !ok {
+                continue;
+            }
+            total += 1;
+            let g = match d.kind {
+                Kind::Bt => 0,
+                Kind::Lan => 1,
+                Kind::Wifi if mine => 2,
+                Kind::Wifi if d.known => 3,
+                _ => 4,
+            };
+            items[g].push(i);
+        }
+        for v in items.iter_mut() {
+            v.sort_by_key(|&i| (!self.devs[i].connected as u8, std::cmp::Reverse(self.devs[i].dbm.map(|x| x as i32).unwrap_or(-200)), self.devs[i].name.clone()));
+        }
+        p.text(pos2(tb.right() - 24.0, y1 + 14.0), Align2::RIGHT_CENTER, format!("Showing {} of {} devices", total, self.devs.len()), FontId::proportional(12.0), DIM);
+        // --- list
         let mut pick = None;
+        let mut toggle = None;
+        let collapsed = self.collapsed.clone();
+        let devs = &self.devs;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let w = ui.available_width() - 30.0;
-            ui.add_space(14.0);
-            for &i in &order {
-                let d = &self.devs[i];
-                let (r, resp) = ui.allocate_exact_size(vec2(w, 54.0), Sense::click());
+            let w = ui.available_width() - 34.0;
+            let mut last_section = "";
+            for (g, (section, title, col)) in groups.iter().enumerate() {
+                if items[g].is_empty() {
+                    continue;
+                }
+                if *section != last_section {
+                    last_section = section;
+                    ui.add_space(10.0);
+                    let (r, _) = ui.allocate_exact_size(vec2(w + 14.0, 24.0), Sense::hover());
+                    lcd(ui.painter(), pos2(r.left() + 18.0, r.center().y), Align2::LEFT_CENTER, section, 14.0, CYAN);
+                    ui.painter().line_segment([pos2(r.left() + 20.0 + section.len() as f32 * 10.0, r.center().y), pos2(r.right(), r.center().y)], Stroke::new(1.0, alpha(CYAN, 0.2)));
+                }
+                let open = !collapsed.contains(&g);
+                let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
                 let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                 let r = r.translate(vec2(14.0, 0.0));
-                let col = kind_col(d.kind);
-                let p = ui.painter();
-                panel(p, r, 12.0, if resp.hovered() { Color32::WHITE } else { col });
-                if d.known {
-                    orb(p, pos2(r.left() + 34.0, r.center().y), 15.0, col, 0.0);
-                    icon(p, d.icon, pos2(r.left() + 34.0, r.center().y), 7.5, shade(col, 0.12));
-                } else {
-                    dot(p, pos2(r.left() + 34.0, r.center().y), 6.0, col, 0.0);
+                let pp = ui.painter();
+                pp.rect_filled(r, 8.0, alpha(*col, if resp.hovered() { 0.16 } else { 0.08 }));
+                {
+                    let c0 = pos2(r.left() + 18.0, r.center().y);
+                    let pts = if open { vec![c0 + vec2(-5.0, -3.0), c0 + vec2(5.0, -3.0), c0 + vec2(0.0, 4.0)] } else { vec![c0 + vec2(-3.0, -5.0), c0 + vec2(-3.0, 5.0), c0 + vec2(4.0, 0.0)] };
+                    pp.add(egui::Shape::convex_polygon(pts, *col, Stroke::NONE));
                 }
-                p.text(pos2(r.left() + 66.0, r.center().y - 9.0), Align2::LEFT_CENTER, &d.name, FontId::proportional(15.0), Color32::WHITE);
-                let kindname = d.details.first().map(|x| x.1.clone()).unwrap_or_default();
-                p.text(pos2(r.left() + 66.0, r.center().y + 10.0), Align2::LEFT_CENTER, format!("{} · {}", kindname, d.vendor), FontId::proportional(12.0), DIM);
-                if let Some(dbm) = d.dbm {
-                    led_bar(p, Rect::from_min_size(pos2(r.right() - 190.0, r.center().y - 5.0), vec2(120.0, 10.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 12);
-                    p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(12.0), TEXT);
-                } else if d.connected {
-                    p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
-                }
-                ui.add_space(8.0);
+                pp.text(pos2(r.left() + 34.0, r.center().y), Align2::LEFT_CENTER, *title, FontId::proportional(13.5), Color32::WHITE);
+                pp.text(pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, items[g].len().to_string(), FontId::monospace(12.0), *col);
                 if resp.clicked() {
-                    pick = Some(d.id.clone());
+                    toggle = Some(g);
+                }
+                ui.add_space(6.0);
+                if !open {
+                    continue;
+                }
+                for &i in &items[g] {
+                    let d = &devs[i];
+                    let (r, resp) = ui.allocate_exact_size(vec2(w, 54.0), Sense::click());
+                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let r = r.translate(vec2(14.0, 0.0));
+                    let col = kind_col(d.kind);
+                    let p = ui.painter();
+                    panel(p, r, 12.0, if resp.hovered() { Color32::WHITE } else { col });
+                    if d.known {
+                        orb(p, pos2(r.left() + 34.0, r.center().y), 15.0, col, 0.0);
+                        icon(p, d.icon, pos2(r.left() + 34.0, r.center().y), 7.5, shade(col, 0.12));
+                    } else {
+                        dot(p, pos2(r.left() + 34.0, r.center().y), 6.0, col, 0.0);
+                    }
+                    p.text(pos2(r.left() + 66.0, r.center().y - 9.0), Align2::LEFT_CENTER, &d.name, FontId::proportional(15.0), Color32::WHITE);
+                    let kindname = d.details.first().map(|x| x.1.clone()).unwrap_or_default();
+                    p.text(pos2(r.left() + 66.0, r.center().y + 10.0), Align2::LEFT_CENTER, format!("{} · {}", kindname, d.vendor), FontId::proportional(12.0), DIM);
+                    if let Some(dbm) = d.dbm {
+                        led_bar(p, Rect::from_min_size(pos2(r.right() - 190.0, r.center().y - 5.0), vec2(120.0, 10.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 12);
+                        p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(12.0), TEXT);
+                    } else if d.connected {
+                        p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
+                    }
+                    ui.add_space(8.0);
+                    if resp.clicked() {
+                        pick = Some(d.id.clone());
+                    }
                 }
             }
+            if total == 0 {
+                ui.add_space(30.0);
+                ui.centered_and_justified(|ui| ui.label("No devices match these filters."));
+            }
         });
+        if let Some(g) = toggle {
+            if !self.collapsed.remove(&g) {
+                self.collapsed.insert(g);
+            }
+        }
         if let Some(id) = pick {
             self.reveal = Some(id.clone());
             self.sel = Some(id);
             self.screen = Screen::Radar;
         }
     }
+}
 
-    fn placeholder(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.max_rect();
-        let p = ui.painter().clone();
-        p.rect_filled(rect, 0.0, BG);
-        let r = Rect::from_center_size(rect.center(), vec2(520.0, 150.0));
-        panel(&p, r, 16.0, MAGENTA);
-        lcd(&p, r.center() - vec2(0.0, 24.0), Align2::CENTER_CENTER, "SPECTRUM · NEXT DROP", 20.0, MAGENTA);
-        p.text(r.center() + vec2(0.0, 18.0), Align2::CENTER_CENTER, "Full 2.4 GHz view and ranked interference suspects.\nThe Bluetooth channel map on the Radar screen is the preview.", FontId::proportional(14.0), DIM);
+struct Net {
+    name: String,
+    chan: u32,
+    f: f32, // centre MHz
+    dbm: f32,
+    aps: usize,
+    mine: bool,
+    hidden: bool,
+}
+impl Net {
+    fn strength(&self) -> f32 {
+        ((self.dbm + 95.0) / 55.0).clamp(0.05, 1.0)
+    }
+}
+
+/// Footprint of a 20 MHz Wi-Fi channel: 1 at the centre, 0 at ±11 MHz.
+fn hill(dx: f32) -> f32 {
+    if dx.abs() >= 11.0 {
+        0.0
+    } else {
+        (1.0 - (dx / 11.0).powi(2)).powf(0.7)
     }
 }
 
@@ -1253,7 +1586,7 @@ impl eframe::App for App {
         }
         egui::CentralPanel::no_frame().show(ui, |ui| match self.screen {
             Screen::Radar => self.radar(ui, t),
-            Screen::Spectrum => self.placeholder(ui),
+            Screen::Spectrum => self.spectrum(ui, t),
             Screen::Devices => self.devices(ui),
         });
     }
