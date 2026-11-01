@@ -4,11 +4,39 @@ mod fx;
 use data::{hash64, BtLink, Dev, Handle, Icon, Kind};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use fx::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 use std::time::Instant;
 
 const DMAX: f32 = 80.0;
+const GROUP_PX: f32 = 38.0; // nodes closer than this on screen merge into one group icon
+
+struct N {
+    i: usize,
+    pos: Pos2,
+    ang: f32,
+    dist: f32,
+    dim: bool,
+}
+
+struct G {
+    key: String,
+    members: Vec<usize>,
+    center: Pos2,
+    open: bool,
+    pinned: bool,
+    fan_r: f32,
+}
+
+fn pill(p: &egui::Painter, anchor: Pos2, title: &str, sub: &str, col: Color32) {
+    let g1 = p.layout_no_wrap(title.to_string(), FontId::proportional(14.0), Color32::WHITE);
+    let g2 = p.layout_no_wrap(sub.to_string(), FontId::proportional(11.5), DIM);
+    let w = g1.size().x.max(g2.size().x) + 28.0;
+    let r = Rect::from_min_size(pos2(anchor.x - w / 2.0, anchor.y - 46.0), vec2(w, 46.0));
+    panel(p, r, 10.0, col);
+    p.galley(pos2(r.left() + 14.0, r.top() + 7.0), g1, Color32::WHITE);
+    p.galley(pos2(r.left() + 14.0, r.top() + 26.0), g2, DIM);
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
@@ -31,6 +59,12 @@ struct App {
     over: HashMap<String, (f32, f32)>, // id -> (angle rad, metres)
     host: String,
     t0: Instant,
+    zoom: f32,
+    pan: Vec2,
+    open: HashSet<String>,       // group keys pinned open
+    prev_key: Option<String>,    // group currently hovered for peeking
+    prev_since: f32,
+    no_preview: Option<String>,  // just collapsed: do not re-peek until the pointer leaves
 }
 
 fn cfg_path() -> Option<std::path::PathBuf> {
@@ -96,6 +130,12 @@ impl App {
             over,
             host: if host.is_empty() { "this PC".into() } else { host },
             t0: Instant::now(),
+            zoom: std::env::var("AIRSCOPE_ZOOM").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0), // debug aid
+            pan: Vec2::ZERO,
+            open: HashSet::new(),
+            prev_key: None,
+            prev_since: 0.0,
+            no_preview: None,
         }
     }
 
@@ -215,18 +255,42 @@ impl App {
         let rect = ui.max_rect();
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 0.0, BG);
-        let c = rect.center();
-        let big = (rect.width().min(rect.height()) * 0.5 - 28.0).max(120.0);
 
-        // vignette: lighter in the middle
+        // --- view: zoom + pan. The background is registered first so nodes win the hit test.
+        let base = (rect.width().min(rect.height()) * 0.5 - 28.0).max(120.0);
+        let bg = ui.interact(rect, ui.scope_id().with("radar_bg"), Sense::click_and_drag());
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        if bg.dragged() {
+            self.pan += bg.drag_delta();
+        }
+        if bg.double_clicked() {
+            self.zoom = 1.0;
+            self.pan = Vec2::ZERO;
+        }
+        if let Some(ptr) = pointer {
+            if rect.contains(ptr) {
+                let sc = ui.input(|i| i.smooth_scroll_delta.y);
+                if sc != 0.0 {
+                    let z0 = self.zoom;
+                    let z1 = (z0 * (1.0 + sc * 0.0015)).clamp(0.4, 14.0);
+                    let c0 = rect.center() + self.pan;
+                    self.pan += (ptr - c0) * (1.0 - z1 / z0); // keep the point under the cursor fixed
+                    self.zoom = z1;
+                }
+            }
+        }
+        let c = rect.center() + self.pan;
+        let big = base * self.zoom;
+        let ro = rmap(DMAX, big);
+
+        // --- backdrop
         for i in 0..18 {
             let k = i as f32 / 18.0;
             p.circle_filled(c, big * 1.2 * (1.0 - k), mix(BG, Color32::from_rgb(11, 28, 56), k * k));
         }
-        // spokes + rings
         for i in 0..12 {
             let a = i as f32 / 12.0 * TAU;
-            p.line_segment([c, c + vec2(a.cos(), a.sin()) * rmap(DMAX, big)], Stroke::new(1.0, alpha(CYAN, 0.05)));
+            p.line_segment([c, c + vec2(a.cos(), a.sin()) * ro], Stroke::new(1.0, alpha(CYAN, 0.05)));
         }
         for (d, lbl) in [(1.0, "1 m"), (3.0, "3 m"), (10.0, "10 m"), (30.0, "30 m")] {
             let r = rmap(d, big);
@@ -234,9 +298,14 @@ impl App {
             p.circle_stroke(c, r, Stroke::new(1.0, alpha(CYAN, 0.2)));
             p.text(pos2(c.x + r * 0.7071 + 4.0, c.y - r * 0.7071 - 2.0), Align2::LEFT_BOTTOM, lbl, FontId::monospace(10.0), alpha(CYAN, 0.6));
         }
-        let ro = rmap(DMAX, big);
         p.circle_stroke(c, ro, Stroke::new(1.5, alpha(CYAN, 0.3)));
-        p.text(pos2(c.x, c.y - ro - 12.0), Align2::CENTER_CENTER, "OUTER BAND: network devices (no signal reading) and paired-but-not-connected Bluetooth", FontId::monospace(10.0), alpha(CYAN, 0.45));
+        p.text(
+            pos2(rect.center().x, rect.top() + 14.0),
+            Align2::CENTER_CENTER,
+            "OUTER BAND: network devices (no signal reading) and paired-but-not-connected Bluetooth",
+            FontId::monospace(10.0),
+            alpha(CYAN, 0.45),
+        );
 
         // sweep
         let sw = (t * 0.9) % TAU;
@@ -255,14 +324,7 @@ impl App {
         p.add(egui::Shape::mesh(m));
         p.line_segment([c, c + vec2(sw.cos(), sw.sin()) * ro], Stroke::new(1.5, alpha(CYAN, 0.55)));
 
-        // placement
-        struct N {
-            i: usize,
-            pos: Pos2,
-            ang: f32,
-            dist: f32,
-            dim: bool,
-        }
+        // --- placement (screen space)
         let mut nodes: Vec<N> = self
             .devs
             .iter()
@@ -277,60 +339,163 @@ impl App {
             })
             .collect();
         nodes.sort_by(|a, b| b.dist.partial_cmp(&a.dist).unwrap());
+        let cnt = nodes.len();
 
-        // decide which labels fit without overlapping (connected and strongest first)
+        // --- grouping: nodes closer than GROUP_PX on screen merge (union-find)
+        let mut parent: Vec<usize> = (0..cnt).collect();
+        fn find(p: &mut [usize], mut x: usize) -> usize {
+            while p[x] != x {
+                p[x] = p[p[x]];
+                x = p[x];
+            }
+            x
+        }
+        for i in 0..cnt {
+            for j in (i + 1)..cnt {
+                if (nodes[i].pos - nodes[j].pos).length() < GROUP_PX {
+                    let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                    if a != b {
+                        parent[a] = b;
+                    }
+                }
+            }
+        }
+        let mut by_root: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in 0..cnt {
+            let r = find(&mut parent, i);
+            by_root.entry(r).or_default().push(i);
+        }
+        let mut groups: Vec<G> = vec![];
+        let mut eff: Vec<Pos2> = nodes.iter().map(|n| n.pos).collect();
+        let mut hidden = vec![false; cnt];
+        let mut in_open = vec![false; cnt];
+        for (_, mem) in by_root.into_iter().filter(|(_, m)| m.len() > 1) {
+            let center = pos2(mem.iter().map(|&i| nodes[i].pos.x).sum::<f32>() / mem.len() as f32, mem.iter().map(|&i| nodes[i].pos.y).sum::<f32>() / mem.len() as f32);
+            let key = mem.iter().map(|&i| self.devs[nodes[i].i].id.clone()).min().unwrap();
+            let sel_inside = self.sel.as_deref().map_or(false, |s| mem.iter().any(|&i| self.devs[nodes[i].i].id == s));
+            if sel_inside {
+                self.open.insert(key.clone()); // a selected device must be visible
+            }
+            if std::env::var_os("AIRSCOPE_PIN_ALL").is_some() {
+                self.open.insert(key.clone()); // debug aid: pin every group open
+            }
+            let pinned = self.open.contains(&key);
+            let previewing = self.prev_key.as_deref() == Some(key.as_str()) && t - self.prev_since > 0.45;
+            let open = pinned || previewing;
+            let fan_r = (mem.len() as f32 * 46.0 / TAU).max(58.0);
+            let mut ordered = mem.clone();
+            ordered.sort_by(|&a, &b| {
+                let (va, vb) = (nodes[a].pos - center, nodes[b].pos - center);
+                va.y.atan2(va.x).partial_cmp(&vb.y.atan2(vb.x)).unwrap()
+            });
+            if open {
+                let v0 = nodes[ordered[0]].pos - center;
+                let a0 = if v0.length() > 0.5 { v0.y.atan2(v0.x) } else { -1.2 };
+                for (k, &i) in ordered.iter().enumerate() {
+                    let a = a0 + k as f32 * TAU / ordered.len() as f32;
+                    eff[i] = center + vec2(a.cos(), a.sin()) * fan_r;
+                    in_open[i] = true;
+                }
+            } else {
+                for &i in &mem {
+                    eff[i] = center;
+                    hidden[i] = true;
+                }
+            }
+            groups.push(G { key, members: mem, center, open, pinned, fan_r });
+        }
+        groups.sort_by(|a, b| a.key.cmp(&b.key));
+
+        // --- hover-to-peek bookkeeping (a peeked group stays open while the pointer is inside its fan)
+        let mut new_prev: Option<String> = None;
+        let mut near_any_icon = false;
+        if let Some(ptr) = pointer {
+            for g in &groups {
+                let d = (ptr - g.center).length();
+                let near_icon = d < 24.0;
+                near_any_icon |= near_icon;
+                let in_fan = g.open && !g.pinned && self.prev_key.as_deref() == Some(g.key.as_str()) && d < g.fan_r + 34.0;
+                if (near_icon && self.no_preview.as_deref() != Some(g.key.as_str())) || in_fan {
+                    new_prev = Some(g.key.clone());
+                }
+            }
+        }
+        if !near_any_icon {
+            self.no_preview = None;
+        }
+        if new_prev != self.prev_key {
+            self.prev_since = t;
+            self.prev_key = new_prev;
+        }
+
+        // --- which labels fit (connected and strongest first)
         let mut allow: std::collections::HashSet<usize> = Default::default();
         {
-            let mut placed: Vec<Rect> = nodes.iter().map(|n| Rect::from_center_size(n.pos, Vec2::splat(30.0))).collect();
+            let mut placed: Vec<Rect> = (0..cnt).filter(|&i| !hidden[i]).map(|i| Rect::from_center_size(eff[i], Vec2::splat(30.0))).collect();
+            placed.extend(groups.iter().filter(|g| !g.open).map(|g| Rect::from_center_size(g.center, Vec2::splat(44.0))));
             placed.push(Rect::from_center_size(c, Vec2::splat(120.0)));
-            let mut order: Vec<&N> = nodes.iter().filter(|n| self.devs[n.i].known && !n.dim).collect();
-            order.sort_by(|a, b| {
-                let (da, db) = (&self.devs[a.i], &self.devs[b.i]);
+            let mut order: Vec<usize> = (0..cnt).filter(|&i| !hidden[i] && self.devs[nodes[i].i].known && !nodes[i].dim).collect();
+            order.sort_by(|&a, &b| {
+                let (da, db) = (&self.devs[nodes[a].i], &self.devs[nodes[b].i]);
                 db.connected.cmp(&da.connected).then(db.dbm.unwrap_or(-120.0).partial_cmp(&da.dbm.unwrap_or(-120.0)).unwrap())
             });
-            for n in order {
-                let g = p.layout_no_wrap(self.devs[n.i].name.clone(), FontId::proportional(11.5), TEXT);
-                let r = Rect::from_center_size(n.pos + vec2(0.0, 30.0), g.size() + vec2(8.0, 4.0));
+            for i in order {
+                let g = p.layout_no_wrap(self.devs[nodes[i].i].name.clone(), FontId::proportional(11.5), TEXT);
+                let r = Rect::from_center_size(eff[i] + vec2(0.0, 30.0), g.size() + vec2(8.0, 4.0));
                 if placed.iter().all(|q| !q.intersects(r)) {
                     placed.push(r);
-                    allow.insert(n.i);
+                    allow.insert(i);
                 }
             }
         }
 
-        // links from PC to connected Bluetooth devices, with travelling pulses
-        for n in &nodes {
+        // --- links from the PC to connected Bluetooth devices, with travelling pulses
+        for (ni, n) in nodes.iter().enumerate() {
             let d = &self.devs[n.i];
             if d.kind == Kind::Bt && d.connected {
                 let col = kind_col(d.kind);
-                p.line_segment([c, n.pos], Stroke::new(5.0, add(col, 0.06)));
-                p.line_segment([c, n.pos], Stroke::new(1.5, alpha(col, 0.55)));
+                p.line_segment([c, eff[ni]], Stroke::new(5.0, add(col, 0.06)));
+                p.line_segment([c, eff[ni]], Stroke::new(1.5, alpha(col, 0.55)));
                 for k in 0..3 {
                     let u = (t * 0.6 + k as f32 / 3.0).fract();
-                    let q = c + (n.pos - c) * u;
+                    let q = c + (eff[ni] - c) * u;
                     glow(&p, q, 2.5, col, 0.8);
                     p.circle_filled(q, 2.0, Color32::WHITE);
                 }
             }
         }
+        // spokes of open groups
+        for g in groups.iter().filter(|g| g.open) {
+            p.circle_stroke(g.center, g.fan_r, Stroke::new(1.0, alpha(CYAN, 0.12)));
+            for &i in &g.members {
+                p.line_segment([g.center, eff[i]], Stroke::new(4.0, add(CYAN, 0.05)));
+                p.line_segment([g.center, eff[i]], Stroke::new(1.2, alpha(CYAN, 0.5)));
+            }
+        }
 
-        // nodes
+        // --- nodes
         let mut clicked: Option<String> = None;
         let mut new_over: Vec<(String, (f32, f32))> = vec![];
         let mut drag_end = false;
         let mut hover: Option<usize> = None;
-        for n in &nodes {
+        let view = rect.expand(70.0);
+        for (ni, n) in nodes.iter().enumerate() {
+            if hidden[ni] || !view.contains(eff[ni]) {
+                continue;
+            }
+            let pos = eff[ni];
             let d = &self.devs[n.i];
             let col = if n.dim { shade(kind_col(d.kind), 0.5) } else { kind_col(d.kind) };
             let diff = (sw - n.ang).rem_euclid(TAU);
             let hot = if diff < 0.9 { 1.0 - diff / 0.9 } else { 0.0 };
             let sel = self.sel.as_deref() == Some(d.id.as_str());
             let rad = if d.known { 17.0 } else { 4.0 + ((d.dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0 };
-            let resp = ui.interact(Rect::from_center_size(n.pos, Vec2::splat(rad * 2.0 + 12.0)), ui.scope_id().with(("node", &d.id)), Sense::click_and_drag());
+            let sense = if in_open[ni] { Sense::click() } else { Sense::click_and_drag() };
+            let resp = ui.interact(Rect::from_center_size(pos, Vec2::splat(rad * 2.0 + 12.0)), ui.scope_id().with(("node", &d.id)), sense);
             if resp.hovered() {
-                hover = Some(n.i);
+                hover = Some(ni);
             }
-            if resp.dragged() {
+            if resp.dragged() && !in_open[ni] {
                 if let Some(pp) = resp.interact_pointer_pos() {
                     let v = pp - c;
                     new_over.push((d.id.clone(), (v.y.atan2(v.x), dmap(v.length(), big).clamp(0.6, DMAX))));
@@ -345,28 +510,70 @@ impl App {
             let boost = hot * 0.8 + if sel || resp.hovered() { 0.9 } else { 0.0 };
             if d.connected {
                 let pulse = (t * 2.6).sin() * 0.5 + 0.5;
-                p.circle_stroke(n.pos, rad + 5.0 + pulse * 5.0, Stroke::new(1.5, add(col, 0.35 * (1.0 - pulse))));
+                p.circle_stroke(pos, rad + 5.0 + pulse * 5.0, Stroke::new(1.5, add(col, 0.35 * (1.0 - pulse))));
             }
             if d.known {
-                orb(&p, n.pos, rad, col, boost);
-                icon(&p, d.icon, n.pos, rad * 0.5, shade(col, 0.12));
+                orb(&p, pos, rad, col, boost);
+                icon(&p, d.icon, pos, rad * 0.5, shade(col, 0.12));
             } else {
-                dot(&p, n.pos, rad, col, boost);
+                dot(&p, pos, rad, col, boost);
             }
             if sel {
                 for k in 0..4 {
                     let a = t * 1.4 + k as f32 * TAU / 4.0;
-                    arc(&p, n.pos, rad + 10.0, a, a + 0.9, Stroke::new(2.0, Color32::WHITE));
+                    arc(&p, pos, rad + 10.0, a, a + 0.9, Stroke::new(2.0, Color32::WHITE));
                 }
             }
-            if (d.known && !n.dim && allow.contains(&n.i)) || sel || resp.hovered() {
-                let tp = n.pos + vec2(0.0, rad + 13.0);
+            if (d.known && !n.dim && allow.contains(&ni)) || sel || resp.hovered() {
+                let tp = pos + vec2(0.0, rad + 13.0);
                 p.text(tp + vec2(1.0, 1.0), Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), Color32::from_black_alpha(200));
                 p.text(tp, Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), alpha(TEXT, 0.9));
             }
         }
 
-        // this PC in the middle
+        // --- group icons (collapsed) and collapse buttons (open)
+        let mut toggle: Vec<(String, bool)> = vec![]; // (key, pin?)
+        let mut group_hover: Option<usize> = None;
+        for (gi, g) in groups.iter().enumerate() {
+            if !view.contains(g.center) {
+                continue;
+            }
+            let kinds: Vec<Kind> = g.members.iter().map(|&i| self.devs[nodes[i].i].kind).collect();
+            let same = kinds.iter().all(|k| *k == kinds[0]);
+            let col = if same { kind_col(kinds[0]) } else { Color32::from_rgb(190, 212, 240) };
+            if g.open {
+                let resp = ui.interact(Rect::from_center_size(g.center, Vec2::splat(40.0)), ui.scope_id().with(("gc", &g.key)), Sense::click());
+                let hot = if resp.hovered() { 0.9 } else { 0.2 };
+                orb(&p, g.center, 11.0, col, hot);
+                p.line_segment([g.center - vec2(5.0, 0.0), g.center + vec2(5.0, 0.0)], Stroke::new(2.2, shade(col, 0.15)));
+                if resp.hovered() {
+                    group_hover = Some(gi);
+                }
+                if resp.clicked() {
+                    toggle.push((g.key.clone(), !g.pinned)); // pinned -> collapse, peeked -> pin
+                }
+            } else {
+                let resp = ui.interact(Rect::from_center_size(g.center, Vec2::splat(46.0)), ui.scope_id().with(("gi", &g.key)), Sense::click());
+                let hovered = resp.hovered();
+                orb(&p, g.center, 19.0, col, if hovered { 0.9 } else { 0.25 });
+                // small dots on a ring: one per member, coloured by kind
+                let nn = g.members.len().min(10);
+                for k in 0..nn {
+                    let a = t * 0.35 + k as f32 * TAU / nn as f32;
+                    let kc = kind_col(self.devs[nodes[g.members[k]].i].kind);
+                    p.circle_filled(g.center + vec2(a.cos(), a.sin()) * 27.0, 2.6, kc);
+                }
+                p.text(g.center, Align2::CENTER_CENTER, g.members.len().to_string(), FontId::monospace(15.0), Color32::from_rgb(8, 16, 30));
+                if hovered {
+                    group_hover = Some(gi);
+                }
+                if resp.clicked() {
+                    toggle.push((g.key.clone(), true));
+                }
+            }
+        }
+
+        // --- this PC
         let pc_r = 25.0;
         let pulse = (t * 1.3).sin() * 0.5 + 0.5;
         p.circle_stroke(c, pc_r + 8.0 + pulse * 8.0, Stroke::new(1.5, add(CYAN, 0.3 * (1.0 - pulse))));
@@ -374,43 +581,65 @@ impl App {
         icon(&p, Icon::Computer, c, pc_r * 0.46, Color32::from_rgb(8, 24, 40));
         lcd(&p, c + vec2(0.0, pc_r + 16.0), Align2::CENTER_CENTER, &self.host.to_uppercase(), 12.0, CYAN);
 
-        // hover pill
-        if let Some(i) = hover {
-            let d = &self.devs[i];
-            if let Some(n) = nodes.iter().find(|n| n.i == i) {
-                let sub = match d.dbm {
-                    Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
-                    None => d.vendor.clone(),
-                };
-                let g1 = p.layout_no_wrap(d.name.clone(), FontId::proportional(14.0), Color32::WHITE);
-                let g2 = p.layout_no_wrap(sub, FontId::proportional(11.5), DIM);
-                let w = g1.size().x.max(g2.size().x) + 28.0;
-                let r = Rect::from_min_size(pos2(n.pos.x - w / 2.0, n.pos.y - 70.0), vec2(w, 46.0));
-                panel(&p, r, 10.0, kind_col(d.kind));
-                p.galley(pos2(r.left() + 14.0, r.top() + 7.0), g1, Color32::WHITE);
-                p.galley(pos2(r.left() + 14.0, r.top() + 26.0), g2, DIM);
-            }
+        // --- hover pills
+        if let Some(ni) = hover {
+            let d = &self.devs[nodes[ni].i];
+            let sub = match d.dbm {
+                Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
+                None => d.vendor.clone(),
+            };
+            pill(&p, eff[ni] + vec2(0.0, -24.0), &d.name, &sub, kind_col(d.kind));
+        } else if let Some(gi) = group_hover {
+            let g = &groups[gi];
+            let names: Vec<String> = g.members.iter().take(4).map(|&i| self.devs[nodes[i].i].name.clone()).collect();
+            let more = if g.members.len() > 4 { format!(" +{}", g.members.len() - 4) } else { String::new() };
+            let head = format!("{} devices close together", g.members.len());
+            let sub = if g.open { "click the centre dot to collapse".to_string() } else { format!("{}{} · click to pin open", names.join(", "), more) };
+            pill(&p, g.center + vec2(0.0, -34.0), &head, &sub, CYAN);
         }
 
+        // --- apply events
         for (id, v) in new_over {
             self.over.insert(id, v);
         }
         if drag_end {
             self.save_over();
         }
+        for (key, pin) in toggle {
+            if pin {
+                self.open.insert(key);
+            } else {
+                self.open.remove(&key);
+                self.no_preview = Some(key);
+                self.prev_key = None;
+            }
+        }
         if let Some(id) = clicked {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
         }
-        // popup
         if let Some(id) = self.sel.clone() {
-            if let Some(n) = nodes.iter().find(|n| self.devs[n.i].id == id) {
-                let d = self.devs[n.i].clone();
+            if let Some(ni) = nodes.iter().enumerate().find(|(_, n)| self.devs[n.i].id == id).map(|(ni, _)| ni) {
+                let d = self.devs[nodes[ni].i].clone();
                 let mut close = false;
-                popup(ui.ctx(), &d, n.pos, rect, &mut close, kind_col(d.kind));
+                popup(ui.ctx(), &d, eff[ni], rect, &mut close, kind_col(d.kind));
                 if close {
                     self.sel = None;
                 }
             }
+        }
+
+        // --- zoom HUD
+        let hud = Rect::from_min_size(pos2(rect.right() - 318.0, rect.bottom() - 48.0), vec2(300.0, 34.0));
+        panel(&p, hud, 17.0, CYAN);
+        lcd(&p, pos2(hud.left() + 18.0, hud.center().y), Align2::LEFT_CENTER, &format!("ZOOM {:.1}x", self.zoom), 12.0, CYAN);
+        p.text(pos2(hud.left() + 116.0, hud.center().y), Align2::LEFT_CENTER, "scroll · drag · double-click", FontId::proportional(11.0), DIM);
+        let rb = Rect::from_center_size(pos2(hud.right() - 28.0, hud.center().y), vec2(42.0, 22.0));
+        let rr = ui.interact(rb, ui.scope_id().with("reset_view"), Sense::click());
+        p.rect_filled(rb, 9.0, alpha(CYAN, if rr.hovered() { 0.35 } else { 0.15 }));
+        p.text(rb.center(), Align2::CENTER_CENTER, "1:1", FontId::monospace(11.0), Color32::WHITE);
+        if rr.clicked() {
+            self.zoom = 1.0;
+            self.pan = Vec2::ZERO;
         }
     }
 
