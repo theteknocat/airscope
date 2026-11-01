@@ -58,13 +58,28 @@ fn hit(ui: &egui::Ui, rect: Rect, id: egui::Id, sense: Sense) -> egui::Response 
 
 /// Soft-edged, semi-transparent dark disc that obscures what is behind an open group.
 fn soft_halo(p: &egui::Painter, c: Pos2, r: f32, amt: f32) {
-    let feather = 38.0;
-    const N: usize = 16;
-    for i in 0..N {
-        let t = i as f32 / (N - 1) as f32;
-        p.circle_filled(c, r + feather * (1.0 - t * 1.3), Color32::from_rgba_unmultiplied(5, 10, 22, (0.24 * amt * 255.0) as u8));
+    // translucent dark disc with a short, subtle shadow-like fade just outside the edge
+    let feather = 14.0;
+    const SEGS: usize = 64;
+    let k = 0.68 * amt;
+    let inner = Color32::from_rgba_premultiplied((5.0 * k) as u8, (10.0 * k) as u8, (22.0 * k) as u8, (255.0 * k) as u8);
+    let mut m = egui::Mesh::default();
+    m.colored_vertex(c, inner);
+    for (rr, col) in [(r, inner), (r + feather, Color32::TRANSPARENT)] {
+        for i in 0..SEGS {
+            let a = i as f32 / SEGS as f32 * TAU;
+            m.colored_vertex(c + vec2(a.cos(), a.sin()) * rr, col);
+        }
     }
-    p.circle_stroke(c, r, Stroke::new(1.0, alpha(CYAN, 0.10 * amt)));
+    let n = SEGS as u32;
+    for i in 0..n {
+        let (a0, a1) = (1 + i, 1 + (i + 1) % n);
+        m.add_triangle(0, a0, a1);
+        m.add_triangle(a0, a0 + n, a1);
+        m.add_triangle(a1, a0 + n, a1 + n);
+    }
+    p.add(egui::Shape::mesh(m));
+    p.circle_stroke(c, r, Stroke::new(1.0, alpha(CYAN, 0.22 * amt)));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -817,7 +832,7 @@ impl App {
             }
             let d = &self.latched[n.i];
             self.last_pos.insert(d.id.clone(), disp[ni]);
-            let interactive = !hidden[ni] && !masked[ni];
+            let interactive = !hidden[ni] && (!masked[ni] || Some(ni) == drag_ni);
             let sel = sel_id.as_deref() == Some(d.id.as_str());
             let sc = fscale[ni] * self.appear.get(&d.id).copied().unwrap_or(1.0);
             node_widget(ui, &p, d, n, ni, disp[ni], t, sw, sel, allow.contains(&ni), interactive, true, sc, c, big, &mut ev);
@@ -922,7 +937,7 @@ impl App {
                 let d = &self.latched[nodes[i].i];
                 let sel = sel_id.as_deref() == Some(d.id.as_str());
                 self.last_pos.insert(d.id.clone(), disp[i]);
-                node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, allow.contains(&i), true, false, 1.0, c, big, &mut ev);
+                node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, allow.contains(&i), true, true, 1.0, c, big, &mut ev);
             }
             let kinds: Vec<Kind> = g.members.iter().map(|&i| self.latched[nodes[i].i].kind).collect();
             let col = if kinds.iter().all(|x| *x == kinds[0]) { kind_col(kinds[0]) } else { Color32::from_rgb(190, 212, 240) };

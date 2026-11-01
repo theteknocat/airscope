@@ -33,11 +33,32 @@ pub fn shade(c: Color32, k: f32) -> Color32 {
 
 /// Soft halo made of stacked additive circles.
 pub fn glow(p: &Painter, c: Pos2, r: f32, col: Color32, k: f32) {
-    const N: usize = 9;
-    for i in 0..N {
-        let t = i as f32 / N as f32;
-        p.circle_filled(c, r * (1.0 + t * 2.4), add(col, k * 0.11 * (1.0 - t) * (1.0 - t)));
+    // additive radial mesh: smooth quadratic falloff from r out to 3.4r
+    const RINGS: usize = 7;
+    const SEGS: usize = 40;
+    let mut m = Mesh::default();
+    let v = |u: f32| add(col, k * 0.33 * (1.0 - u) * (1.0 - u));
+    m.colored_vertex(c, v(0.0));
+    for j in 0..RINGS {
+        let u = j as f32 / (RINGS - 1) as f32;
+        let rr = r * (1.0 + u * 2.4);
+        for i in 0..SEGS {
+            let a = i as f32 / SEGS as f32 * TAU;
+            m.colored_vertex(c + vec2(a.cos(), a.sin()) * rr, v(u));
+        }
     }
+    for i in 0..SEGS {
+        m.add_triangle(0, 1 + i as u32, 1 + ((i + 1) % SEGS) as u32);
+    }
+    for j in 0..RINGS - 1 {
+        for i in 0..SEGS {
+            let (a0, a1) = ((1 + j * SEGS + i) as u32, (1 + j * SEGS + (i + 1) % SEGS) as u32);
+            let (b0, b1) = (a0 + SEGS as u32, a1 + SEGS as u32);
+            m.add_triangle(a0, b0, a1);
+            m.add_triangle(a1, b0, b1);
+        }
+    }
+    p.add(Shape::mesh(m));
 }
 
 pub fn shadow(p: &Painter, rect: Rect, rad: f32, off: Vec2, spread: f32, k: f32) {
