@@ -140,6 +140,7 @@ struct App {
     halo: HashMap<String, f32>,    // 0..1 fade of each group's obscuring circle
     gscale: HashMap<String, f32>,  // 0..1 pop-in of each group icon
     reveal: Option<String>,        // device picked in the list: open its group once
+    reset_view: bool,              // easing back to the default zoom/pan
 }
 
 fn cfg_path() -> Option<std::path::PathBuf> {
@@ -212,6 +213,7 @@ impl App {
             halo: HashMap::new(),
             gscale: HashMap::new(),
             reveal: None,
+            reset_view: false,
         }
     }
 
@@ -336,17 +338,31 @@ impl App {
         let base = (rect.width().min(rect.height()) * 0.5 - 28.0).max(120.0);
         let bg = ui.interact(rect, ui.scope_id().with("radar_bg"), Sense::click_and_drag());
         let pointer = ui.input(|i| i.pointer.hover_pos());
+        let dt = ui.input(|i| i.stable_dt).min(0.05);
+        let k = 1.0 - (-dt * 18.0).exp(); // ~150 ms ease for node transitions
         if bg.dragged() {
             self.pan += bg.drag_delta();
+            self.reset_view = false; // taking over cancels a running reset
         }
         if bg.double_clicked() {
-            self.zoom = 1.0;
-            self.pan = Vec2::ZERO;
+            self.reset_view = true;
+        }
+        if self.reset_view {
+            // ease zoom in log space (feels even) and pan linearly, ~400 ms
+            let kv = 1.0 - (-dt * 9.0).exp();
+            self.zoom = (self.zoom.ln() * (1.0 - kv)).exp();
+            self.pan *= 1.0 - kv;
+            if (self.zoom - 1.0).abs() < 0.003 && self.pan.length() < 0.6 {
+                self.zoom = 1.0;
+                self.pan = Vec2::ZERO;
+                self.reset_view = false;
+            }
         }
         if let Some(ptr) = pointer {
             if rect.contains(ptr) {
                 let sc = ui.input(|i| i.smooth_scroll_delta.y);
                 if sc != 0.0 {
+                    self.reset_view = false;
                     let z0 = self.zoom;
                     let z1 = (z0 * (1.0 + sc * 0.0015)).clamp(0.4, 14.0);
                     let c0 = rect.center() + self.pan;
@@ -358,8 +374,6 @@ impl App {
         let c = rect.center() + self.pan;
         let big = base * self.zoom;
         let ro = rmap(DMAX, big);
-        let dt = ui.input(|i| i.stable_dt).min(0.05);
-        let k = 1.0 - (-dt * 18.0).exp(); // ~150 ms ease for all transitions
 
         // --- backdrop
         for i in 0..18 {
@@ -499,6 +513,23 @@ impl App {
         }
         self.halo.retain(|key, _| groups.iter().any(|g| &g.key == key));
 
+        // closing groups: members glide back to the centre (drawn on top, inside the fading circle),
+        // and the group icon only appears once they have all arrived
+        let mut group_of: Vec<Option<usize>> = vec![None; cnt];
+        for (gi, g) in groups.iter().enumerate() {
+            for &i in &g.members {
+                group_of[i] = Some(gi);
+            }
+        }
+        let arrived: Vec<bool> = groups.iter().map(|g| !g.open && g.members.iter().all(|&i| settled[i])).collect();
+        let vis1: Vec<bool> = (0..cnt).map(|i| !in_open[i] && group_of[i].map_or(true, |gi| !arrived[gi])).collect();
+        let closing: Vec<bool> = groups.iter().enumerate().map(|(gi, g)| !g.open && !arrived[gi] && self.halo.get(&g.key).copied().unwrap_or(0.0) >= 0.01).collect();
+        for (gi, g) in groups.iter().enumerate() {
+            if !arrived[gi] {
+                self.gscale.insert(g.key.clone(), 0.0); // icon pops in from nothing after arrival
+            }
+        }
+
         // anything sitting under an open group's circle is obscured and not clickable
         let masked: Vec<bool> = (0..cnt)
             .map(|i| !in_open[i] && groups.iter().filter(|g| g.open).any(|g| (disp[i] - g.center).length() < g.halo_r))
@@ -547,7 +578,7 @@ impl App {
 
         // --- layer 1: everything that is not part of an open group
         for (ni, n) in nodes.iter().enumerate() {
-            if in_open[ni] || settled[ni] || !view.contains(disp[ni]) {
+            if !vis1[ni] || group_of[ni].map_or(false, |gi| closing[gi]) || !view.contains(disp[ni]) {
                 continue;
             }
             let d = &self.devs[n.i];
@@ -558,7 +589,7 @@ impl App {
         let mut toggle: Vec<(String, bool)> = vec![]; // (key, open?)
         let mut group_hover: Option<usize> = None;
         for (gi, g) in groups.iter().enumerate() {
-            if g.open || !view.contains(g.center) {
+            if g.open || !arrived[gi] || !view.contains(g.center) {
                 continue;
             }
             let kinds: Vec<Kind> = g.members.iter().map(|&i| self.devs[nodes[i].i].kind).collect();
@@ -597,14 +628,25 @@ impl App {
         lcd(&p, c + vec2(0.0, pc_r + 16.0), Align2::CENTER_CENTER, &self.host.to_uppercase(), 12.0, CYAN);
 
         // --- layer 2 (on top of everything): open groups, each inside a soft, obscuring circle
-        for g in &groups {
+        for (gi, g) in groups.iter().enumerate() {
             let amt = self.halo.get(&g.key).copied().unwrap_or(0.0);
             if amt < 0.01 || !view.expand(g.halo_r).contains(g.center) {
                 continue;
             }
             soft_halo(&p, g.center, g.halo_r, amt);
             if !g.open {
-                continue; // closing: members are gliding back, the circle is fading
+                if closing[gi] {
+                    // reverse of the fan-out: members glide back to the centre, circle fading
+                    for &i in &g.members {
+                        p.line_segment([g.center, disp[i]], Stroke::new(1.2, alpha(CYAN, 0.5 * amt)));
+                    }
+                    for &i in &g.members {
+                        let d = &self.devs[nodes[i].i];
+                        let sel = sel_id.as_deref() == Some(d.id.as_str());
+                        node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, false, false, false, c, big, &mut ev);
+                    }
+                }
+                continue;
             }
             for &i in &g.members {
                 p.line_segment([g.center, disp[i]], Stroke::new(4.0, add(CYAN, 0.05)));
@@ -696,8 +738,7 @@ impl App {
         p.rect_filled(rb, 9.0, alpha(CYAN, if rr.hovered() { 0.35 } else { 0.15 }));
         p.text(rb.center(), Align2::CENTER_CENTER, "1:1", FontId::monospace(11.0), Color32::WHITE);
         if rr.clicked() {
-            self.zoom = 1.0;
-            self.pan = Vec2::ZERO;
+            self.reset_view = true;
         }
     }
 
