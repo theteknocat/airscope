@@ -2001,7 +2001,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
     let why = lp.layout(d.why.clone(), FontId::proportional(12.5), TEXT, w - 44.0);
     let rows_h: f32 = rows.iter().map(|(_, g)| g.size().y.max(14.0) + 7.0).sum();
     let has_sig = d.dbm.is_some() || d.lq.is_some();
-    let top = if has_sig { 114.0 } else { 100.0 }; // where the detail rows start
+    let top = if has_sig { 114.0 } else { 94.0 }; // where the detail rows start
     let h_full = (top - 8.0) + rows_h + 30.0 + why.size().y + 34.0;
     let h = h_full.min((bounds.height() - 20.0).max(240.0)); // taller content scrolls with the mouse wheel
     let mut x = anchor.x + 40.0;
