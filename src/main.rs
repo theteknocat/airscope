@@ -1094,8 +1094,7 @@ impl App {
             for i in 0..79usize {
                 let r = Rect::from_min_size(pos2(xl(i), y), vec2((cw - 1.5).max(1.0), 18.0));
                 if l.afh.as_ref().map(|m| m[i]).unwrap_or(true) {
-                    p.rect_filled(r.expand(3.5), 5.0, add(GREEN, 0.04));
-                    p.rect_filled(r.expand(2.0), 3.5, add(GREEN, 0.09));
+                    glow_rect(p, r, 5.0, GREEN, 0.22);
                     p.rect_filled(r, 2.0, GREEN);
                     p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.22));
                 } else {
@@ -1110,41 +1109,6 @@ impl App {
             y += 26.0;
         }
         y
-    }
-
-    // ---------- radar strip ----------
-
-    fn strip(&mut self, ui: &mut egui::Ui, _t: f32) {
-        let rect = ui.max_rect();
-        let p = ui.painter().clone();
-        p.rect_filled(rect, 0.0, shade(BG, 1.35));
-        p.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, alpha(CYAN, 0.15)));
-        lcd(&p, pos2(rect.left() + 22.0, rect.top() + 20.0), Align2::LEFT_CENTER, "BLUETOOTH CHANNEL MAP", 13.0, CYAN);
-        p.text(pos2(rect.left() + 250.0, rect.top() + 20.0), Align2::LEFT_CENTER, "green = channel in use · dark = avoided · top row = how crowded Wi-Fi is on that frequency (click for details)", FontId::proportional(11.5), DIM);
-        let x0 = rect.left() + 200.0;
-        let x1 = rect.right() - 150.0;
-        let cw = (x1 - x0) / 79.0;
-        let yw = rect.top() + 36.0;
-        let nets = self.nets();
-        let row = Rect::from_min_max(pos2(x0, yw), pos2(x1, yw + 24.0));
-        p.text(pos2(x0 - 12.0, yw + 12.0), Align2::RIGHT_CENTER, "Wi-Fi crowding", FontId::proportional(12.0), AMBER);
-        for i in 0..79usize {
-            let v = (Self::load_at(&nets, 2402.0 + i as f32) / 2.2).clamp(0.0, 1.0);
-            let r = Rect::from_min_size(pos2(x0 + i as f32 * cw, yw), vec2(cw - 1.5, 24.0));
-            p.rect_filled(r, 2.0, mix(shade(BG, 1.8), mix(AMBER, RED, ((v - 0.4) * 1.7).clamp(0.0, 1.0)), 0.12 + 0.88 * v));
-        }
-        for n in 1..=13 {
-            let i = (2407 + 5 * n - 2402) as f32;
-            p.text(pos2(x0 + i * cw + cw / 2.0, yw + 12.0), Align2::CENTER_CENTER, n.to_string(), FontId::monospace(10.0), alpha(Color32::WHITE, 0.55));
-        }
-        let rr = hit(ui, row, ui.scope_id().with("heat"), Sense::click());
-        if rr.hovered() {
-            p.rect_stroke(row.expand(2.0), 4.0, Stroke::new(1.5, alpha(CYAN, 0.7)), StrokeKind::Outside);
-        }
-        if rr.clicked() {
-            self.screen = Screen::Spectrum;
-        }
-        self.bt_rows(&p, x0 - 12.0, &|i| x0 + i as f32 * cw, cw, x1, yw + 34.0);
     }
 
     // ---------- spectrum ----------
@@ -1170,7 +1134,7 @@ impl App {
 
         let legend_w = 300.0;
         let n_links = self.links.len().max(1) as f32;
-        let bt_h = n_links * 26.0 + 34.0;
+        let bt_h = n_links * 26.0 + 34.0 + 34.0;
         let gh = (rect.height() - 60.0 - 40.0 - bt_h - 200.0).clamp(150.0, 330.0);
         let gx0 = l + 130.0;
         let gx1 = rect.right() - legend_w - 170.0;
@@ -1265,9 +1229,39 @@ impl App {
             p.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
         }
         // Bluetooth channels aligned under the same frequency axis
-        p.text(pos2(l + 12.0, base + 30.0 + 8.0), Align2::LEFT_CENTER, "BLUETOOTH · same frequencies, channel 0-78", FontId::proportional(10.5), DIM);
+        p.text(pos2(l + 12.0, base + 30.0 + 8.0), Align2::LEFT_CENTER, "BLUETOOTH'S 79 CHANNELS · the same frequencies as the graph above", FontId::proportional(10.5), DIM);
         let bcw = gw / 87.0;
-        self.bt_rows(&p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, base + 46.0);
+        // Wi-Fi crowding on each Bluetooth channel: how much Wi-Fi is transmitting on that frequency
+        let yc = base + 46.0;
+        p.text(pos2(gx0 - 12.0, yc + 9.0), Align2::RIGHT_CENTER, "Wi-Fi crowding", FontId::proportional(12.0), AMBER);
+        for i in 0..79usize {
+            let v = (Self::load_at(&nets, 2402.0 + i as f32) / 2.2).clamp(0.0, 1.0);
+            let heat = mix(AMBER, RED, ((v - 0.4) * 1.7).clamp(0.0, 1.0));
+            let r = Rect::from_min_size(pos2(fx(2401.5 + i as f32), yc), vec2((bcw - 1.5).max(1.0), 18.0));
+            if v > 0.12 {
+                glow_rect(&p, r, 5.0, heat, 0.22 * v);
+            }
+            p.rect_filled(r, 2.0, mix(shade(BG, 1.8), heat, 0.12 + 0.88 * v));
+            if v > 0.12 {
+                p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.12 * v));
+            }
+        }
+        // key: quiet -> crowded
+        let kr = Rect::from_min_size(pos2(gx1 + 6.0, yc + 3.0), vec2(64.0, 12.0));
+        let mut km = egui::Mesh::default();
+        let (c0, c1) = (shade(BG, 1.8), RED);
+        for (x, c) in [(kr.left(), c0), (kr.center().x, mix(AMBER, c0, 0.2)), (kr.right(), c1)] {
+            km.colored_vertex(pos2(x, kr.top()), c);
+            km.colored_vertex(pos2(x, kr.bottom()), c);
+        }
+        km.add_triangle(0, 1, 2);
+        km.add_triangle(1, 3, 2);
+        km.add_triangle(2, 3, 4);
+        km.add_triangle(3, 5, 4);
+        p.add(egui::Shape::mesh(km));
+        p.text(pos2(kr.left(), kr.bottom() + 9.0), Align2::LEFT_CENTER, "quiet", FontId::proportional(9.5), DIM);
+        p.text(pos2(kr.right(), kr.bottom() + 9.0), Align2::RIGHT_CENTER, "crowded", FontId::proportional(9.5), DIM);
+        self.bt_rows(&p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, base + 46.0 + 34.0);
 
         // legend
         lcd(&p, pos2(lx, rect.top() + 36.0 + 12.0), Align2::LEFT_CENTER, "NETWORKS", 12.0, CYAN);
@@ -1603,10 +1597,6 @@ impl eframe::App for App {
         let t = self.t0.elapsed().as_secs_f32();
         egui::Panel::left("nav").exact_size(210.0).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.nav(ui));
         egui::Panel::top("hdr").exact_size(70.0).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.header(ui, t));
-        if self.screen == Screen::Radar {
-            let h = 92.0 + self.links.len().max(1) as f32 * 26.0;
-            egui::Panel::bottom("strip").exact_size(h).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.strip(ui, t));
-        }
         egui::CentralPanel::no_frame().show(ui, |ui| match self.screen {
             Screen::Radar => self.radar(ui, t),
             Screen::Spectrum => self.spectrum(ui, t),

@@ -304,3 +304,24 @@ pub fn nav_icon(p: &Painter, which: u8, c: Pos2, s: f32, col: Color32) {
         }
     }
 }
+
+/// Subtle glow around a rectangle: an additive gradient from `k` at the edge to nothing `g` px out.
+pub fn glow_rect(p: &Painter, r: Rect, g: f32, col: Color32, k: f32) {
+    let inner = add(col, k);
+    let o = r.expand(g);
+    let ins = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()];
+    let outs = [o.left_top(), o.right_top(), o.right_bottom(), o.left_bottom()];
+    let mut m = Mesh::default();
+    for q in ins {
+        m.colored_vertex(q, inner);
+    }
+    for q in outs {
+        m.colored_vertex(q, Color32::TRANSPARENT);
+    }
+    for i in 0..4u32 {
+        let j = (i + 1) % 4;
+        m.add_triangle(i, j, 4 + i);
+        m.add_triangle(j, 4 + j, 4 + i);
+    }
+    p.add(Shape::mesh(m));
+}
