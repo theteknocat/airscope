@@ -2,7 +2,6 @@
 //! and publishes into `Shared`. The UI only ever reads the shared snapshot.
 use std::collections::{HashMap, HashSet};
 use crate::net;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -113,14 +112,6 @@ pub struct Shared {
 pub type Handle = Arc<Mutex<Shared>>;
 
 // ---------- helpers ----------
-
-fn run(cmd: &str, args: &[&str]) -> Option<String> {
-    let o = Command::new("timeout").arg("8").arg(cmd).args(args).env("LC_ALL", "C").output().ok()?;
-    if o.stdout.is_empty() && !o.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&o.stdout).into_owned())
-}
 
 pub fn parse_mac(mac: &str) -> Option<[u8; 6]> {
     let p: Vec<&str> = mac.split(|c| c == ':' || c == '-').collect();
