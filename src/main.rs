@@ -183,7 +183,7 @@ struct App {
     prev_groups: Vec<(String, Vec<String>)>,
     formed: HashSet<String>,       // groups whose icon is already showing
     gshift: HashMap<String, Vec2>, // eased push-away shift per group
-    mine: Vec<String>,             // SSID prefixes of your own Wi-Fi networks (~/.config/airscope/mine.txt)
+    mine: Vec<String>,             // optional extra SSID prefixes counted as yours (~/.config/airscope/mine.txt)
     q: String,                     // device list filters
     show: [bool; 3],
     scope: u8,
@@ -272,7 +272,7 @@ impl App {
             prev_groups: vec![],
             formed: HashSet::new(),
             gshift: HashMap::new(),
-            mine: std::env::var("HOME").ok().and_then(|h| std::fs::read_to_string(format!("{}/.config/airscope/mine.txt", h)).ok()).map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_else(|| vec!["Pointynose".to_string()]),
+            mine: std::env::var("HOME").ok().and_then(|h| std::fs::read_to_string(format!("{}/.config/airscope/mine.txt", h)).ok()).map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_default(),
             q: String::new(),
             show: [true; 3],
             scope: 0,
@@ -1048,7 +1048,12 @@ impl App {
 
     fn is_mine(&self, d: &Dev) -> bool {
         match d.kind {
-            Kind::Wifi => d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())),
+            Kind::Wifi => {
+                // an AP radio of a device on our LAN (e.g. the router): its BSSID is derived from the device's MAC
+                let b = mac_bytes(&d.id);
+                (b.is_some() && self.devs.iter().filter(|x| x.kind == Kind::Lan).filter_map(|x| mac_bytes(&x.id)).any(|m| same_device(b.unwrap(), m)))
+                    || (d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())))
+            }
             _ => true,
         }
     }
@@ -1066,6 +1071,7 @@ impl App {
             let mine = self.is_mine(d);
             let e = m.entry((name.clone(), ch)).or_insert(Net { name, chan: ch, f: f as f32, dbm, aps: 0, mine, hidden });
             e.aps += 1;
+            e.mine |= mine;
             e.dbm = e.dbm.max(dbm);
         }
         let mut v: Vec<Net> = m.into_values().collect();
@@ -1497,6 +1503,23 @@ impl Net {
 }
 
 /// Footprint of a 20 MHz Wi-Fi channel: 1 at the centre, 0 at ±11 MHz.
+fn mac_bytes(s: &str) -> Option<[u8; 6]> {
+    let v: Vec<u8> = s.split(':').filter_map(|x| u8::from_str_radix(x, 16).ok()).collect();
+    v.try_into().ok()
+}
+
+/// Do two MACs look like radios of one device? Same vendor prefix (ignoring the locally-administered bit)
+/// and the device-specific tail equal or a few steps apart (routers number their radios consecutively
+/// or flip a high nibble, e.g. B0:82:E2:B4:3A:56 / B2:82:E2:94:3A:56).
+fn same_device(a: [u8; 6], b: [u8; 6]) -> bool {
+    if (a[0] & !2, a[1], a[2]) != (b[0] & !2, b[1], b[2]) {
+        return false;
+    }
+    let tail = |m: [u8; 6]| ((m[3] as i32) << 16) | ((m[4] as i32) << 8) | m[5] as i32;
+    let low = |m: [u8; 6]| ((m[3] & 0x0f) as i32) << 16 | ((m[4] as i32) << 8) | m[5] as i32;
+    (tail(a) - tail(b)).abs() <= 8 || low(a) == low(b)
+}
+
 fn hill(dx: f32) -> f32 {
     if dx.abs() >= 11.0 {
         0.0
@@ -1598,4 +1621,19 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native("Airscope", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn router_radios_match_neighbours_do_not() {
+        let gw = mac_bytes("B0:82:E2:B4:3A:56").unwrap();
+        for m in ["B0:82:E2:B4:3A:56", "B2:82:E2:94:3A:56", "B2:82:E2:A4:3A:56", "B2:82:E2:B4:3A:56"] {
+            assert!(same_device(mac_bytes(m).unwrap(), gw), "{m}");
+        }
+        for m in ["C0:94:35:EA:5D:8D", "70:F1:96:79:0A:62", "B0:82:E2:11:22:33"] {
+            assert!(!same_device(mac_bytes(m).unwrap(), gw), "{m}");
+        }
+    }
 }
