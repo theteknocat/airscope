@@ -1133,7 +1133,7 @@ impl App {
         let legend_w = 300.0;
         let n_links = self.links.len().max(1) as f32;
         let has_bt = !self.links.is_empty();
-        let bt_h = if has_bt { n_links * 26.0 + 84.0 } else { 44.0 };
+        let bt_h = if has_bt { n_links * 26.0 + 104.0 } else { 44.0 };
         let gh = (rect.height() - 60.0 - 40.0 - bt_h - 200.0).clamp(150.0, 330.0);
         let gx0 = l + 130.0;
         let gx1 = rect.right() - legend_w - 170.0;
@@ -1264,10 +1264,11 @@ impl App {
             yc += 34.0;
         }
         let title = if has_bt { format!("CONNECTED BLUETOOTH DEVICES: {}", self.links.len()) } else { "NO BLUETOOTH DEVICES".to_string() };
-        lcd(&p, pos2(l + 14.0, yc + 8.0), Align2::LEFT_CENTER, &title, 12.0, BLUE);
+        let mid = (gx0 + gx1) / 2.0;
+        lcd(&p, pos2(mid, yc + 8.0), Align2::CENTER_CENTER, &title, 12.0, BLUE);
         if has_bt {
-            p.text(pos2(l + 14.0 + title.len() as f32 * 9.0 + 14.0, yc + 8.0), Align2::LEFT_CENTER, "brighter channel = less Wi-Fi expected on it (estimate) · dark outline = avoided", FontId::proportional(10.5), DIM);
-            self.bt_rows(&p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, &crowd);
+            let yend = self.bt_rows(&p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, &crowd);
+            p.text(pos2(mid, yend + 6.0), Align2::CENTER_CENTER, "brighter channel = less Wi-Fi expected on it (estimate) · dark outline = avoided", FontId::proportional(10.5), DIM);
         }
 
         // legend
