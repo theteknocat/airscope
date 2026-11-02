@@ -36,7 +36,7 @@ Rejected for now: Qt/QML (best built-in effects, but needs Qt dev packages in a 
 
 ## Data flow
 
-Collector threads (Wi-Fi, Bluetooth, LAN, OUI loader) -> one shared snapshot behind a mutex -> UI reads each frame. UI never blocks on a subprocess. Collectors shell out to `nmcli`, `ip`, `avahi-browse` for now (Bluetooth link data is already read natively via HCI) (simple, robust); native D-Bus/HCI can replace them later if CPU shows up in profiling.
+Collector threads (Wi-Fi, Bluetooth, LAN, OUI loader) -> one shared snapshot behind a mutex -> UI reads each frame. UI never blocks on a subprocess. Collectors shell out to `ip`, `avahi-browse` for now (Bluetooth link data is already read natively via HCI) (simple, robust); native D-Bus/HCI can replace them later if CPU shows up in profiling.
 
 ## Phases (iterative; feedback after each)
 

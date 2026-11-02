@@ -168,29 +168,6 @@ pub fn dist_from_dbm(dbm: f32) -> f32 {
     10f32.powf((-40.0 - dbm) / 30.0).clamp(0.6, 70.0)
 }
 
-fn split_nm(line: &str) -> Vec<String> {
-    let mut out = vec![];
-    let mut cur = String::new();
-    let mut it = line.chars();
-    while let Some(c) = it.next() {
-        match c {
-            '\\' => {
-                if let Some(n) = it.next() {
-                    cur.push(n);
-                }
-            }
-            ':' => out.push(std::mem::take(&mut cur)),
-            _ => cur.push(c),
-        }
-    }
-    out.push(cur);
-    out
-}
-
-fn num(s: &str) -> Option<u32> {
-    s.split_whitespace().next()?.parse().ok()
-}
-
 fn set(h: &Handle, f: impl FnOnce(&mut Shared)) {
     let mut s = h.lock().unwrap();
     f(&mut s);
@@ -201,6 +178,7 @@ fn set(h: &Handle, f: impl FnOnce(&mut Shared)) {
 
 fn wifi_loop(h: Handle, oui: Arc<Oui>) {
     let mut last_scan = Instant::now();
+    let mut bus = None;
     loop {
         let (req, auto) = {
             let mut s = h.lock().unwrap();
@@ -209,24 +187,32 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
             (r, s.auto_rescan_secs)
         };
         if req || (auto > 0 && last_scan.elapsed().as_secs() >= auto) {
-            let _ = run("nmcli", &["dev", "wifi", "rescan"]);
+            if bus.is_none() {
+                bus = crate::nm::connect();
+            }
+            if let Some(c) = &bus {
+                crate::nm::request_scan(c);
+            }
             last_scan = Instant::now();
             std::thread::sleep(Duration::from_secs(3));
         }
-        // --rescan no: never trigger a scan implicitly (scans briefly disturb Bluetooth on the shared AX200).
-        match run("nmcli", &["-t", "-f", "IN-USE,SSID,BSSID,CHAN,FREQ,RATE,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "no"]) {
-            Some(out) => {
+        // Cached scan results only: never trigger a scan implicitly (scans briefly disturb Bluetooth on a shared Wi-Fi/BT chip).
+        if bus.is_none() {
+            bus = crate::nm::connect();
+        }
+        let aps = bus.as_ref().and_then(|c| crate::nm::access_points(c));
+        if aps.is_none() {
+            bus = None; // reconnect next time
+        }
+        match aps {
+            Some(aps) => {
                 let mut v = vec![];
-                for l in out.lines() {
-                    let f = split_nm(l);
-                    if f.len() < 8 {
-                        continue;
-                    }
-                    let (inuse, ssid, bssid) = (f[0].trim() == "*", f[1].clone(), f[2].to_uppercase());
-                    let chan = num(&f[3]);
-                    let freq = num(&f[4]);
-                    let pct = num(&f[6]).unwrap_or(0) as f32;
-                    let sec = f[7].clone();
+                for ap in aps {
+                    let (inuse, ssid, bssid) = (ap.in_use, ap.ssid.clone(), ap.bssid.clone());
+                    let chan = Some(ap.chan);
+                    let freq = Some(ap.freq);
+                    let pct = ap.strength as f32;
+                    let sec = ap.security.clone();
                     let dbm = pct / 2.0 - 100.0;
                     let dist = dist_from_dbm(dbm);
                     let vendor = oui.vendor(&bssid);
@@ -255,7 +241,7 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
                         ("BSSID".into(), bssid.clone()),
                         ("Vendor".into(), vendor),
                         ("Band / channel".into(), format!("{} / ch {} ({} MHz)", band, chan.map(|c| c.to_string()).unwrap_or("?".into()), freq.unwrap_or(0))),
-                        ("Rate".into(), f[5].clone()),
+                        ("Rate".into(), format!("{} Mbit/s", ap.rate_kbps / 1000)),
                         ("Signal".into(), format!("{}%  (about {:.0} dBm{})", pct, dbm, if pct >= 100.0 { " or stronger; the scale saturates" } else { "" })),
                         ("Distance (rough)".into(), format!("about {:.1} m, estimated from signal only", dist)),
                         ("Security".into(), if sec.is_empty() { "open".into() } else { sec.clone() }),
@@ -287,7 +273,7 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
                 });
             }
             None => set(&h, |s| {
-                s.errs.insert("wifi", "nmcli failed".into());
+                s.errs.insert("wifi", "NetworkManager not reachable".into());
             }),
         }
         std::thread::sleep(Duration::from_secs(2));

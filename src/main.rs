@@ -2,6 +2,7 @@ mod data;
 mod bluez;
 mod fx;
 mod hci;
+mod nm;
 
 use data::{hash64, BtLink, Dev, Handle, Icon, Kind};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -1503,7 +1504,7 @@ impl App {
         let (tb, _) = ui.allocate_exact_size(vec2(rect.width(), 74.0), Sense::hover());
         let p = ui.painter().clone();
         let search = Rect::from_min_size(tb.min + vec2(18.0, 10.0), vec2(300.0, 28.0));
-        ui.put(search, egui::TextEdit::singleline(&mut self.q).hint_text("Search name, vendor, MAC…").vertical_align(egui::Align::Center).min_size(search.size()));
+        ui.put(search, egui::TextEdit::singleline(&mut self.q).hint_text("Search name, vendor, MAC…").align(egui::Align2::LEFT_CENTER).min_size(search.size()));
         let mut x = search.right() + 18.0;
         let chip = |ui: &egui::Ui, x: &mut f32, y: f32, label: &str, on: bool, col: Color32| -> bool {
             let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(12.5), Color32::WHITE);
