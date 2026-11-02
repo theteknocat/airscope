@@ -37,6 +37,7 @@ struct Ev {
     drag_end: bool,
     hover: Option<usize>,
     dragging: Option<String>,
+    gdrag: Option<Vec<String>>, // member ids of a group icon being dragged
 }
 
 struct Burst {
@@ -180,6 +181,7 @@ struct App {
     bursts: Vec<Burst>,
     last_pos: HashMap<String, Pos2>,
     dragging: Option<String>,
+    gdrag: Option<Vec<String>>,    // a whole group is being dragged: its members move together and don't merge until dropped
     prev_groups: Vec<(String, Vec<String>)>,
     formed: HashSet<String>,       // groups whose icon is already showing
     gshift: HashMap<String, Vec2>, // eased push-away shift per group
@@ -276,6 +278,7 @@ impl App {
             bursts: vec![],
             last_pos: HashMap::new(),
             dragging: None,
+            gdrag: None,
             prev_groups: vec![],
             formed: HashSet::new(),
             gshift: HashMap::new(),
@@ -419,7 +422,7 @@ impl App {
     /// sweep passes it ("ping"). New devices appear at once. Nothing refreshes while a group is
     /// open or a drag is in progress, so the layout never changes under the user's hands.
     fn latch(&mut self, sw_prev: f32, sw: f32, t: f32) {
-        let freeze = !self.open.is_empty() || self.dragging.is_some();
+        let freeze = !self.open.is_empty() || self.dragging.is_some() || self.gdrag.is_some();
         let span = (sw - sw_prev).rem_euclid(TAU);
         let crossed = |a: f32| {
             let d1 = (a - sw_prev).rem_euclid(TAU);
@@ -522,6 +525,7 @@ impl App {
         self.latch(sw_prev, sw, t);
         if !ui.input(|i| i.pointer.any_down()) {
             self.dragging = None; // failsafe: a drag cannot outlive the mouse button
+            self.gdrag = None;
         }
 
         // --- backdrop
@@ -602,6 +606,13 @@ impl App {
             for j in (i + 1)..cnt {
                 if Some(i) == drag_ni || Some(j) == drag_ni {
                     continue;
+                }
+                if let Some(gd) = &self.gdrag {
+                    // a dragged group stays together but does not merge with anything else until dropped
+                    let (a, b) = (gd.contains(&self.latched[nodes[i].i].id), gd.contains(&self.latched[nodes[j].i].id));
+                    if a != b {
+                        continue;
+                    }
                 }
                 if (nodes[i].pos - nodes[j].pos).length() < GROUP_PX {
                     let (a, b) = (find(&mut parent, i), find(&mut parent, j));
@@ -848,7 +859,7 @@ impl App {
         }
 
         let view = rect.expand(70.0);
-        let mut ev = Ev { clicked: None, over: vec![], drag_end: false, hover: None, dragging: None };
+        let mut ev = Ev { clicked: None, over: vec![], drag_end: false, hover: None, dragging: None, gdrag: None };
         let sel_id = self.sel.clone();
 
         // --- links from the PC to connected Bluetooth devices, with travelling pulses
@@ -894,8 +905,20 @@ impl App {
             let masked_icon = groups.iter().filter(|o| o.open).any(|o| (g.center - o.center).length() < o.halo_r);
             let mut hovered = false;
             if !masked_icon {
-                let resp = hit(ui, Rect::from_center_size(g.center, Vec2::splat(46.0)), ui.scope_id().with(("gi", &g.key)), Sense::click());
+                let resp = hit(ui, Rect::from_center_size(g.center, Vec2::splat(46.0)), ui.scope_id().with(("gi", &g.key)), Sense::click_and_drag());
                 hovered = resp.hovered();
+                if resp.dragged() {
+                    // move every member by the pointer movement (saved as their positions, like dragging one device)
+                    let dl = resp.drag_delta();
+                    for &i in &g.members {
+                        let v = nodes[i].pos + dl - c;
+                        ev.over.push((self.latched[nodes[i].i].id.clone(), (v.y.atan2(v.x), dmap(v.length(), big).clamp(0.6, DMAX))));
+                    }
+                    ev.gdrag = Some(g.members.iter().map(|&i| self.latched[nodes[i].i].id.clone()).collect());
+                }
+                if resp.drag_stopped() {
+                    ev.drag_end = true;
+                }
                 if resp.clicked() {
                     toggle.push((g.key.clone(), true));
                 }
@@ -1043,8 +1066,12 @@ impl App {
         if let Some(id) = ev.dragging {
             self.dragging = Some(id);
         }
+        if let Some(g) = ev.gdrag {
+            self.gdrag = Some(g);
+        }
         if ev.drag_end {
             self.dragging = None;
+            self.gdrag = None;
             self.save_over();
         }
         for (key, open) in toggle {
