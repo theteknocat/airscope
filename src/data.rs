@@ -504,7 +504,7 @@ pub struct Sample {
 
 pub type History = VecDeque<Sample>;
 
-const HISTORY_SECS: u64 = 300;
+const HISTORY_SECS: u64 = 1800;
 const TROUBLE_WINDOW_SECS: u64 = 900;
 
 fn events_loop(ev: Events) {
@@ -576,6 +576,14 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
         let fresh = (1.0 - age(last) as f32 / TROUBLE_WINDOW_SECS as f32).max(0.25);
         d.trouble = d.trouble.max((0.5 + 0.25 * (bad.len() as f32 - 1.0)).min(1.0) * fresh);
     }
+    // link quality fell well below this device's own recent best
+    let peak = hist.iter().filter_map(|s| s.lq).max();
+    if let (Some(cur), Some(pk)) = (d.lq, peak) {
+        if hist.len() >= 5 && (cur as f32) < pk as f32 * LINK_DROP {
+            d.trouble = d.trouble.max(((pk - cur) as f32 / (pk as f32 * 0.5)).clamp(0.25, 1.0));
+            d.issue.push(("Link health".into(), format!("DEGRADED: quality fell to {} of 255 from {} earlier. Packets are being lost or retried, which is what interference looks like.", cur, pk)));
+        }
+    }
     for e in ev.iter().rev().take(4) {
         let text = match e.kind {
             EvKind::Connected => "Connected".to_string(),
@@ -611,8 +619,9 @@ fn link_info(c: &crate::hci::Conn, cache: &mut HashMap<String, (String, String)>
     BtLink { mac: c.mac.clone(), name: String::new(), lq: d.lq, rssi: d.rssi, tpl: d.tpl, afh: d.afh, lmp, mfr }
 }
 
-/// Link quality below this counts as a degraded link.
-const LINK_WARN: i32 = 230;
+/// A link counts as degraded when its quality falls below this share of the device's own recent best.
+/// (Link quality is vendor-defined and varies with distance, so a fixed number can't say what is normal.)
+const LINK_DROP: f32 = 0.75;
 
 /// Adds the live link data (quality, hopping map, versions) to a Bluetooth device.
 pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
@@ -623,11 +632,6 @@ pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
         // so it is not a distance. Use it only to nudge the node outward for display.
         d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
         d.lq = l.lq;
-    // Link quality is 255 on a healthy link and falls when packets are being lost or retried (interference, distance, obstacles).
-    if let Some(q) = l.lq.filter(|q| *q < LINK_WARN) {
-        d.trouble = ((LINK_WARN - q) as f32 / 130.0).clamp(0.25, 1.0);
-        d.issue.push(("Link health".into(), format!("DEGRADED: quality {} of 255. Packets are being lost or retried, which is what interference looks like.", q)));
-    }
         d.details.push((
             "RSSI (relative)".into(),
             l.rssi.map(|r| format!("{} (0 = inside the ideal range; not a distance)", r)).unwrap_or("?".into()),
@@ -911,6 +915,20 @@ mod tests {
         assert_eq!(parse_oui(manuf), vec![(0, "Xerox Corporation".to_string())]);
         assert_eq!(parse_oui("AABBCC\tSome Vendor\n"), vec![(0xAABBCC, "Some Vendor".to_string())]);
         assert!(parse_oui(BUILT_IN_OUI).len() > 30000);
+    }
+
+    #[test]
+    fn link_trouble_is_relative() {
+        let hist = |qs: &[i32]| -> History { qs.iter().map(|q| Sample { at: Instant::now(), lq: Some(*q), afh: None }).collect() };
+        let run = |qs: &[i32]| {
+            let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+            d.lq = qs.last().copied();
+            apply_events(&mut d, &[], &hist(qs), &[]);
+            d.trouble
+        };
+        assert_eq!(run(&[132; 10]), 0.0, "a steady low reading is normal for that device");
+        assert!(run(&[255, 255, 250, 240, 200, 150]) > 0.0, "a fall from its own best is a problem");
+        assert_eq!(run(&[255, 250]), 0.0, "too little history to judge");
     }
 
     #[test]

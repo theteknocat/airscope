@@ -2079,7 +2079,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
             led_bar(&p, Rect::from_min_size(pos2(r.left() + 22.0, by), vec2(w - 130.0, 9.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 24);
             p.text(pos2(r.right() - 22.0, by + 4.5), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(13.0), TEXT);
         } else if let Some(q) = d.lq {
-            let bc = if d.trouble > 0.0 && q < 230 { RED } else { col };
+            let bc = if d.trouble > 0.0 { RED } else { col };
             led_bar(&p, Rect::from_min_size(pos2(r.left() + 22.0, by), vec2(w - 150.0, 9.0)), (q as f32 / 255.0).clamp(0.0, 1.0), bc, 24);
             p.text(pos2(r.right() - 22.0, by + 4.5), Align2::RIGHT_CENTER, format!("link {}/255", q), FontId::monospace(13.0), TEXT);
         }
