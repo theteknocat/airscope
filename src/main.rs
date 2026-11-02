@@ -961,11 +961,12 @@ impl App {
                 }
                 continue;
             }
-            if g.members.iter().any(|&i| self.latched[nodes[i].i].kind == Kind::Bt && self.latched[nodes[i].i].connected) {
-                // link to an open group: drawn above its circle, starting at the PC's edge
-                let v = g.center - c;
-                if v.length() > 40.0 {
-                    draw_link(&p, c + v / v.length() * 27.0, g.center, kind_col(Kind::Bt), t);
+            // links to each connected Bluetooth device in the fan: drawn above the circle, from the PC's edge
+            for &i in &g.members {
+                let d = &self.latched[nodes[i].i];
+                let v = disp[i] - c;
+                if d.kind == Kind::Bt && d.connected && v.length() > 40.0 {
+                    draw_link(&p, c + v / v.length() * 27.0, disp[i], kind_col(Kind::Bt), t);
                 }
             }
             for &i in &g.members {
