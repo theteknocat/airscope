@@ -1281,13 +1281,13 @@ impl App {
                 Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
                 None => d.vendor.clone(),
             };
-            let tc = TipC { anchor: disp[ni] + vec2(0.0, -24.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], boxed: false };
+            let tc = TipC { anchor: disp[ni] + vec2(0.0, -24.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], boxed: false, side: None };
             self.tip_want = Some(tc);
         } else if let Some(gi) = group_hover {
             let g = &groups[gi];
             let names: Vec<String> = g.members.iter().take(4).map(|&i| self.latched[nodes[i].i].name.clone()).collect();
             let more = if g.members.len() > 4 { format!(" +{}", g.members.len() - 4) } else { String::new() };
-            let tc = TipC { anchor: g.center + vec2(0.0, -34.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{} · click to expand", names.join(", "), more)], boxed: false };
+            let tc = TipC { anchor: g.center + vec2(0.0, -34.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{} · click to expand", names.join(", "), more)], boxed: false, side: None };
             self.tip_want = Some(tc);
         }
 
@@ -1502,9 +1502,11 @@ impl App {
                 legend.push((r, i));
             }
         }
+        let mut from_legend = false;
         for (r, i) in &legend {
             if hit(ui, r.intersect(lview), ui.scope_id().with(("lg", *i)), Sense::click()).hovered() {
                 hover = Some(*i);
+                from_legend = true;
             }
         }
         // hills under the cursor, nearest outline first (ties: the stronger network), so a hill hidden
@@ -1662,13 +1664,20 @@ impl App {
             let same = ov.iter().filter(|o| (o.f - n.f).abs() < 1.0).count();
             let sub = format!("ch {} · {:.0} dBm · {} on same channel, {} partly overlapping", n.chan, n.dbm, same, ov.len() - same);
             let mut subs = vec![sub];
-            if under.len() > 1 && under.first() == Some(&h) {
+            let stacked = under.len() > 1 && under.first() == Some(&h);
+            if stacked {
                 // other hills stacked under the same spot (point nearer a hill's edge to pick it)
                 let names: Vec<String> = under.iter().skip(1).take(4).map(|j| if nets[*j].name.is_empty() { "(hidden)".to_string() } else { nets[*j].name.clone() }).collect();
                 let more = under.len() - 1 - names.len();
                 subs.push(format!("Also here: {}{}", names.join(", "), if more > 0 { format!(" +{}", more) } else { String::new() }));
             }
-            self.tip_want = Some(TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y - 14.0), col: col_of(n), title: format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() }), sub: subs, boxed: false });
+            let title = format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() });
+            self.tip_want = Some(if from_legend {
+                // beside the legend, level with the pointer, so the rows above and below stay readable
+                TipC { anchor: pos2(0.0, q.y), col: col_of(n), title, sub: subs, boxed: true, side: Some(lview.left() - 14.0) }
+            } else {
+                TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y - 14.0), col: col_of(n), title, sub: subs, boxed: stacked, side: None }
+            });
         }
 
         // explanation cards
@@ -1697,7 +1706,7 @@ impl App {
         };
         card(2, "YOUR NETWORK", &mine_txt, GREEN);
         if let Some((q, title, lines)) = tip_box {
-            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, boxed: true });
+            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, boxed: true, side: None });
         }
         if let Some((id, q)) = pick {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
@@ -1883,11 +1892,12 @@ struct TipC {
     title: String,
     sub: Vec<String>,
     boxed: bool,
+    side: Option<f32>, // boxed only: put the box to the left of this x, centred on anchor.y
 }
 
 fn draw_tip(p: &egui::Painter, c: &TipC, bounds: Rect) {
     if c.boxed {
-        tip(p, c.anchor, bounds, &c.title, &c.sub, c.col);
+        tip(p, c.anchor, bounds, &c.title, &c.sub, c.col, c.side);
     } else {
         pill(p, c.anchor, &c.title, c.sub.first().map(|x| x.as_str()).unwrap_or(""), c.col);
     }
@@ -1945,13 +1955,15 @@ struct Pop {
 }
 
 /// Multi-line hover box above `anchor`.
-fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[String], col: Color32) {
+fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[String], col: Color32, side: Option<f32>) {
     let w = 340.0;
     let g0 = p.layout_no_wrap(title.to_string(), FontId::proportional(14.0), Color32::WHITE);
     let gs: Vec<_> = lines.iter().map(|l| p.layout(l.clone(), FontId::proportional(12.0), TEXT, w - 28.0)).collect();
     let h = 14.0 + g0.size().y + 6.0 + gs.iter().map(|g| g.size().y + 5.0).sum::<f32>() + 8.0;
-    let x = (anchor.x - w / 2.0).clamp(bounds.left() + 8.0, bounds.right() - w - 8.0);
-    let y = (anchor.y - h - 14.0).max(bounds.top() + 8.0);
+    let (x, y) = match side {
+        Some(rx) => ((rx - w).max(bounds.left() + 8.0), (anchor.y - h / 2.0).clamp(bounds.top() + 8.0, (bounds.bottom() - h - 8.0).max(bounds.top() + 8.0))),
+        None => ((anchor.x - w / 2.0).clamp(bounds.left() + 8.0, bounds.right() - w - 8.0), (anchor.y - h - 14.0).max(bounds.top() + 8.0)),
+    };
     let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
     panel(p, r, 10.0, col);
     let mut yy = r.top() + 12.0;
