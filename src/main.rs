@@ -1792,7 +1792,7 @@ impl App {
                     let r = r.translate(vec2(14.0, 0.0));
                     let col = kind_col(d.kind);
                     let p = ui.painter();
-                    panel(p, r, 12.0, if resp.hovered() { Color32::WHITE } else { col });
+                    panel(p, r, 12.0, if resp.hovered() { Color32::WHITE } else if d.trouble > 0.0 { RED } else { col });
                     if d.known {
                         orb(p, pos2(r.left() + 34.0, r.center().y), 15.0, col, 0.0);
                         icon(p, d.icon, pos2(r.left() + 34.0, r.center().y), 7.5, shade(col, 0.12));
@@ -1807,6 +1807,15 @@ impl App {
                         p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(12.0), TEXT);
                     } else if d.connected {
                         p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
+                    }
+                    if d.trouble > 0.0 {
+                        // clear problem marker; click the row for what the app found out
+                        let right = r.right() - if d.connected && d.dbm.is_none() { 118.0 } else { 20.0 };
+                        let chip = Rect::from_min_max(pos2(right - 74.0, r.center().y - 11.0), pos2(right, r.center().y + 11.0));
+                        p.rect_filled(chip, 11.0, alpha(RED, 0.18));
+                        p.rect_stroke(chip, 11.0, Stroke::new(1.2, alpha(RED, 0.8)), StrokeKind::Inside);
+                        dot(p, pos2(chip.left() + 11.0, chip.center().y), 3.5, RED, 0.3);
+                        p.text(pos2(chip.left() + 21.0, chip.center().y), Align2::LEFT_CENTER, "ISSUE", FontId::monospace(11.5), RED);
                     }
                     ui.add_space(8.0);
                     if resp.clicked() {
@@ -1974,7 +1983,8 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         .collect();
     let why = lp.layout(d.why.clone(), FontId::proportional(12.5), TEXT, w - 44.0);
     let rows_h: f32 = rows.iter().map(|(_, g)| g.size().y.max(14.0) + 7.0).sum();
-    let h = 92.0 + rows_h + 30.0 + why.size().y + 34.0;
+    let h_full = 92.0 + rows_h + 30.0 + why.size().y + 34.0;
+    let h = h_full.min((bounds.height() - 20.0).max(240.0)); // taller content scrolls with the mouse wheel
     let mut x = anchor.x + 40.0;
     if x + w > bounds.right() - 10.0 {
         x = anchor.x - 40.0 - w;
@@ -1985,6 +1995,13 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::click());
         let p = ui.painter_at(r.expand(40.0));
         panel(&p, r, 16.0, col);
+        let max_scroll = (h_full - h).max(0.0);
+        let sid = egui::Id::new(("popup_scroll", uid));
+        let mut scroll: f32 = ui.ctx().data(|d| d.get_temp(sid)).unwrap_or(0.0);
+        if max_scroll > 0.0 && ui.input(|i| i.pointer.hover_pos()).map_or(false, |q| r.contains(q)) {
+            scroll = (scroll - ui.input(|i| i.smooth_scroll_delta.y)).clamp(0.0, max_scroll);
+            ui.ctx().data_mut(|d| d.insert_temp(sid, scroll));
+        }
         // header
         let ic = pos2(r.left() + 42.0, r.top() + 44.0);
         if d.known {
@@ -2010,16 +2027,19 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         // rows
         let mut yy = r.top() + 100.0;
         p.line_segment([pos2(r.left() + 20.0, yy - 6.0), pos2(r.right() - 20.0, yy - 6.0)], Stroke::new(1.0, alpha(CYAN, 0.15)));
+        let body = p.with_clip_rect(Rect::from_min_max(pos2(r.left(), r.top() + 94.0), pos2(r.right(), r.bottom() - 30.0)));
+        yy -= scroll;
         for (k, v) in rows {
             let rh = v.size().y.max(14.0);
-            p.galley(pos2(r.left() + 22.0, yy + 2.0), k, CYAN);
-            p.galley(pos2(r.left() + 22.0 + kw, yy), v, TEXT);
+            body.galley(pos2(r.left() + 22.0, yy + 2.0), k, CYAN);
+            body.galley(pos2(r.left() + 22.0 + kw, yy), v, TEXT);
             yy += rh + 7.0;
         }
         yy += 6.0;
-        lcd(&p, pos2(r.left() + 22.0, yy + 6.0), Align2::LEFT_CENTER, "HOW WE KNOW", 11.0, col);
-        p.galley(pos2(r.left() + 22.0, yy + 20.0), why, TEXT);
-        p.text(pos2(r.left() + 22.0, r.bottom() - 14.0), Align2::LEFT_CENTER, "Drag the node to where this device really is.", FontId::proportional(11.0), DIM);
+        lcd(&body, pos2(r.left() + 22.0, yy + 6.0), Align2::LEFT_CENTER, "HOW WE KNOW", 11.0, col);
+        body.galley(pos2(r.left() + 22.0, yy + 20.0), why, TEXT);
+        let foot = if scroll < max_scroll - 1.0 { "Scroll for more (mouse wheel)" } else { "Drag the node to where this device really is." };
+        p.text(pos2(r.left() + 22.0, r.bottom() - 14.0), Align2::LEFT_CENTER, foot, FontId::proportional(11.0), if max_scroll > 0.0 && scroll < max_scroll - 1.0 { CYAN } else { DIM });
         // close
         let cr = Rect::from_center_size(pos2(r.right() - 24.0, r.top() + 24.0), Vec2::splat(24.0));
         let resp = hit(ui, cr, ui.scope_id().with("close"), Sense::click());

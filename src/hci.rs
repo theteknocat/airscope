@@ -72,6 +72,10 @@ pub struct LinkData {
 }
 
 fn open(dev: u16) -> Option<OwnedFd> {
+    open_mask(dev, (1 << EVT_REMOTE_VERSION) | (1 << EVT_CMD_COMPLETE) | (1 << EVT_CMD_STATUS))
+}
+
+fn open_mask(dev: u16, events: u32) -> Option<OwnedFd> {
     unsafe {
         let fd = libc::socket(AF_BLUETOOTH, libc::SOCK_RAW | libc::SOCK_CLOEXEC, BTPROTO_HCI);
         if fd < 0 {
@@ -82,8 +86,8 @@ fn open(dev: u16) -> Option<OwnedFd> {
         if libc::bind(fd.as_raw_fd(), &addr as *const _ as *const libc::sockaddr, std::mem::size_of::<SockaddrHci>() as u32) < 0 {
             return None;
         }
-        // only the events we wait for
-        let f = HciFilter { type_mask: 1 << 4, event_mask: [(1 << EVT_REMOTE_VERSION) | (1 << EVT_CMD_COMPLETE) | (1 << EVT_CMD_STATUS), 0], opcode: 0 };
+        // only the events we wait for (an unprivileged socket may only subscribe to a safe subset)
+        let f = HciFilter { type_mask: 1 << 4, event_mask: [events, 0], opcode: 0 };
         libc::setsockopt(fd.as_raw_fd(), SOL_HCI, HCI_FILTER, &f as *const _ as *const libc::c_void, std::mem::size_of::<HciFilter>() as u32);
         Some(fd)
     }
@@ -213,6 +217,85 @@ fn company_name(id: u16) -> String {
     n.to_string()
 }
 
+/// A connection coming up or going down on a local adapter.
+pub struct Event {
+    pub mac: Option<String>,
+    pub connected: bool, // true = Connection Complete, false = Disconnection Complete
+    pub code: u8,        // connect: status (0 = ok); disconnect: the reason the controller gives
+}
+
+/// Blocks forever, calling `f` for every connection / disconnection on every local adapter.
+/// Unprivileged sockets are allowed to see exactly these events (CONFIRMED by testing the HCI_FILTER readback),
+/// and the disconnect reason (e.g. 0x08 = connection timeout) is the best clue to why a link dropped.
+pub fn watch(mut f: impl FnMut(Event)) {
+    use std::collections::HashMap;
+    let mut handles: HashMap<(u16, u16), String> = HashMap::new();
+    loop {
+        let socks: Vec<(u16, OwnedFd)> = (0..4u16).filter_map(|d| open_mask(d, (1 << 0x03) | (1 << 0x05)).map(|fd| (d, fd))).collect();
+        if socks.is_empty() {
+            std::thread::sleep(Duration::from_secs(10)); // no adapter (yet)
+            continue;
+        }
+        'run: loop {
+            for c in connections() {
+                handles.insert((c.dev, c.handle), c.mac);
+            }
+            let mut pfds: Vec<libc::pollfd> = socks.iter().map(|(_, fd)| libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 }).collect();
+            if unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as _, 1000) } <= 0 {
+                continue;
+            }
+            for (i, pf) in pfds.iter().enumerate() {
+                if pf.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                    break 'run; // adapter went away: reopen
+                }
+                if pf.revents & libc::POLLIN == 0 {
+                    continue;
+                }
+                let dev = socks[i].0;
+                let mut buf = [0u8; 300];
+                let n = unsafe { libc::read(pf.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+                if n < 3 || buf[0] != 4 {
+                    continue;
+                }
+                let d = &buf[3..(3 + buf[2] as usize).min(n as usize)];
+                match buf[1] {
+                    0x03 if d.len() >= 11 => {
+                        let mac = mac_str([d[3], d[4], d[5], d[6], d[7], d[8]]);
+                        if d[0] == 0 {
+                            handles.insert((dev, u16::from_le_bytes([d[1], d[2]])), mac.clone());
+                        }
+                        f(Event { mac: Some(mac), connected: true, code: d[0] });
+                    }
+                    0x05 if d.len() >= 4 => {
+                        let mac = handles.remove(&(dev, u16::from_le_bytes([d[1], d[2]])));
+                        if d[0] == 0 {
+                            f(Event { mac, connected: false, code: d[3] });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Plain-English name, meaning and "does this point at the radio link" for an HCI disconnect reason.
+pub fn reason(code: u8) -> (&'static str, &'static str, bool) {
+    match code {
+        0x08 => ("connection timeout", "The device stopped answering and the link was declared dead. This is what a lost radio link looks like: interference, distance or obstruction, or the device going to sleep or flat.", true),
+        0x22 => ("link layer timeout", "The device stopped responding to link management messages: another radio-trouble sign.", true),
+        0x3D => ("encryption check failed", "A packet failed its integrity check (MIC), usually damaged in transit or a pairing/key mismatch.", true),
+        0x05 => ("authentication failure", "Pairing keys were rejected. Forgetting and re-pairing the device usually fixes this.", true),
+        0x06 => ("pairing key missing", "One side lost the pairing key. Forget the device and pair it again.", true),
+        0x3E => ("connection failed to establish", "A connection attempt did not complete: weak or noisy link, or the device was not ready.", true),
+        0x13 => ("the device ended it", "The device itself closed the connection (switched off, went to sleep or was told to disconnect). Not a radio problem.", false),
+        0x14 => ("device low on resources", "The device closed the link because it was out of resources.", false),
+        0x15 => ("device powered off", "The device switched itself off.", false),
+        0x16 => ("this PC ended it", "This computer closed the connection (you, the desktop, suspend or a program). Not a radio problem.", false),
+        _ => ("other reason", "The controller reported a less common disconnect code.", false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,3 +329,4 @@ mod tests {
         }
     }
 }
+

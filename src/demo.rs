@@ -4,9 +4,9 @@
 //! The data goes through the same conversion code as live data, so the info boxes read the same.
 
 use crate::bluez::BtDev;
-use crate::data::{attach_link, lan_dev, parse_bt, wifi_dev, BtLink, Handle, Oui};
+use crate::data::{apply_events, attach_link, lan_dev, parse_bt, wifi_dev, BtLink, DevEvent, EvKind, Handle, History, Oui, Sample};
 use crate::nm::Ap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// `AIRSCOPE_DEMO=bad` also gives the keyboard a degraded link, to show the red interference halo.
 fn degraded() -> bool {
@@ -71,6 +71,30 @@ pub fn start(h: &Handle, oui: &Oui) {
     for l in links.iter_mut() {
         if let Some(d) = devs.iter_mut().find(|d| d.id == l.mac) {
             attach_link(d, l);
+        }
+    }
+
+    // Demo problem: the keyboard dropped twice with connection timeouts and its link quality sagged.
+    let ago = |s: u64| SystemTime::now() - Duration::from_secs(s);
+    let kb_events = if degraded() {
+        vec![
+            DevEvent { at: ago(310), kind: EvKind::Disconnected(0x08) },
+            DevEvent { at: ago(305), kind: EvKind::Connected },
+            DevEvent { at: ago(95), kind: EvKind::Disconnected(0x08) },
+            DevEvent { at: ago(94), kind: EvKind::Connected },
+        ]
+    } else {
+        vec![]
+    };
+    let mut kb_hist = History::new();
+    if degraded() {
+        for (i, q) in [255, 255, 250, 232, 190, 176, 168, 180, 168].iter().enumerate() {
+            kb_hist.push_back(Sample { at: Instant::now() - Duration::from_secs(280 - i as u64 * 30), lq: Some(*q), afh: None });
+        }
+    }
+    for d in devs.iter_mut() {
+        if d.id == "E4:11:5B:72:08:4D" {
+            apply_events(d, &kb_events, &kb_hist, &wifi);
         }
     }
 

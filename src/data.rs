@@ -1,9 +1,9 @@
 //! Data collectors. Each runs in its own thread, shells out to a system tool,
 //! and publishes into `Shared`. The UI only ever reads the shared snapshot.
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use crate::net;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub fn hash64(s: &str) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
@@ -472,6 +472,140 @@ pub fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
     d
 }
 
+// ---------- Bluetooth problems: drop events and link history ----------
+
+#[derive(Clone, Debug)]
+pub enum EvKind {
+    Connected,
+    ConnectFailed(u8),
+    Disconnected(u8),
+}
+
+/// One thing that happened to a Bluetooth device's link, with the controller's reason code.
+#[derive(Clone, Debug)]
+pub struct DevEvent {
+    pub at: SystemTime,
+    pub kind: EvKind,
+}
+
+pub type Events = Arc<Mutex<HashMap<String, Vec<DevEvent>>>>;
+
+/// A link-quality / channel-count reading, kept for a few minutes per device.
+#[derive(Clone, Copy)]
+pub struct Sample {
+    pub at: Instant,
+    pub lq: Option<i32>,
+    pub afh: Option<usize>,
+}
+
+pub type History = VecDeque<Sample>;
+
+const HISTORY_SECS: u64 = 300;
+const TROUBLE_WINDOW_SECS: u64 = 900;
+
+fn events_loop(ev: Events) {
+    crate::hci::watch(|e| {
+        let Some(mac) = e.mac else { return };
+        let kind = match (e.connected, e.code) {
+            (true, 0) => EvKind::Connected,
+            (true, c) => EvKind::ConnectFailed(c),
+            (false, c) => EvKind::Disconnected(c),
+        };
+        let mut m = ev.lock().unwrap();
+        let v = m.entry(mac).or_default();
+        v.push(DevEvent { at: SystemTime::now(), kind });
+        if v.len() > 40 {
+            v.remove(0);
+        }
+    });
+}
+
+/// "HH:MM:SS" in local time.
+fn clock(t: SystemTime) -> String {
+    let secs = t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as libc::time_t).unwrap_or(0);
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+fn wifi_context(wifi: &[Dev]) -> String {
+    let mut near: Vec<&Dev> = wifi.iter().filter(|w| w.freq.map_or(false, |f| f < 3000) && w.dbm.map_or(false, |d| d > -75.0)).collect();
+    near.sort_by(|a, b| b.dbm.partial_cmp(&a.dbm).unwrap_or(std::cmp::Ordering::Equal));
+    match near.first() {
+        None => "No strong 2.4 GHz Wi-Fi network is visible, so Wi-Fi is an unlikely cause here.".into(),
+        Some(s) => format!(
+            "{} 2.4 GHz Wi-Fi network(s) above -75 dBm share the band; the strongest is {} (ch {}, {:.0} dBm). Other common sources: microwave ovens, cordless phones, USB 3 devices and other Bluetooth gear.",
+            near.len(),
+            if s.name.is_empty() { "(hidden)" } else { &s.name },
+            s.chan.unwrap_or(0),
+            s.dbm.unwrap_or(0.0)
+        ),
+    }
+}
+
+fn ev_code(e: &DevEvent) -> Option<u8> {
+    match e.kind {
+        EvKind::Disconnected(c) | EvKind::ConnectFailed(c) => Some(c),
+        EvKind::Connected => None,
+    }
+}
+
+/// Adds what is known about a device's problems to its info box and sets `trouble`: recent drops with the
+/// controller's reason, link history, and what the Wi-Fi around it looks like.
+pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) {
+    let start = d.details.len();
+    let now = SystemTime::now();
+    let age = |e: &DevEvent| now.duration_since(e.at).map(|x| x.as_secs()).unwrap_or(0);
+    let lqs: Vec<i32> = hist.iter().filter_map(|s| s.lq).collect();
+    if lqs.len() >= 3 {
+        let (min, avg) = (*lqs.iter().min().unwrap(), lqs.iter().sum::<i32>() / lqs.len() as i32);
+        let span = hist.back().zip(hist.front()).map(|(b, f)| b.at.duration_since(f.at).as_secs()).unwrap_or(0);
+        d.details.push(("Link history".into(), format!("last {} min: quality lowest {}, average {} (of 255)", (span / 60).max(1), min, avg)));
+    }
+    let chans: Vec<usize> = hist.iter().filter_map(|s| s.afh).collect();
+    if let (Some(lo), Some(hi)) = (chans.iter().min(), chans.iter().max()) {
+        if chans.len() >= 3 && hi - lo >= 6 {
+            d.details.push(("Channel map".into(), format!("channels in use ranged {} to {} of 79: the controller is steering around noise it finds", lo, hi)));
+        }
+    }
+    for e in ev.iter().rev().take(4) {
+        let text = match e.kind {
+            EvKind::Connected => "Connected".to_string(),
+            EvKind::ConnectFailed(c) => format!("Connection attempt failed: {} (0x{:02x})", crate::hci::reason(c).0, c),
+            EvKind::Disconnected(c) => format!("Disconnected: {} (0x{:02x})", crate::hci::reason(c).0, c),
+        };
+        d.details.push((clock(e.at), text));
+    }
+    let bad: Vec<&DevEvent> = ev.iter().filter(|e| age(e) < TROUBLE_WINDOW_SECS && ev_code(e).map_or(false, |c| crate::hci::reason(c).2)).collect();
+    if let Some(last) = bad.last() {
+        let code = ev_code(last).unwrap_or(0);
+        let (name, meaning, _) = crate::hci::reason(code);
+        let mut text = format!("Last problem: {}. {}", name, meaning);
+        if bad.len() >= 2 {
+            text += &format!(" It has happened {} times in the last 15 minutes, so this is a pattern rather than a one-off.", bad.len());
+        }
+        if matches!(code, 0x08 | 0x22 | 0x3E | 0x3D) {
+            text += &format!(" {}", wifi_context(wifi));
+        }
+        d.details.push(("What it means".into(), text));
+        let fresh = (1.0 - age(last) as f32 / TROUBLE_WINDOW_SECS as f32).max(0.25);
+        d.trouble = d.trouble.max((0.5 + 0.25 * (bad.len() as f32 - 1.0)).min(1.0) * fresh);
+    }
+    // problems first: right after "Type", the diagnosis, then the evidence behind it
+    let mut issue: Vec<(String, String)> = d.details.drain(start..).collect();
+    if let Some(i) = d.details.iter().position(|r| r.0 == "Link health") {
+        issue.insert(0, d.details.remove(i));
+    }
+    if let Some(i) = issue.iter().position(|r| r.0 == "What it means") {
+        let r = issue.remove(i);
+        let at = issue.iter().position(|r| r.0 != "Link health").unwrap_or(issue.len());
+        issue.insert(at, r);
+    }
+    for (n, row) in issue.into_iter().enumerate() {
+        d.details.insert(1 + n, row);
+    }
+}
+
 fn link_info(c: &crate::hci::Conn, cache: &mut HashMap<String, (String, String)>) -> BtLink {
     let d = crate::hci::link_data(c);
     let (lmp, mfr) = cache.entry(c.mac.clone()).or_insert_with(|| crate::hci::remote_version(c)).clone();
@@ -517,8 +651,9 @@ pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
         ));
 }
 
-fn bt_loop(h: Handle, oui: Arc<Oui>) {
+fn bt_loop(h: Handle, oui: Arc<Oui>, events: Events) {
     let mut cache: HashMap<String, (String, String)> = HashMap::new();
+    let mut hist: HashMap<String, History> = HashMap::new();
     let mut bus = None;
     loop {
         let mut devs = vec![];
@@ -540,8 +675,23 @@ fn bt_loop(h: Handle, oui: Arc<Oui>) {
                     if let Some(d) = devs.iter_mut().find(|d| d.id == l.mac) {
                         attach_link(d, &mut l);
                     }
+                    let hs = hist.entry(l.mac.clone()).or_default();
+                    hs.push_back(Sample { at: Instant::now(), lq: l.lq, afh: l.afh.as_ref().map(|m| m.iter().filter(|x| **x).count()) });
                     links.push(l);
                 }
+            }
+        }
+        // forget old readings, then explain any problems (drop reasons, link history, Wi-Fi around)
+        for hs in hist.values_mut() {
+            while hs.front().map_or(false, |x| x.at.elapsed().as_secs() > HISTORY_SECS) {
+                hs.pop_front();
+            }
+        }
+        {
+            let wifi = h.lock().unwrap().wifi.clone();
+            let evs = events.lock().unwrap().clone();
+            for d in devs.iter_mut() {
+                apply_events(d, evs.get(&d.id).map(|v| v.as_slice()).unwrap_or(&[]), hist.get(&d.id).unwrap_or(&History::new()), &wifi);
             }
         }
         set(&h, |s| {
@@ -724,13 +874,18 @@ pub fn spawn() -> Handle {
         return h;
     }
     let mdns: Mdns = Arc::new(Mutex::new(HashMap::new()));
+    let events: Events = Arc::new(Mutex::new(HashMap::new()));
     {
         let (h, o) = (h.clone(), oui.clone());
         std::thread::spawn(move || wifi_loop(h, o));
     }
     {
-        let (h, o) = (h.clone(), oui.clone());
-        std::thread::spawn(move || bt_loop(h, o));
+        let (h, o, e) = (h.clone(), oui.clone(), events.clone());
+        std::thread::spawn(move || bt_loop(h, o, e));
+    }
+    {
+        let e = events.clone();
+        std::thread::spawn(move || events_loop(e));
     }
     {
         let m = mdns.clone();
