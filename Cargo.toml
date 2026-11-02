@@ -1,6 +1,6 @@
 [package]
 name = "airscope"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "See the Wi-Fi, Bluetooth and LAN devices around you as a radar, and how crowded the 2.4 GHz band is"
 license = "MIT"
