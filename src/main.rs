@@ -1483,26 +1483,43 @@ impl App {
         let hh = |n: &Net, dx: f32| n.strength() * (gh - 20.0) * hill(dx);
         let mut hover: Option<usize> = None;
         let lx = gx1 + 154.0;
-        let mut ly = rect.top() + 62.0;
+        let ly0 = rect.top() + 62.0;
+        let max_rows = (((base + 30.0 - ly0) / 24.0) as usize).saturating_sub(2).max(4);
+        // legend: every network, scrollable when there are more than fit
+        let lview = Rect::from_min_max(pos2(lx, ly0), pos2(rect.right() - 20.0, ly0 + max_rows as f32 * 24.0));
+        let lmax = (nets.len() as f32 - max_rows as f32).max(0.0) * 24.0;
+        let lid = egui::Id::new("spectrum_legend_scroll");
+        let mut loff: f32 = ui.ctx().data(|d| d.get_temp(lid)).unwrap_or(0.0);
+        if lmax > 0.0 && ptr.map_or(false, |q| lview.contains(q)) {
+            loff -= ui.input(|i| i.smooth_scroll_delta.y);
+        }
+        loff = loff.clamp(0.0, lmax);
+        ui.ctx().data_mut(|d| d.insert_temp(lid, loff));
         let mut legend: Vec<(Rect, usize)> = vec![];
-        let max_rows = (((base + 30.0 - ly) / 24.0) as usize).saturating_sub(2).max(4);
-        for (i, _) in nets.iter().enumerate().take(max_rows) {
-            legend.push((Rect::from_min_size(pos2(lx, ly), vec2(rect.right() - lx - 20.0, 22.0)), i));
-            ly += 24.0;
+        for i in 0..nets.len() {
+            let r = Rect::from_min_size(pos2(lx, ly0 + i as f32 * 24.0 - loff), vec2(lview.width(), 22.0));
+            if r.bottom() > lview.top() && r.top() < lview.bottom() {
+                legend.push((r, i));
+            }
         }
         for (r, i) in &legend {
-            if hit(ui, *r, ui.scope_id().with(("lg", *i)), Sense::click()).hovered() {
+            if hit(ui, r.intersect(lview), ui.scope_id().with(("lg", *i)), Sense::click()).hovered() {
                 hover = Some(*i);
             }
         }
+        // hills under the cursor, nearest outline first (ties: the stronger network), so a hill hidden
+        // inside a bigger one is still reachable by pointing near its own edge
+        let mut under: Vec<usize> = vec![];
         if hover.is_none() {
             if let Some(q) = ptr.filter(|q| q.x > gx0 && q.x < gx1 && q.y < base && q.y > rect.top() + 72.0) {
                 let f = 2399.0 + (q.x - gx0) / gw * 87.0;
-                for (i, n) in nets.iter().enumerate() {
-                    if base - q.y <= hh(n, f - n.f) && hover.map_or(true, |_| false) {
-                        hover = Some(i); // strongest first
-                    }
-                }
+                let mut c: Vec<(usize, f32)> = nets.iter().enumerate().filter_map(|(i, n)| {
+                    let depth = hh(n, f - n.f) - (base - q.y);
+                    (depth >= 0.0).then_some((i, depth))
+                }).collect();
+                c.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+                under = c.into_iter().map(|x| x.0).collect();
+                hover = under.first().copied();
             }
         }
         if let Some(h) = hover {
@@ -1618,19 +1635,21 @@ impl App {
 
         // legend
         lcd(&p, pos2(lx, rect.top() + 36.0 + 12.0), Align2::LEFT_CENTER, "NETWORKS", 12.0, CYAN);
+        let pl = p.with_clip_rect(lview.expand2(vec2(4.0, 0.0)));
         for (r, i) in &legend {
             let n = &nets[*i];
             let col = col_of(n);
             if hover == Some(*i) {
-                p.rect_filled(*r, 6.0, alpha(col, 0.16));
+                pl.rect_filled(*r, 6.0, alpha(col, 0.16));
             }
-            p.circle_filled(pos2(r.left() + 10.0, r.center().y), 5.5, col);
+            pl.circle_filled(pos2(r.left() + 10.0, r.center().y), 5.5, col);
             let nm = if n.mine { format!("{} · yours", n.name) } else if n.aps > 1 && n.hidden { format!("{} ×{}", n.name, n.aps) } else { n.name.clone() };
-            p.text(pos2(r.left() + 24.0, r.center().y), Align2::LEFT_CENTER, nm, FontId::proportional(12.0), if n.hidden { DIM } else { TEXT });
-            p.text(pos2(r.right() - 4.0, r.center().y), Align2::RIGHT_CENTER, format!("ch{} {:.0}", n.chan, n.dbm), FontId::monospace(10.5), DIM);
+            pl.text(pos2(r.left() + 24.0, r.center().y), Align2::LEFT_CENTER, nm, FontId::proportional(12.0), if n.hidden { DIM } else { TEXT });
+            pl.text(pos2(r.right() - 12.0, r.center().y), Align2::RIGHT_CENTER, format!("ch{} {:.0}", n.chan, n.dbm), FontId::monospace(10.5), DIM);
         }
-        if nets.len() > legend.len() {
-            p.text(pos2(lx, ly + 8.0), Align2::LEFT_CENTER, format!("+ {} weaker networks (hover the graph)", nets.len() - legend.len()), FontId::proportional(11.0), DIM);
+        if lmax > 0.0 {
+            scrollbar(&p, Rect::from_min_max(pos2(lview.right() - 5.0, lview.top()), pos2(lview.right(), lview.bottom())), loff, lmax, lview.height(), lview.height() + lmax, CYAN);
+            p.text(pos2(lx, lview.bottom() + 10.0), Align2::LEFT_CENTER, format!("{} networks · scroll for the rest", nets.len()), FontId::proportional(11.0), DIM);
         }
         let n5 = self.devs.iter().filter(|d| d.kind == Kind::Wifi && d.freq.map_or(false, |f| f >= 3000)).count();
         p.text(pos2(lx, base + 14.0), Align2::LEFT_CENTER, format!("{} access points on 5 GHz not shown", n5), FontId::proportional(10.5), DIM);
@@ -1642,7 +1661,14 @@ impl App {
             let ov: Vec<&Net> = nets.iter().enumerate().filter(|(j, o)| *j != h && (o.f - n.f).abs() < 22.0 && o.dbm > -85.0).map(|(_, o)| o).collect();
             let same = ov.iter().filter(|o| (o.f - n.f).abs() < 1.0).count();
             let sub = format!("ch {} · {:.0} dBm · {} on same channel, {} partly overlapping", n.chan, n.dbm, same, ov.len() - same);
-            self.tip_want = Some(TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y - 14.0), col: col_of(n), title: format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() }), sub: vec![sub], boxed: false });
+            let mut subs = vec![sub];
+            if under.len() > 1 && under.first() == Some(&h) {
+                // other hills stacked under the same spot (point nearer a hill's edge to pick it)
+                let names: Vec<String> = under.iter().skip(1).take(4).map(|j| if nets[*j].name.is_empty() { "(hidden)".to_string() } else { nets[*j].name.clone() }).collect();
+                let more = under.len() - 1 - names.len();
+                subs.push(format!("Also here: {}{}", names.join(", "), if more > 0 { format!(" +{}", more) } else { String::new() }));
+            }
+            self.tip_want = Some(TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y - 14.0), col: col_of(n), title: format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() }), sub: subs, boxed: false });
         }
 
         // explanation cards
