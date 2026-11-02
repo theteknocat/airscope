@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
 libc = "0.2"
+mdns-sd = "0.21.7"
 zbus = "5"

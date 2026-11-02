@@ -459,23 +459,51 @@ fn bt_loop(h: Handle, oui: Arc<Oui>) {
 
 type Mdns = Arc<Mutex<HashMap<String, (String, Vec<String>)>>>;
 
+/// mDNS/DNS-SD discovery with the mdns-sd crate (replaces `avahi-browse`): ask which service types exist,
+/// browse each one, and keep ip -> (host name, service names) up to date as services come and go.
 fn mdns_loop(m: Mdns) {
-    loop {
-        if let Some(out) = run("avahi-browse", &["-a", "-r", "-t", "-p"]) {
-            let mut map: HashMap<String, (String, Vec<String>)> = HashMap::new();
-            for l in out.lines() {
-                let f: Vec<&str> = l.split(';').collect();
-                if f.len() > 7 && f[0] == "=" && f[2] == "IPv4" {
-                    let e = map.entry(f[7].to_string()).or_insert((f[6].trim_end_matches(".local").to_string(), vec![]));
-                    let svc = f[4].trim_start_matches('_').split('.').next().unwrap_or("").to_string();
-                    if !svc.is_empty() && !e.1.contains(&svc) {
-                        e.1.push(svc);
-                    }
+    use mdns_sd::{ServiceDaemon, ServiceEvent};
+    type Inst = HashMap<String, (Vec<String>, String, String)>; // full name -> (ipv4s, host, service)
+    let Ok(daemon) = ServiceDaemon::new() else { return }; // no mDNS: LAN still works from ARP + DNS
+    let Ok(meta) = daemon.browse("_services._dns-sd._udp.local.") else { return };
+    let inst: Arc<Mutex<Inst>> = Arc::new(Mutex::new(HashMap::new()));
+    let publish = |inst: &Inst, m: &Mdns| {
+        let mut map: HashMap<String, (String, Vec<String>)> = HashMap::new();
+        for (ips, host, svc) in inst.values() {
+            for ip in ips {
+                let e = map.entry(ip.clone()).or_insert((host.clone(), vec![]));
+                if !svc.is_empty() && !e.1.contains(svc) {
+                    e.1.push(svc.clone());
                 }
             }
-            *m.lock().unwrap() = map;
         }
-        std::thread::sleep(Duration::from_secs(45));
+        *m.lock().unwrap() = map;
+    };
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Ok(ev) = meta.recv() {
+        let ServiceEvent::ServiceFound(_, ty) = ev else { continue };
+        if !seen.insert(ty.clone()) {
+            continue;
+        }
+        let Ok(rx) = daemon.browse(&ty) else { continue };
+        let (inst, m) = (inst.clone(), m.clone());
+        std::thread::spawn(move || {
+            while let Ok(ev) = rx.recv() {
+                let mut i = inst.lock().unwrap();
+                match ev {
+                    ServiceEvent::ServiceResolved(r) => {
+                        let svc = r.ty_domain.trim_start_matches('_').split('.').next().unwrap_or("").to_string();
+                        let host = r.host.trim_end_matches('.').trim_end_matches(".local").to_string();
+                        i.insert(r.fullname.clone(), (r.get_addresses_v4().iter().map(|a| a.to_string()).collect(), host, svc));
+                    }
+                    ServiceEvent::ServiceRemoved(_, full) => {
+                        i.remove(&full);
+                    }
+                    _ => continue,
+                }
+                publish(&i, &m);
+            }
+        });
     }
 }
 
@@ -599,4 +627,25 @@ pub fn spawn() -> Handle {
         std::thread::spawn(move || lan_loop(h, o, mdns));
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Prints what mDNS discovery finds after 10 s; compare with `avahi-browse -a -r -t -p`.
+    /// Run with: cargo test mdns_dump -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn mdns_dump() {
+        let m: Mdns = Arc::new(Mutex::new(HashMap::new()));
+        let m2 = m.clone();
+        std::thread::spawn(move || mdns_loop(m2));
+        std::thread::sleep(Duration::from_secs(10));
+        let mut v: Vec<_> = m.lock().unwrap().clone().into_iter().collect();
+        v.sort();
+        for (ip, (host, svcs)) in v {
+            println!("{} {} {:?}", ip, host, svcs);
+        }
+    }
 }
