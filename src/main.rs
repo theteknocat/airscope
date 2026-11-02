@@ -2000,7 +2000,9 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         .collect();
     let why = lp.layout(d.why.clone(), FontId::proportional(12.5), TEXT, w - 44.0);
     let rows_h: f32 = rows.iter().map(|(_, g)| g.size().y.max(14.0) + 7.0).sum();
-    let h_full = 92.0 + rows_h + 30.0 + why.size().y + 34.0;
+    let has_sig = d.dbm.is_some() || d.lq.is_some();
+    let top = if has_sig { 114.0 } else { 100.0 }; // where the detail rows start
+    let h_full = (top - 8.0) + rows_h + 30.0 + why.size().y + 34.0;
     let h = h_full.min((bounds.height() - 20.0).max(240.0)); // taller content scrolls with the mouse wheel
     let mut x = anchor.x + 40.0;
     if x + w > bounds.right() - 10.0 {
@@ -2022,8 +2024,8 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         .collect();
     let irows_h: f32 = irows.iter().map(|(_, g)| g.size().y.max(14.0) + 8.0).sum();
     let ih_full = 44.0 + irows_h + 14.0;
-    let ih = ih_full.min(r.height() - 84.0 - 12.0).max(120.0);
-    let ir = Rect::from_min_size(r.min + vec2(10.0, 84.0), vec2(iw, ih));
+    let ih = ih_full.min(r.height() - (top - 16.0) - 12.0).max(120.0);
+    let ir = Rect::from_min_size(r.min + vec2(10.0, top - 16.0), vec2(iw, ih));
     let chip = Rect::from_min_max(pos2(r.right() - 22.0 - 92.0, r.top() + 42.0), pos2(r.right() - 22.0, r.top() + 66.0));
 
     // the wheel goes to the box under the mouse
@@ -2071,21 +2073,20 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
             p.text(pos2(chip.left() + 24.0, chip.center().y), Align2::LEFT_CENTER, "ISSUE", FontId::monospace(12.5), Color32::WHITE);
             chip_clicked = resp.clicked();
         }
-        // signal
-        let by = r.top() + 72.0;
-        match d.dbm {
-            Some(dbm) => {
-                led_bar(&p, Rect::from_min_size(pos2(r.left() + 22.0, by), vec2(w - 130.0, 9.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 24);
-                p.text(pos2(r.right() - 22.0, by + 4.5), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(13.0), TEXT);
-            }
-            None => {
-                p.text(pos2(r.left() + 22.0, by + 4.5), Align2::LEFT_CENTER, "no signal reading for this device", FontId::proportional(11.5), DIM);
-            }
+        // signal: dBm for Wi-Fi, link quality for connected Bluetooth, nothing when there is no reading
+        let by = r.top() + 86.0;
+        if let Some(dbm) = d.dbm {
+            led_bar(&p, Rect::from_min_size(pos2(r.left() + 22.0, by), vec2(w - 130.0, 9.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 24);
+            p.text(pos2(r.right() - 22.0, by + 4.5), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(13.0), TEXT);
+        } else if let Some(q) = d.lq {
+            let bc = if d.trouble > 0.0 && q < 230 { RED } else { col };
+            led_bar(&p, Rect::from_min_size(pos2(r.left() + 22.0, by), vec2(w - 150.0, 9.0)), (q as f32 / 255.0).clamp(0.0, 1.0), bc, 24);
+            p.text(pos2(r.right() - 22.0, by + 4.5), Align2::RIGHT_CENTER, format!("link {}/255", q), FontId::monospace(13.0), TEXT);
         }
         // rows
-        let mut yy = r.top() + 100.0;
+        let mut yy = r.top() + top;
         p.line_segment([pos2(r.left() + 20.0, yy - 6.0), pos2(r.right() - 20.0, yy - 6.0)], Stroke::new(1.0, alpha(CYAN, 0.15)));
-        let body = p.with_clip_rect(Rect::from_min_max(pos2(r.left(), r.top() + 94.0), pos2(r.right(), r.bottom() - 30.0)));
+        let body = p.with_clip_rect(Rect::from_min_max(pos2(r.left(), r.top() + top - 6.0), pos2(r.right(), r.bottom() - 30.0)));
         yy -= scroll;
         for (k, v) in rows {
             let rh = v.size().y.max(14.0);
@@ -2096,7 +2097,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         yy += 6.0;
         lcd(&body, pos2(r.left() + 22.0, yy + 6.0), Align2::LEFT_CENTER, "HOW WE KNOW", 11.0, col);
         body.galley(pos2(r.left() + 22.0, yy + 20.0), why, TEXT);
-        scrollbar(&p, Rect::from_min_max(pos2(r.right() - 13.0, r.top() + 98.0), pos2(r.right() - 8.0, r.bottom() - 34.0)), scroll, max_scroll, h - 132.0, h_full - 132.0, col);
+        scrollbar(&p, Rect::from_min_max(pos2(r.right() - 13.0, r.top() + top - 2.0), pos2(r.right() - 8.0, r.bottom() - 34.0)), scroll, max_scroll, h - top - 32.0, h_full - top - 32.0, col);
         let more = max_scroll > 0.0 && scroll < max_scroll - 1.0;
         let foot = if more { "Scroll for more (mouse wheel)" } else { "Drag the node to where this device really is." };
         p.text(pos2(r.left() + 22.0, r.bottom() - 14.0), Align2::LEFT_CENTER, foot, FontId::proportional(11.0), if more { CYAN } else { DIM });

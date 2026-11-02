@@ -57,6 +57,7 @@ pub struct Dev {
     pub freq: Option<u32>,
     pub details: Vec<(String, String)>,
     pub why: String,
+    pub lq: Option<i32>, // Bluetooth link quality 0..255 (stands in for signal strength on connected Bluetooth devices)
     pub trouble: f32, // 0 = healthy .. 1 = badly degraded link (shown as a red halo)
     pub issue: Vec<(String, String)>, // what is wrong and the evidence, shown behind the ISSUE button in the info box
 }
@@ -79,6 +80,7 @@ impl Dev {
             freq: None,
             details: vec![],
             why: String::new(),
+            lq: None,
             trouble: 0.0,
             issue: vec![],
         }
@@ -620,7 +622,7 @@ pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
         // Controller RSSI for a connected link is relative to the "golden range" (0 = fine),
         // so it is not a distance. Use it only to nudge the node outward for display.
         d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
-        d.details.push(("Link quality".into(), l.lq.map(|q| format!("{} / 255", q)).unwrap_or("?".into())));
+        d.lq = l.lq;
     // Link quality is 255 on a healthy link and falls when packets are being lost or retried (interference, distance, obstacles).
     if let Some(q) = l.lq.filter(|q| *q < LINK_WARN) {
         d.trouble = ((LINK_WARN - q) as f32 / 130.0).clamp(0.25, 1.0);
