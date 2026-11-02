@@ -478,7 +478,7 @@ impl App {
         let base = (rect.width().min(rect.height()) * 0.5 - 28.0).max(120.0);
         let bg = ui.interact(rect, ui.scope_id().with("radar_bg"), Sense::click_and_drag());
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        let dt = ui.input(|i| i.stable_dt).min(0.05);
+        let dt = ui.input(|i| i.stable_dt).min(0.05) * std::env::var("AIRSCOPE_SLOW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0); // debug aid
         let k = 1.0 - (-dt * 18.0).exp(); // ~150 ms ease for node transitions
         let k_slow = 1.0 - (-dt * 5.0).exp(); // ~0.5 s ease for signal-driven moves
         if bg.dragged() {
@@ -664,6 +664,14 @@ impl App {
                     self.open.insert(key.clone()); // a device picked from the list must be visible
                 }
             }
+            if std::env::var_os("AIRSCOPE_AUTO").is_some() && mem.iter().any(|&i| self.latched[nodes[i].i].kind == Kind::Bt && self.latched[nodes[i].i].connected) {
+                // debug aid: open for 7 s, closed for 7 s
+                if t > 4.0 && (t - 4.0).rem_euclid(14.0) < 7.0 {
+                    self.open.insert(key.clone());
+                } else {
+                    self.open.remove(&key);
+                }
+            }
             if mem.len() >= 3 && std::env::var_os("AIRSCOPE_PIN_BIG").is_some() {
                 self.open.insert(key.clone()); // debug aid
             }
@@ -846,14 +854,20 @@ impl App {
         // --- links from the PC to connected Bluetooth devices, with travelling pulses
         for (ni, n) in nodes.iter().enumerate() {
             let d = &self.latched[n.i];
-            if d.kind == Kind::Bt && d.connected && vis1[ni] {
-                draw_link(&p, c, disp[ni], kind_col(d.kind), t);
+            if d.kind == Kind::Bt && d.connected && vis1[ni] && group_of[ni].is_none() {
+                draw_link(&p, c, disp[ni], kind_col(d.kind), t, 1.0);
             }
         }
         // a group holding a connected Bluetooth device gets the same link
         for (gi, g) in groups.iter().enumerate() {
-            if iconshown[gi] && g.members.iter().any(|&i| self.latched[nodes[i].i].kind == Kind::Bt && self.latched[nodes[i].i].connected) {
-                draw_link(&p, c, g.center, kind_col(Kind::Bt), t);
+            let cm: Vec<Pos2> = g.members.iter().filter(|&&i| self.latched[nodes[i].i].kind == Kind::Bt && self.latched[nodes[i].i].connected).map(|&i| disp[i]).collect();
+            if cm.is_empty() {
+                continue;
+            }
+            if iconshown[gi] {
+                draw_link(&p, c, g.center, kind_col(Kind::Bt), t, 1.0);
+            } else if !g.open && !closing[gi] {
+                group_member_links(&p, c, g.center, &cm, 0.0, t); // members still flying in
             }
         }
 
@@ -947,6 +961,10 @@ impl App {
                 continue;
             }
             soft_halo(&p, g.center, g.halo_r, amt);
+            if g.open || closing[gi] {
+                let cm: Vec<Pos2> = g.members.iter().filter(|&&i| self.latched[nodes[i].i].kind == Kind::Bt && self.latched[nodes[i].i].connected).map(|&i| disp[i]).collect();
+                group_member_links(&p, c, g.center, &cm, 27.0, t);
+            }
             if !g.open {
                 if closing[gi] {
                     // reverse of the fan-out: members glide back toward the icon, circle fading
@@ -960,14 +978,6 @@ impl App {
                     }
                 }
                 continue;
-            }
-            // links to each connected Bluetooth device in the fan: drawn above the circle, from the PC's edge
-            for &i in &g.members {
-                let d = &self.latched[nodes[i].i];
-                let v = disp[i] - c;
-                if d.kind == Kind::Bt && d.connected && v.length() > 40.0 {
-                    draw_link(&p, c + v / v.length() * 27.0, disp[i], kind_col(Kind::Bt), t);
-                }
             }
             for &i in &g.members {
                 p.line_segment([g.center, disp[i]], Stroke::new(4.0, add(CYAN, 0.05)));
@@ -1587,14 +1597,30 @@ fn sweep_hot(c: Pos2, q: Pos2, sw: f32) -> f32 {
 }
 
 /// Glowing link from the PC to a connected device (or a group holding one), with travelling pulses.
-fn draw_link(p: &egui::Painter, a: Pos2, b: Pos2, col: Color32, t: f32) {
-    p.line_segment([a, b], Stroke::new(5.0, add(col, 0.06)));
-    p.line_segment([a, b], Stroke::new(1.5, alpha(col, 0.55)));
+fn draw_link(p: &egui::Painter, a: Pos2, b: Pos2, col: Color32, t: f32, k: f32) {
+    p.line_segment([a, b], Stroke::new(5.0, add(col, 0.06 * k)));
+    p.line_segment([a, b], Stroke::new(1.5, alpha(col, 0.55 * k)));
     for kk in 0..3 {
         let u = (t * 0.6 + kk as f32 / 3.0).fract();
         let q = a + (b - a) * u;
-        glow(p, q, 2.5, col, 0.8);
+        glow(p, q, 2.5, col, 0.8 * k);
         p.circle_filled(q, 2.0, Color32::WHITE);
+    }
+}
+
+/// Links from the PC to the connected Bluetooth members of a group. As members near the group centre their
+/// line ends slide onto it and share the brightness, so several lines merge into the single group line
+/// (and split out again when the group opens). `start_off` keeps the line off the PC orb.
+fn group_member_links(p: &egui::Painter, c: Pos2, centre: Pos2, pts: &[Pos2], start_off: f32, t: f32) {
+    let n = pts.len() as f32;
+    for &q in pts {
+        let x = (1.0 - ((q - centre).length() - 27.0) / 24.0).clamp(0.0, 1.0);
+        let m = x * x * (3.0 - 2.0 * x);
+        let end = q + (centre - q) * m;
+        let v = end - c;
+        if v.length() > start_off + 13.0 {
+            draw_link(p, if start_off > 0.0 { c + v / v.length() * start_off } else { c }, end, kind_col(Kind::Bt), t, 1.0 / (1.0 + m * (n - 1.0)));
+        }
     }
 }
 
