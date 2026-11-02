@@ -847,15 +847,13 @@ impl App {
         for (ni, n) in nodes.iter().enumerate() {
             let d = &self.latched[n.i];
             if d.kind == Kind::Bt && d.connected && vis1[ni] {
-                let col = kind_col(d.kind);
-                p.line_segment([c, disp[ni]], Stroke::new(5.0, add(col, 0.06)));
-                p.line_segment([c, disp[ni]], Stroke::new(1.5, alpha(col, 0.55)));
-                for kk in 0..3 {
-                    let u = (t * 0.6 + kk as f32 / 3.0).fract();
-                    let q = c + (disp[ni] - c) * u;
-                    glow(&p, q, 2.5, col, 0.8);
-                    p.circle_filled(q, 2.0, Color32::WHITE);
-                }
+                draw_link(&p, c, disp[ni], kind_col(d.kind), t);
+            }
+        }
+        // a group holding a connected Bluetooth device gets the same link
+        for (gi, g) in groups.iter().enumerate() {
+            if iconshown[gi] && g.members.iter().any(|&i| self.latched[nodes[i].i].kind == Kind::Bt && self.latched[nodes[i].i].connected) {
+                draw_link(&p, c, g.center, kind_col(Kind::Bt), t);
             }
         }
 
@@ -892,7 +890,7 @@ impl App {
             *sc += (1.0 - *sc) * k;
             let sc = *sc;
             let r = 19.0 * (0.55 + 0.45 * sc);
-            orb(&p, g.center, r, col, if hovered { 0.9 } else { 0.25 });
+            orb(&p, g.center, r, col, 0.2 + sweep_hot(c, g.center, sw) * 0.8 + if hovered { 0.7 } else { 0.0 });
             let nn = g.members.len().min(10);
             for kk in 0..nn {
                 if !settled[g.members[kk]] {
@@ -963,6 +961,13 @@ impl App {
                 }
                 continue;
             }
+            if g.members.iter().any(|&i| self.latched[nodes[i].i].kind == Kind::Bt && self.latched[nodes[i].i].connected) {
+                // link to an open group: drawn above its circle, starting at the PC's edge
+                let v = g.center - c;
+                if v.length() > 40.0 {
+                    draw_link(&p, c + v / v.length() * 27.0, g.center, kind_col(Kind::Bt), t);
+                }
+            }
             for &i in &g.members {
                 p.line_segment([g.center, disp[i]], Stroke::new(4.0, add(CYAN, 0.05)));
                 p.line_segment([g.center, disp[i]], Stroke::new(1.2, alpha(CYAN, 0.5)));
@@ -976,7 +981,7 @@ impl App {
             let kinds: Vec<Kind> = g.members.iter().map(|&i| self.latched[nodes[i].i].kind).collect();
             let col = if kinds.iter().all(|x| *x == kinds[0]) { kind_col(kinds[0]) } else { Color32::from_rgb(190, 212, 240) };
             let resp = hit(ui, Rect::from_center_size(g.center, Vec2::splat(40.0)), ui.scope_id().with(("gc", &g.key)), Sense::click());
-            orb(&p, g.center, 11.0, col, if resp.hovered() { 0.9 } else { 0.2 });
+            orb(&p, g.center, 11.0, col, 0.2 + sweep_hot(c, g.center, sw) * 0.8 + if resp.hovered() { 0.7 } else { 0.0 });
             p.line_segment([g.center - vec2(5.0, 0.0), g.center + vec2(5.0, 0.0)], Stroke::new(2.2, shade(col, 0.15)));
             if resp.clicked() {
                 toggle.push((g.key.clone(), false));
@@ -1566,6 +1571,29 @@ fn draw_tip(p: &egui::Painter, c: &TipC, bounds: Rect) {
         tip(p, c.anchor, bounds, &c.title, &c.sub, c.col);
     } else {
         pill(p, c.anchor, &c.title, c.sub.first().map(|x| x.as_str()).unwrap_or(""), c.col);
+    }
+}
+
+/// How strongly the radar sweep is lighting up a point (1 as it passes, fading over ~0.9 rad behind it).
+fn sweep_hot(c: Pos2, q: Pos2, sw: f32) -> f32 {
+    let v = q - c;
+    let diff = (sw - v.y.atan2(v.x).rem_euclid(TAU)).rem_euclid(TAU);
+    if diff < 0.9 {
+        1.0 - diff / 0.9
+    } else {
+        0.0
+    }
+}
+
+/// Glowing link from the PC to a connected device (or a group holding one), with travelling pulses.
+fn draw_link(p: &egui::Painter, a: Pos2, b: Pos2, col: Color32, t: f32) {
+    p.line_segment([a, b], Stroke::new(5.0, add(col, 0.06)));
+    p.line_segment([a, b], Stroke::new(1.5, alpha(col, 0.55)));
+    for kk in 0..3 {
+        let u = (t * 0.6 + kk as f32 / 3.0).fract();
+        let q = a + (b - a) * u;
+        glow(p, q, 2.5, col, 0.8);
+        p.circle_filled(q, 2.0, Color32::WHITE);
     }
 }
 
