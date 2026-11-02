@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Airscope
+Comment=See the Wi-Fi, Bluetooth and LAN devices around you as a radar
+Exec=airscope
+Icon=airscope
+Terminal=false
+Categories=Network;Utility;
+StartupWMClass=airscope

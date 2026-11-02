@@ -1,1 +1,4 @@
 target/
+dist/
+target-appimage/
+packaging/.cache/

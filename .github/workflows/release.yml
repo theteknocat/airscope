@@ -1,0 +1,29 @@
+name: Release
+
+# Push a tag like v0.2.0 (it must match the version in Cargo.toml) to build the AppImage and publish a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04 # old glibc on purpose: the AppImage then runs on most distros from 2022 on
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match Cargo.toml version
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml version v$v"; exit 1; }
+      - name: Run tests
+        run: cargo test --locked
+      - name: Build AppImage
+        run: NO_CONTAINER=1 packaging/build-appimage.sh
+      - name: Checksum
+        run: cd dist && sha256sum Airscope-x86_64.AppImage > Airscope-x86_64.AppImage.sha256
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/Airscope-x86_64.AppImage dist/Airscope-x86_64.AppImage.sha256 --title "Airscope ${GITHUB_REF_NAME}" --generate-notes
