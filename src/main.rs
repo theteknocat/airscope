@@ -87,11 +87,21 @@ fn soft_halo(p: &egui::Painter, c: Pos2, r: f32, amt: f32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos: Pos2, t: f32, sw: f32, sel: bool, label: bool, interactive: bool, can_drag: bool, scale: f32, c: Pos2, big: f32, ev: &mut Ev) {
+/// Visual radius of a device's dot/orb.
+fn node_rad(d: &Dev) -> f32 {
+    if d.known {
+        17.0
+    } else {
+        4.0 + ((d.dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos: Pos2, t: f32, sw: f32, sel: bool, label: f32, interactive: bool, can_drag: bool, scale: f32, c: Pos2, big: f32, ev: &mut Ev) {
     let col = if n.dim { shade(kind_col(d.kind), 0.5) } else { kind_col(d.kind) };
     let diff = (sw - n.ang).rem_euclid(TAU);
     let hot = if diff < 0.9 { 1.0 - diff / 0.9 } else { 0.0 };
-    let rad = scale * if d.known { 17.0 } else { 4.0 + ((d.dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0 };
+    let rad = scale * node_rad(d);
     let mut hovered = false;
     if interactive {
         let sense = if can_drag { Sense::click_and_drag() } else { Sense::click() };
@@ -115,6 +125,14 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
         }
     }
     let boost = hot * 0.8 + if sel || hovered { 0.9 } else { 0.0 };
+    // the hovered device is painted on a higher layer: always above neighbouring orbs and labels
+    let fp;
+    let p: &egui::Painter = if hovered {
+        fp = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("hover_node"))).with_clip_rect(p.clip_rect());
+        &fp
+    } else {
+        p
+    };
     if d.connected {
         let pulse = (t * 2.6).sin() * 0.5 + 0.5;
         p.circle_stroke(pos, rad + 5.0 + pulse * 5.0, Stroke::new(1.5, add(col, 0.35 * (1.0 - pulse))));
@@ -131,10 +149,11 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
             arc(p, pos, rad + 10.0, a, a + 0.9, Stroke::new(2.0, Color32::WHITE));
         }
     }
-    if (label && d.known && !n.dim) || sel || hovered {
+    let a = if sel || hovered { 1.0 } else if d.known && !n.dim { label } else { 0.0 };
+    if a > 0.01 {
         let tp = pos + vec2(0.0, rad + 13.0);
-        p.text(tp + vec2(1.0, 1.0), Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), Color32::from_black_alpha(200));
-        p.text(tp, Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), alpha(TEXT, 0.9));
+        p.text(tp + vec2(1.0, 1.0), Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), Color32::from_black_alpha((200.0 * a) as u8));
+        p.text(tp, Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), alpha(TEXT, 0.9 * a));
     }
 }
 
@@ -182,6 +201,7 @@ struct App {
     sdist: HashMap<String, f32>,   // eased displayed distance
     appear: HashMap<String, f32>,  // 0..1 pop-in of new devices
     bursts: Vec<Burst>,
+    label_a: HashMap<String, f32>, // 0..1 fade of each device's permanent label
     last_world: HashMap<String, (Vec2, bool)>, // where each device was last shown (PC-relative, zoom-independent), and whether it sat inside a collapsed group icon
     dragging: Option<String>,
     gdrag: Option<Vec<String>>,    // a whole group is being dragged: its members move together and don't merge until dropped
@@ -279,6 +299,7 @@ impl App {
             sdist: HashMap::new(),
             appear: HashMap::new(),
             bursts: vec![],
+            label_a: HashMap::new(),
             last_world: HashMap::new(),
             dragging: None,
             gdrag: None,
@@ -856,7 +877,8 @@ impl App {
         // --- which labels fit (connected and strongest first)
         let mut allow: HashSet<usize> = Default::default();
         {
-            let mut placed: Vec<Rect> = (0..cnt).filter(|&i| vis1[i]).map(|i| Rect::from_center_size(disp[i], Vec2::splat(30.0))).collect();
+            // every dot that is actually drawn blocks labels, including members of a fanned-out group
+            let mut placed: Vec<Rect> = (0..cnt).filter(|&i| vis1[i] || in_open[i]).map(|i| Rect::from_center_size(disp[i], Vec2::splat(2.0 * (node_rad(&self.latched[nodes[i].i]) * fscale[i] + 3.0)))).collect();
             placed.extend(groups.iter().enumerate().filter(|(gi, _)| iconshown[*gi]).map(|(_, g)| Rect::from_center_size(g.center, Vec2::splat(44.0))));
             placed.push(Rect::from_center_size(c, Vec2::splat(120.0)));
             let mut order: Vec<usize> = (0..cnt).filter(|&i| !hidden[i] && !masked[i] && self.latched[nodes[i].i].known && !nodes[i].dim).collect();
@@ -872,6 +894,14 @@ impl App {
                     allow.insert(i);
                 }
             }
+        }
+
+        // labels fade in and out instead of popping as the layout changes
+        let mut lab = vec![0.0f32; cnt];
+        for i in 0..cnt {
+            let e = self.label_a.entry(self.latched[nodes[i].i].id.clone()).or_insert(0.0);
+            *e += ((if allow.contains(&i) { 1.0 } else { 0.0 }) - *e) * k;
+            lab[i] = *e;
         }
 
         let view = rect.expand(70.0);
@@ -907,7 +937,7 @@ impl App {
             let interactive = !hidden[ni] && (!masked[ni] || Some(ni) == drag_ni);
             let sel = sel_id.as_deref() == Some(d.id.as_str());
             let sc = fscale[ni] * self.appear.get(&d.id).copied().unwrap_or(1.0);
-            node_widget(ui, &p, d, n, ni, disp[ni], t, sw, sel, allow.contains(&ni), interactive, true, sc, c, big, &mut ev);
+            node_widget(ui, &p, d, n, ni, disp[ni], t, sw, sel, lab[ni], interactive, true, sc, c, big, &mut ev);
         }
         let mut toggle: Vec<(String, bool)> = vec![]; // (key, open?)
         let mut group_hover: Option<usize> = None;
@@ -1012,7 +1042,7 @@ impl App {
                     for &i in &g.members {
                         let d = &self.latched[nodes[i].i];
                         let sel = sel_id.as_deref() == Some(d.id.as_str());
-                        node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, false, false, false, fscale[i], c, big, &mut ev);
+                        node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, 0.0, false, false, fscale[i], c, big, &mut ev);
                     }
                 }
                 continue;
@@ -1024,7 +1054,7 @@ impl App {
             for &i in &g.members {
                 let d = &self.latched[nodes[i].i];
                 let sel = sel_id.as_deref() == Some(d.id.as_str());
-                node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, allow.contains(&i), true, true, 1.0, c, big, &mut ev);
+                node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, lab[i], true, true, 1.0, c, big, &mut ev);
             }
             let kinds: Vec<Kind> = g.members.iter().map(|&i| self.latched[nodes[i].i].kind).collect();
             let col = if kinds.iter().all(|x| *x == kinds[0]) { kind_col(kinds[0]) } else { Color32::from_rgb(190, 212, 240) };
