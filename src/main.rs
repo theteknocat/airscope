@@ -41,9 +41,11 @@ struct Ev {
 }
 
 struct Burst {
-    pos: Pos2,
+    w: Vec2, // position relative to the PC in units of the radar radius, so it follows zoom/pan
     col: Color32,
     t0: f32,
+    rad: f32,
+    known: bool,
 }
 
 /// Orbit slot `k` of `nn` around a group icon.
@@ -179,7 +181,7 @@ struct App {
     sdist: HashMap<String, f32>,   // eased displayed distance
     appear: HashMap<String, f32>,  // 0..1 pop-in of new devices
     bursts: Vec<Burst>,
-    last_pos: HashMap<String, Pos2>,
+    last_world: HashMap<String, Vec2>, // where each device was last shown (PC-relative, zoom-independent)
     dragging: Option<String>,
     gdrag: Option<Vec<String>>,    // a whole group is being dragged: its members move together and don't merge until dropped
     prev_groups: Vec<(String, Vec<String>)>,
@@ -276,7 +278,7 @@ impl App {
             sdist: HashMap::new(),
             appear: HashMap::new(),
             bursts: vec![],
-            last_pos: HashMap::new(),
+            last_world: HashMap::new(),
             dragging: None,
             gdrag: None,
             prev_groups: vec![],
@@ -454,19 +456,20 @@ impl App {
         }
         if !freeze {
             let live: HashSet<&str> = self.devs.iter().map(|d| d.id.as_str()).collect();
-            let mut gone: Vec<(String, Kind)> = vec![];
+            let mut gone: Vec<(String, Kind, bool, Option<f32>)> = vec![];
             let over = &self.over;
             self.latched.retain(|d| {
                 if !live.contains(d.id.as_str()) && crossed(angle(d, over)) {
-                    gone.push((d.id.clone(), d.kind));
+                    gone.push((d.id.clone(), d.kind, d.known, d.dbm));
                     false
                 } else {
                     true
                 }
             });
-            for (id, kind) in gone {
-                if let Some(&pos) = self.last_pos.get(&id) {
-                    self.bursts.push(Burst { pos, col: kind_col(kind), t0: t });
+            for (id, kind, known, dbm) in gone {
+                if let Some(&w) = self.last_world.get(&id) {
+                    let rad = if known { 17.0 } else { 4.0 + ((dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0 };
+                    self.bursts.push(Burst { w, col: kind_col(kind), t0: t, rad, known });
                 }
             }
         }
@@ -834,6 +837,15 @@ impl App {
             }
         }
 
+        // remember where each device is shown (a member of a collapsed group counts as sitting on its icon)
+        for ni in 0..cnt {
+            let q = match group_of[ni] {
+                Some(gi) if iconshown[gi] => groups[gi].center,
+                _ => disp[ni],
+            };
+            self.last_world.insert(self.latched[nodes[ni].i].id.clone(), (q - c) / big);
+        }
+
         // anything sitting under an open group's circle is obscured and not clickable
         let masked: Vec<bool> = (0..cnt).map(|i| !in_open[i] && groups.iter().filter(|g| g.open).any(|g| (disp[i] - g.center).length() < g.halo_r)).collect();
 
@@ -888,7 +900,6 @@ impl App {
                 continue;
             }
             let d = &self.latched[n.i];
-            self.last_pos.insert(d.id.clone(), disp[ni]);
             let interactive = !hidden[ni] && (!masked[ni] || Some(ni) == drag_ni);
             let sel = sel_id.as_deref() == Some(d.id.as_str());
             let sc = fscale[ni] * self.appear.get(&d.id).copied().unwrap_or(1.0);
@@ -1009,7 +1020,6 @@ impl App {
             for &i in &g.members {
                 let d = &self.latched[nodes[i].i];
                 let sel = sel_id.as_deref() == Some(d.id.as_str());
-                self.last_pos.insert(d.id.clone(), disp[i]);
                 node_widget(ui, &p, d, &nodes[i], i, disp[i], t, sw, sel, allow.contains(&i), true, true, 1.0, c, big, &mut ev);
             }
             let kinds: Vec<Kind> = g.members.iter().map(|&i| self.latched[nodes[i].i].kind).collect();
@@ -1023,10 +1033,22 @@ impl App {
         }
 
         // --- bursts (a device left the air)
+        // the device fades out as the ring expands from where it was
         self.bursts.retain(|b| t - b.t0 < 0.6);
         for b in &self.bursts {
             let age = (t - b.t0) / 0.6;
-            p.circle_stroke(b.pos, 8.0 + age * 46.0, Stroke::new(2.0, add(b.col, 0.6 * (1.0 - age))));
+            let pos = c + b.w * big;
+            let fade = (1.0 - age / 0.5).clamp(0.0, 1.0);
+            if fade > 0.0 {
+                let mut pg = p.clone();
+                pg.set_opacity(fade);
+                if b.known {
+                    orb(&pg, pos, b.rad, b.col, 0.0);
+                } else {
+                    dot(&pg, pos, b.rad, b.col, 0.0);
+                }
+            }
+            p.circle_stroke(pos, b.rad * 0.5 + age * 46.0, Stroke::new(2.0, add(b.col, 0.6 * (1.0 - age))));
         }
 
         // --- hover pills (always on top)
