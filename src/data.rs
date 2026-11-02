@@ -260,6 +260,67 @@ fn set(h: &Handle, f: impl FnOnce(&mut Shared)) {
 
 // ---------- Wi-Fi ----------
 
+/// One Wi-Fi access point as a device (shared by the live collector and the demo data).
+pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
+        let (inuse, ssid, bssid) = (ap.in_use, ap.ssid.clone(), ap.bssid.clone());
+        let chan = Some(ap.chan);
+        let freq = Some(ap.freq);
+        let pct = ap.strength as f32;
+        let sec = ap.security.clone();
+        let dbm = pct / 2.0 - 100.0;
+        let dist = dist_from_dbm(dbm);
+        let vendor = oui.vendor(&bssid);
+        let hidden = ssid.is_empty();
+        let randomized = vendor.starts_with("Private");
+        let band = match freq {
+            Some(f) if f < 3000 => "2.4 GHz",
+            Some(f) if f < 5900 => "5 GHz",
+            Some(_) => "6 GHz",
+            None => "?",
+        };
+        let mut d = Dev::new(&bssid, Kind::Wifi);
+        d.cluster = bssid.rsplitn(3, ':').take(2).collect::<Vec<_>>().join(":");
+        d.known = !hidden;
+        d.icon = if hidden { Icon::Unknown } else { Icon::Router };
+        d.name = if hidden { "(hidden network)".into() } else { ssid.clone() };
+        d.vendor = vendor.clone();
+        d.dbm = Some(dbm);
+        d.dist_m = Some(dist);
+        d.connected = inuse;
+        d.chan = chan;
+        d.freq = freq;
+        d.details = vec![
+            ("Type".into(), "Wi-Fi access point".into()),
+            ("SSID".into(), if hidden { "(hidden)".into() } else { ssid.clone() }),
+            ("BSSID".into(), bssid.clone()),
+            ("Vendor".into(), vendor),
+            ("Band / channel".into(), format!("{} / ch {} ({} MHz)", band, chan.map(|c| c.to_string()).unwrap_or("?".into()), freq.unwrap_or(0))),
+            ("Rate".into(), format!("{} Mbit/s", ap.rate_kbps / 1000)),
+            ("Signal".into(), format!("{}%  (about {:.0} dBm{})", pct, dbm, if pct >= 100.0 { " or stronger; the scale saturates" } else { "" })),
+            ("Distance (rough)".into(), format!("about {:.1} m, estimated from signal only", dist)),
+            ("Security".into(), if sec.is_empty() { "open".into() } else { sec.clone() }),
+        ];
+        if let (Some(fr), true) = (freq, band == "2.4 GHz") {
+            let lo = (fr as i32 - 10 - 2402).max(0);
+            let hi = (fr as i32 + 10 - 2402).min(78);
+            d.details.push(("Overlaps Bluetooth ch".into(), format!("{}-{} (20 MHz footprint)", lo, hi)));
+        }
+        d.why = if hidden && randomized {
+            "Hidden network with a randomized address. Typically a phone hotspot or a virtual access point on a mesh node or ISP gateway.".into()
+        } else if hidden {
+            "Access point that does not broadcast its name. Could be a guest, IoT or backhaul network.".into()
+        } else if sec.contains("802.1X") {
+            "Enterprise authentication (802.1X): usually ISP community Wi-Fi, an office or a campus network.".into()
+        } else if ssid.to_lowercase().contains("mesh") {
+            "The name suggests a mesh or IoT access point.".into()
+        } else if inuse {
+            "The access point this PC is connected to.".into()
+        } else {
+            "Wi-Fi access point seen in the last scan (cached, not an active probe).".into()
+        };
+    d
+}
+
 fn wifi_loop(h: Handle, oui: Arc<Oui>) {
     let mut last_scan = Instant::now();
     let mut bus = None;
@@ -292,63 +353,7 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
             Some(aps) => {
                 let mut v = vec![];
                 for ap in aps {
-                    let (inuse, ssid, bssid) = (ap.in_use, ap.ssid.clone(), ap.bssid.clone());
-                    let chan = Some(ap.chan);
-                    let freq = Some(ap.freq);
-                    let pct = ap.strength as f32;
-                    let sec = ap.security.clone();
-                    let dbm = pct / 2.0 - 100.0;
-                    let dist = dist_from_dbm(dbm);
-                    let vendor = oui.vendor(&bssid);
-                    let hidden = ssid.is_empty();
-                    let randomized = vendor.starts_with("Private");
-                    let band = match freq {
-                        Some(f) if f < 3000 => "2.4 GHz",
-                        Some(f) if f < 5900 => "5 GHz",
-                        Some(_) => "6 GHz",
-                        None => "?",
-                    };
-                    let mut d = Dev::new(&bssid, Kind::Wifi);
-                    d.cluster = bssid.rsplitn(3, ':').take(2).collect::<Vec<_>>().join(":");
-                    d.known = !hidden;
-                    d.icon = if hidden { Icon::Unknown } else { Icon::Router };
-                    d.name = if hidden { "(hidden network)".into() } else { ssid.clone() };
-                    d.vendor = vendor.clone();
-                    d.dbm = Some(dbm);
-                    d.dist_m = Some(dist);
-                    d.connected = inuse;
-                    d.chan = chan;
-                    d.freq = freq;
-                    d.details = vec![
-                        ("Type".into(), "Wi-Fi access point".into()),
-                        ("SSID".into(), if hidden { "(hidden)".into() } else { ssid.clone() }),
-                        ("BSSID".into(), bssid.clone()),
-                        ("Vendor".into(), vendor),
-                        ("Band / channel".into(), format!("{} / ch {} ({} MHz)", band, chan.map(|c| c.to_string()).unwrap_or("?".into()), freq.unwrap_or(0))),
-                        ("Rate".into(), format!("{} Mbit/s", ap.rate_kbps / 1000)),
-                        ("Signal".into(), format!("{}%  (about {:.0} dBm{})", pct, dbm, if pct >= 100.0 { " or stronger; the scale saturates" } else { "" })),
-                        ("Distance (rough)".into(), format!("about {:.1} m, estimated from signal only", dist)),
-                        ("Security".into(), if sec.is_empty() { "open".into() } else { sec.clone() }),
-                    ];
-                    if let (Some(fr), true) = (freq, band == "2.4 GHz") {
-                        let lo = (fr as i32 - 10 - 2402).max(0);
-                        let hi = (fr as i32 + 10 - 2402).min(78);
-                        d.details.push(("Overlaps Bluetooth ch".into(), format!("{}-{} (20 MHz footprint)", lo, hi)));
-                    }
-                    d.why = if hidden && randomized {
-                        "Hidden network with a randomized address. Typically a phone hotspot or a virtual access point on a mesh node or ISP gateway.".into()
-                    } else if hidden {
-                        "Access point that does not broadcast its name. Could be a guest, IoT or backhaul network.".into()
-                    } else if sec.contains("802.1X") {
-                        "Enterprise authentication (802.1X): usually ISP community Wi-Fi, an office or a campus network.".into()
-                    } else if ssid.to_lowercase().contains("mesh") {
-                        "The name suggests a mesh or IoT access point.".into()
-                    } else if inuse {
-                        "The access point this PC is connected to.".into()
-                    } else {
-                        "Wi-Fi access point seen in the last scan (cached, not an active probe).".into()
-                    };
-                    v.push(d);
+                    v.push(wifi_dev(&ap, &oui));
                 }
                 set(&h, |s| {
                     s.wifi = v;
@@ -405,7 +410,7 @@ fn modalias_vendor(m: &str) -> Option<&'static str> {
     None
 }
 
-fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
+pub fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
     let mac = b.mac.as_str();
     let mut d = Dev::new(&b.mac, Kind::Bt);
     let (alias, name, icon, class, modalias) = (b.alias.clone(), b.name.clone(), b.icon.clone(), b.class, b.modalias.clone());
@@ -471,6 +476,37 @@ fn link_info(c: &crate::hci::Conn, cache: &mut HashMap<String, (String, String)>
     BtLink { mac: c.mac.clone(), name: String::new(), lq: d.lq, rssi: d.rssi, tpl: d.tpl, afh: d.afh, lmp, mfr }
 }
 
+/// Adds the live link data (quality, hopping map, versions) to a Bluetooth device.
+pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
+        l.name = d.name.clone();
+        d.connected = true;
+        d.online = true;
+        // Controller RSSI for a connected link is relative to the "golden range" (0 = fine),
+        // so it is not a distance. Use it only to nudge the node outward for display.
+        d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
+        d.details.push(("Link quality".into(), l.lq.map(|q| format!("{} / 255", q)).unwrap_or("?".into())));
+        d.details.push((
+            "RSSI (relative)".into(),
+            l.rssi.map(|r| format!("{} (0 = inside the ideal range; not a distance)", r)).unwrap_or("?".into()),
+        ));
+        if let Some(t) = l.tpl {
+            d.details.push(("TX power".into(), format!("{} dBm", t)));
+        }
+        if !l.lmp.is_empty() {
+            d.details.push(("Bluetooth version".into(), format!("LMP {}", l.lmp)));
+        }
+        if !l.mfr.is_empty() {
+            d.details.push(("Chip maker".into(), l.mfr.clone()));
+        }
+        d.details.push((
+            "Channel hopping".into(),
+            match &l.afh {
+                Some(m) => format!("adaptive: {} of 79 channels in use", m.iter().filter(|x| **x).count()),
+                None => "not adaptive: uses all 79 channels, cannot avoid busy ones".into(),
+            },
+        ));
+}
+
 fn bt_loop(h: Handle, oui: Arc<Oui>) {
     let mut cache: HashMap<String, (String, String)> = HashMap::new();
     let mut bus = None;
@@ -492,33 +528,7 @@ fn bt_loop(h: Handle, oui: Arc<Oui>) {
                 {
                     let mut l = link_info(&conn, &mut cache);
                     if let Some(d) = devs.iter_mut().find(|d| d.id == l.mac) {
-                        l.name = d.name.clone();
-                        d.connected = true;
-                        d.online = true;
-                        // Controller RSSI for a connected link is relative to the "golden range" (0 = fine),
-                        // so it is not a distance. Use it only to nudge the node outward for display.
-                        d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
-                        d.details.push(("Link quality".into(), l.lq.map(|q| format!("{} / 255", q)).unwrap_or("?".into())));
-                        d.details.push((
-                            "RSSI (relative)".into(),
-                            l.rssi.map(|r| format!("{} (0 = inside the ideal range; not a distance)", r)).unwrap_or("?".into()),
-                        ));
-                        if let Some(t) = l.tpl {
-                            d.details.push(("TX power".into(), format!("{} dBm", t)));
-                        }
-                        if !l.lmp.is_empty() {
-                            d.details.push(("Bluetooth version".into(), format!("LMP {}", l.lmp)));
-                        }
-                        if !l.mfr.is_empty() {
-                            d.details.push(("Chip maker".into(), l.mfr.clone()));
-                        }
-                        d.details.push((
-                            "Channel hopping".into(),
-                            match &l.afh {
-                                Some(m) => format!("adaptive: {} of 79 channels in use", m.iter().filter(|x| **x).count()),
-                                None => "not adaptive: uses all 79 channels, cannot avoid busy ones".into(),
-                            },
-                        ));
+                        attach_link(d, &mut l);
                     }
                     links.push(l);
                 }
@@ -630,6 +640,32 @@ fn classify(vendor: &str, host: &str, svcs: &[String], gw: bool) -> (Icon, &'sta
     (Icon::Unknown, "Unidentified device", "No services advertised and the vendor alone is not specific enough.".into())
 }
 
+/// One LAN neighbour as a device (shared by the live collector and the demo data).
+pub fn lan_dev(ip: &str, dev: &str, mac: &str, state: &str, online: bool, is_gw: bool, dns: &str, mhost: String, svcs: Vec<String>, oui: &Oui) -> Dev {
+    let host = if !mhost.is_empty() { mhost } else { dns.to_string() };
+    let vendor = oui.vendor(mac);
+    let (icon, what, why) = classify(&vendor, &host, &svcs, is_gw);
+    let mut d = Dev::new(mac, Kind::Lan);
+    d.known = icon != Icon::Unknown;
+    d.icon = icon;
+    d.name = if !host.is_empty() { host.clone() } else { ip.to_string() };
+    d.vendor = vendor.clone();
+    d.online = online;
+    d.connected = is_gw;
+    d.details = vec![
+        ("Type".into(), what.into()),
+        ("IP address".into(), ip.to_string()),
+        ("MAC".into(), mac.to_string()),
+        ("Vendor".into(), vendor),
+        ("Hostname".into(), if host.is_empty() { "(none advertised)".into() } else { host }),
+        ("Neighbour state".into(), format!("{} on {}", state, dev)),
+        ("Services".into(), if svcs.is_empty() { "(none seen)".into() } else { svcs.join(", ") }),
+        ("Signal".into(), "n/a: seen over the network, no radio signal measured".into()),
+    ];
+    d.why = why;
+    d
+}
+
 fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
     let mut names: HashMap<String, String> = HashMap::new();
     loop {
@@ -657,27 +693,7 @@ fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
                 let ip = ip.as_str();
                 let dns = names.entry(ip.to_string()).or_insert_with(|| net::reverse_name(n.ip).unwrap_or_default()).clone();
                 let (mhost, svcs) = mm.get(ip).cloned().unwrap_or_default();
-                let host = if !mhost.is_empty() { mhost } else { dns.clone() };
-                let vendor = oui.vendor(&mac);
-                let (icon, what, why) = classify(&vendor, &host, &svcs, ip == gw);
-                let mut d = Dev::new(&mac, Kind::Lan);
-                d.known = icon != Icon::Unknown;
-                d.icon = icon;
-                d.name = if !host.is_empty() { host.clone() } else { ip.to_string() };
-                d.vendor = vendor.clone();
-                d.online = state != "STALE" || answered.contains(ip);
-                d.connected = ip == gw;
-                d.details = vec![
-                    ("Type".into(), what.into()),
-                    ("IP address".into(), ip.to_string()),
-                    ("MAC".into(), mac.clone()),
-                    ("Vendor".into(), vendor),
-                    ("Hostname".into(), if host.is_empty() { "(none advertised)".into() } else { host }),
-                    ("Neighbour state".into(), format!("{} on {}", state, dev)),
-                    ("Services".into(), if svcs.is_empty() { "(none seen)".into() } else { svcs.join(", ") }),
-                    ("Signal".into(), "n/a: seen over the network, no radio signal measured".into()),
-                ];
-                d.why = why;
+                let d = lan_dev(ip, dev, &mac, state, state != "STALE" || answered.contains(ip), ip == gw, &dns, mhost, svcs, &oui);
                 v.push(d);
             }
         }
@@ -693,6 +709,10 @@ pub fn spawn() -> Handle {
     let h: Handle = Arc::new(Mutex::new(Shared::default()));
     let oui = Arc::new(Oui::load());
     let _ = OUI.set(oui.clone());
+    if crate::demo::on() {
+        crate::demo::start(&h, &oui);
+        return h;
+    }
     let mdns: Mdns = Arc::new(Mutex::new(HashMap::new()));
     {
         let (h, o) = (h.clone(), oui.clone());

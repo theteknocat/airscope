@@ -1,4 +1,5 @@
 mod data;
+mod demo;
 mod bluez;
 mod fx;
 mod hci;
@@ -190,6 +191,7 @@ struct App {
     lan_at: Option<Instant>,
     errs: Vec<String>,
     vendor_open: bool,
+    shot_sent: bool, // AIRSCOPE_SHOT: screenshot already requested
     vendor_path: String,
     vendor_msg: Option<(bool, String)>, // (ok, text) of the last import
     vendor_copied: Option<(usize, Instant)>, // which link was just opened
@@ -234,6 +236,9 @@ struct App {
 }
 
 fn cfg_path() -> Option<std::path::PathBuf> {
+    if demo::on() {
+        return None; // demo mode neither reads nor writes the real saved positions
+    }
     Some(std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".config/airscope/positions.tsv"))
 }
 
@@ -281,7 +286,7 @@ impl App {
                 }
             }
         }
-        let host = std::fs::read_to_string("/etc/hostname").unwrap_or_default().trim().to_string();
+        let host = if demo::on() { "studio-pc".to_string() } else { std::fs::read_to_string("/etc/hostname").unwrap_or_default().trim().to_string() };
         App {
             h: data::spawn(),
             ver: u64::MAX,
@@ -291,6 +296,7 @@ impl App {
             bt_at: None,
             lan_at: None,
             errs: vec![],
+            shot_sent: false,
             vendor_open: std::env::var("AIRSCOPE_VENDOR").is_ok(), // debug aid
             vendor_path: String::new(),
             vendor_msg: None,
@@ -320,7 +326,7 @@ impl App {
             prev_groups: vec![],
             formed: HashSet::new(),
             gshift: HashMap::new(),
-            mine: std::env::var("HOME").ok().and_then(|h| std::fs::read_to_string(format!("{}/.config/airscope/mine.txt", h)).ok()).map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_default(),
+            mine: std::env::var("HOME").ok().filter(|_| !demo::on()).and_then(|h| std::fs::read_to_string(format!("{}/.config/airscope/mine.txt", h)).ok()).map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_default(),
             q: String::new(),
             show: [true; 3],
             scope: 0,
@@ -507,12 +513,29 @@ impl App {
                 p.galley(pos2(l + 60.0, y + 90.0), g, mc);
             }
             if let Some(path) = data::user_oui_path() {
-                let g = p.layout(format!("Your imported list is saved to {}. Delete that file to go back to the built-in list.", path.display()), FontId::proportional(11.5), DIM, inner);
+                let g = p.layout(format!("Your imported list is saved to {}. Delete that file to go back to the built-in list.", path.display().to_string().replacen(&std::env::var("HOME").unwrap_or_default(), "~", 1)), FontId::proportional(11.5), DIM, inner);
                 p.galley(pos2(l, r.bottom() - 18.0 - g.size().y), g, DIM);
             }
         });
         if close {
             self.vendor_open = false;
+        }
+    }
+
+    /// AIRSCOPE_SHOT=<file.ppm>: grab the app's own frame after a few seconds and quit (README screenshots;
+    /// nothing outside the app window is ever captured).
+    fn debug_shot(&mut self, ctx: &egui::Context, t: f32) {
+        let Ok(path) = std::env::var("AIRSCOPE_SHOT") else { return };
+        if t > 7.0 && !self.shot_sent {
+            self.shot_sent = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
+                let mut out = format!("P6\n{} {}\n255\n", img.size[0], img.size[1]).into_bytes();
+                for c in &img.pixels {
+                    out.extend_from_slice(&[c.r(), c.g(), c.b()]);
+                }
+                let _ = std::fs::write(&path, out);
+                std::process::exit(0);
+            })));
         }
     }
 
@@ -2010,6 +2033,7 @@ impl eframe::App for App {
             Screen::Devices => self.devices(ui),
         });
         self.vendor_window(ui.ctx());
+        self.debug_shot(ui.ctx(), t);
         // info boxes are shared by every screen: opening one fades it in, switching fades the old one out
         let dt = ui.input(|i| i.stable_dt).min(0.05);
         let want: Option<String> = if self.screen == Screen::Radar { self.sel.clone().filter(|id| self.radar_anchor.as_ref().map_or(false, |(i, _)| i == id)) } else { self.sel.clone() };
