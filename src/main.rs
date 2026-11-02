@@ -46,6 +46,7 @@ struct Burst {
     t0: f32,
     rad: f32,
     known: bool,
+    ghost: bool, // fade the device out in place (not for a member of a collapsed group: only the ring)
 }
 
 /// Orbit slot `k` of `nn` around a group icon.
@@ -181,7 +182,7 @@ struct App {
     sdist: HashMap<String, f32>,   // eased displayed distance
     appear: HashMap<String, f32>,  // 0..1 pop-in of new devices
     bursts: Vec<Burst>,
-    last_world: HashMap<String, Vec2>, // where each device was last shown (PC-relative, zoom-independent)
+    last_world: HashMap<String, (Vec2, bool)>, // where each device was last shown (PC-relative, zoom-independent), and whether it sat inside a collapsed group icon
     dragging: Option<String>,
     gdrag: Option<Vec<String>>,    // a whole group is being dragged: its members move together and don't merge until dropped
     prev_groups: Vec<(String, Vec<String>)>,
@@ -424,7 +425,10 @@ impl App {
     /// sweep passes it ("ping"). New devices appear at once. Nothing refreshes while a group is
     /// open or a drag is in progress, so the layout never changes under the user's hands.
     fn latch(&mut self, sw_prev: f32, sw: f32, t: f32) {
-        let freeze = !self.open.is_empty() || self.dragging.is_some() || self.gdrag.is_some();
+        // Existing devices are frozen while a group is open or a drag is active, so nothing drifts into it.
+        // Devices that genuinely appear or disappear still do (removals only wait for a drag to finish).
+        let drag = self.dragging.is_some() || self.gdrag.is_some();
+        let freeze = !self.open.is_empty() || drag;
         let span = (sw - sw_prev).rem_euclid(TAU);
         let crossed = |a: f32| {
             let d1 = (a - sw_prev).rem_euclid(TAU);
@@ -454,7 +458,7 @@ impl App {
                 }
             }
         }
-        if !freeze {
+        if !drag {
             let live: HashSet<&str> = self.devs.iter().map(|d| d.id.as_str()).collect();
             let mut gone: Vec<(String, Kind, bool, Option<f32>)> = vec![];
             let over = &self.over;
@@ -467,9 +471,9 @@ impl App {
                 }
             });
             for (id, kind, known, dbm) in gone {
-                if let Some(&w) = self.last_world.get(&id) {
+                if let Some(&(w, in_icon)) = self.last_world.get(&id) {
                     let rad = if known { 17.0 } else { 4.0 + ((dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0 };
-                    self.bursts.push(Burst { w, col: kind_col(kind), t0: t, rad, known });
+                    self.bursts.push(Burst { w, col: kind_col(kind), t0: t, rad, known, ghost: !in_icon });
                 }
             }
         }
@@ -839,11 +843,11 @@ impl App {
 
         // remember where each device is shown (a member of a collapsed group counts as sitting on its icon)
         for ni in 0..cnt {
-            let q = match group_of[ni] {
-                Some(gi) if iconshown[gi] => groups[gi].center,
-                _ => disp[ni],
+            let (q, in_icon) = match group_of[ni] {
+                Some(gi) if iconshown[gi] => (groups[gi].center, true),
+                _ => (disp[ni], false),
             };
-            self.last_world.insert(self.latched[nodes[ni].i].id.clone(), (q - c) / big);
+            self.last_world.insert(self.latched[nodes[ni].i].id.clone(), ((q - c) / big, in_icon));
         }
 
         // anything sitting under an open group's circle is obscured and not clickable
@@ -1039,7 +1043,7 @@ impl App {
             let age = (t - b.t0) / 0.6;
             let pos = c + b.w * big;
             let fade = (1.0 - age / 0.5).clamp(0.0, 1.0);
-            if fade > 0.0 {
+            if fade > 0.0 && b.ghost {
                 let mut pg = p.clone();
                 pg.set_opacity(fade);
                 if b.known {
