@@ -190,6 +190,12 @@ struct App {
     hide_unnamed: bool,
     collapsed: HashSet<usize>,
     anchor: Pos2,                  // where the info box opens when picked on a non-radar screen
+    tip_want: Option<TipC>,        // tooltip requested this frame (drawn, faded, at the end of ui())
+    tip_last: Option<TipC>,
+    tip_a: f32,
+    pops: Vec<Pop>,                // info boxes: the selected one fades in, others fade out
+    pop_uid: u64,
+    radar_anchor: Option<(String, Pos2)>,
 }
 
 fn cfg_path() -> Option<std::path::PathBuf> {
@@ -280,6 +286,12 @@ impl App {
             hide_unnamed: false,
             collapsed: HashSet::from([4]),
             anchor: pos2(700.0, 400.0),
+            tip_want: None,
+            tip_last: None,
+            tip_a: 0.0,
+            pops: vec![],
+            pop_uid: 0,
+            radar_anchor: None,
         }
     }
 
@@ -303,6 +315,14 @@ impl App {
         self.devs.extend(s.wifi.iter().cloned());
         self.devs.extend(s.bt.iter().cloned());
         self.devs.extend(s.lan.iter().cloned());
+        // a router's Wi-Fi BSSID can equal its LAN MAC: keep every device id unique (Wi-Fi keeps the original)
+        let mut seen = HashSet::new();
+        for d in self.devs.iter_mut() {
+            if !seen.insert(d.id.clone()) {
+                d.id = format!("{}~{}", d.id, match d.kind { Kind::Wifi => "wifi", Kind::Bt => "bt", Kind::Lan => "lan" });
+                seen.insert(d.id.clone());
+            }
+        }
         self.links = s.links.clone();
         self.wifi_at = s.wifi_at;
         self.bt_at = s.bt_at;
@@ -977,12 +997,14 @@ impl App {
                 Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
                 None => d.vendor.clone(),
             };
-            pill(&p, disp[ni] + vec2(0.0, -24.0), &d.name, &sub, kind_col(d.kind));
+            let tc = TipC { anchor: disp[ni] + vec2(0.0, -24.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], boxed: false };
+            self.tip_want = Some(tc);
         } else if let Some(gi) = group_hover {
             let g = &groups[gi];
             let names: Vec<String> = g.members.iter().take(4).map(|&i| self.latched[nodes[i].i].name.clone()).collect();
             let more = if g.members.len() > 4 { format!(" +{}", g.members.len() - 4) } else { String::new() };
-            pill(&p, g.center + vec2(0.0, -34.0), &format!("{} devices close together", g.members.len()), &format!("{}{} · click to expand", names.join(", "), more), CYAN);
+            let tc = TipC { anchor: g.center + vec2(0.0, -34.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{} · click to expand", names.join(", "), more)], boxed: false };
+            self.tip_want = Some(tc);
         }
 
         // --- click outside an open group's circle closes it
@@ -1022,12 +1044,7 @@ impl App {
         if let Some(id) = self.sel.clone() {
             if let Some(ni) = nodes.iter().enumerate().find(|(_, n)| self.latched[n.i].id == id).map(|(ni, _)| ni) {
                 if !settled[ni] {
-                    let d = self.latched[nodes[ni].i].clone();
-                    let mut close = false;
-                    popup(ui.ctx(), &d, disp[ni], rect, &mut close, kind_col(d.kind));
-                    if close {
-                        self.sel = None;
-                    }
+                    self.radar_anchor = Some((id, disp[ni])); // the shared info box follows the dot
                 }
             }
         }
@@ -1092,10 +1109,10 @@ impl App {
     /// `crowd(i)` = estimated Wi-Fi crowding (0..1) on Bluetooth channel i: busier channels are drawn dimmer.
     /// Returns (y after the rows, hovered row, clicked row). Every row has the same full-width hit area.
     #[allow(clippy::too_many_arguments)]
-    fn bt_rows(&self, ui: &egui::Ui, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, end_x: f32, mut y: f32, crowd: &dyn Fn(usize) -> f32) -> (f32, Option<usize>, Option<usize>) {
+    fn bt_rows(&self, ui: &egui::Ui, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, end_x: f32, mut y: f32, row_x: (f32, f32), crowd: &dyn Fn(usize) -> f32) -> (f32, Option<usize>, Option<usize>) {
         let (mut hov, mut clk) = (None, None);
         for (li, l) in self.links.iter().enumerate() {
-            let row = Rect::from_min_max(pos2(label_x - 108.0, y - 3.0), pos2(end_x + 92.0, y + 21.0));
+            let row = Rect::from_min_max(pos2(row_x.0, y - 3.0), pos2(row_x.1, y + 21.0));
             let resp = hit(ui, row, ui.scope_id().with(("btrow", &l.mac)), Sense::click());
             if resp.hovered() {
                 hov = Some(li);
@@ -1290,7 +1307,7 @@ impl App {
         let mid = (gx0 + gx1) / 2.0;
         lcd(&p, pos2(mid, yc + 8.0), Align2::CENTER_CENTER, &title, 12.0, BLUE);
         if has_bt {
-            let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, &crowd);
+            let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, (l + 12.0, gx1 + 122.0), &crowd);
             if let (Some(i), Some(q)) = (bt_click, ptr) {
                 pick = Some((self.links[i].mac.clone(), q));
             }
@@ -1337,7 +1354,7 @@ impl App {
             let ov: Vec<&Net> = nets.iter().enumerate().filter(|(j, o)| *j != h && (o.f - n.f).abs() < 22.0 && o.dbm > -85.0).map(|(_, o)| o).collect();
             let same = ov.iter().filter(|o| (o.f - n.f).abs() < 1.0).count();
             let sub = format!("ch {} · {:.0} dBm · {} on same channel, {} partly overlapping", n.chan, n.dbm, same, ov.len() - same);
-            pill(&p, pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y - 14.0), &format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() }), &sub, col_of(n));
+            self.tip_want = Some(TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y - 14.0), col: col_of(n), title: format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() }), sub: vec![sub], boxed: false });
         }
 
         // explanation cards
@@ -1366,7 +1383,7 @@ impl App {
         };
         card(2, "YOUR NETWORK", &mine_txt, GREEN);
         if let Some((q, title, lines)) = tip_box {
-            tip(&p, q, rect, &title, &lines, BLUE);
+            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, boxed: true });
         }
         if let Some((id, q)) = pick {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
@@ -1535,6 +1552,35 @@ impl App {
     }
 }
 
+#[derive(Clone)]
+struct TipC {
+    anchor: Pos2,
+    col: Color32,
+    title: String,
+    sub: Vec<String>,
+    boxed: bool,
+}
+
+fn draw_tip(p: &egui::Painter, c: &TipC, bounds: Rect) {
+    if c.boxed {
+        tip(p, c.anchor, bounds, &c.title, &c.sub, c.col);
+    } else {
+        pill(p, c.anchor, &c.title, c.sub.first().map(|x| x.as_str()).unwrap_or(""), c.col);
+    }
+}
+
+fn ease(a: f32) -> f32 {
+    a * a * (3.0 - 2.0 * a)
+}
+
+struct Pop {
+    id: String,
+    dev: Dev,
+    anchor: Pos2,
+    a: f32,
+    uid: u64,
+}
+
 /// Multi-line hover box above `anchor`.
 fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[String], col: Color32) {
     let w = 340.0;
@@ -1574,7 +1620,7 @@ impl Net {
 
 /// Footprint of a 20 MHz Wi-Fi channel: 1 at the centre, 0 at ±11 MHz.
 fn mac_bytes(s: &str) -> Option<[u8; 6]> {
-    let v: Vec<u8> = s.split(':').filter_map(|x| u8::from_str_radix(x, 16).ok()).collect();
+    let v: Vec<u8> = s[..s.len().min(17)].split(':').filter_map(|x| u8::from_str_radix(x, 16).ok()).collect();
     v.try_into().ok()
 }
 
@@ -1598,7 +1644,8 @@ fn hill(dx: f32) -> f32 {
     }
 }
 
-fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut bool, col: Color32) {
+#[allow(clippy::too_many_arguments)]
+fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut bool, col: Color32, a: f32, uid: u64) {
     let w = 380.0;
     let lp = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("popup_measure")));
     let kw = 118.0;
@@ -1615,7 +1662,8 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         x = anchor.x - 40.0 - w;
     }
     let y = (anchor.y - 50.0).clamp(bounds.top() + 10.0, (bounds.bottom() - h - 10.0).max(bounds.top() + 10.0));
-    egui::Area::new(egui::Id::new("popup")).order(egui::Order::Foreground).fixed_pos(pos2(x.max(bounds.left() + 10.0), y)).show(ctx, |ui| {
+    egui::Area::new(egui::Id::new(("popup", uid))).order(egui::Order::Foreground).fade_in(false).fixed_pos(pos2(x.max(bounds.left() + 10.0), y)).show(ctx, |ui| {
+        ui.set_opacity(a);
         let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::click());
         let p = ui.painter_at(r.expand(40.0));
         panel(&p, r, 16.0, col);
@@ -1670,23 +1718,67 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _f: &mut eframe::Frame) {
         self.sync();
         ui.ctx().request_repaint();
-        let full = ui.max_rect();
         let t = self.t0.elapsed().as_secs_f32();
         egui::Panel::left("nav").exact_size(210.0).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.nav(ui));
         egui::Panel::top("hdr").exact_size(70.0).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.header(ui, t));
+        self.radar_anchor = None;
+        let central = ui.available_rect_before_wrap();
         egui::CentralPanel::no_frame().show(ui, |ui| match self.screen {
             Screen::Radar => self.radar(ui, t),
             Screen::Spectrum => self.spectrum(ui, t),
             Screen::Devices => self.devices(ui),
         });
-        // the info box is shared: on other screens it opens where you clicked (the radar anchors it to the dot)
-        if self.screen != Screen::Radar {
-            if let Some(d) = self.sel.as_ref().and_then(|id| self.devs.iter().find(|d| &d.id == id)).cloned() {
-                let mut close = false;
-                popup(ui.ctx(), &d, self.anchor, full, &mut close, kind_col(d.kind));
-                if close {
-                    self.sel = None;
+        // info boxes are shared by every screen: opening one fades it in, switching fades the old one out
+        let dt = ui.input(|i| i.stable_dt).min(0.05);
+        let want: Option<String> = if self.screen == Screen::Radar { self.sel.clone().filter(|id| self.radar_anchor.as_ref().map_or(false, |(i, _)| i == id)) } else { self.sel.clone() };
+        if let Some(id) = &want {
+            if !self.pops.iter().any(|p| &p.id == id) {
+                if let Some(d) = self.devs.iter().find(|d| &d.id == id).cloned() {
+                    let anchor = self.radar_anchor.as_ref().filter(|(i, _)| i == id).map(|(_, q)| *q).unwrap_or(self.anchor);
+                    self.pop_uid += 1;
+                    self.pops.push(Pop { id: id.clone(), dev: d, anchor, a: 0.0, uid: self.pop_uid });
                 }
+            }
+        }
+        for p in self.pops.iter_mut() {
+            let target = want.as_deref() == Some(p.id.as_str());
+            p.a = (p.a + if target { dt / 0.14 } else { -dt / 0.14 }).clamp(0.0, 1.0);
+            if let Some(d) = self.devs.iter().find(|d| d.id == p.id) {
+                p.dev = d.clone();
+            }
+            if target {
+                if let Some((_, q)) = self.radar_anchor.as_ref().filter(|(i, _)| *i == p.id) {
+                    p.anchor = *q;
+                }
+            }
+        }
+        self.pops.retain(|p| p.a > 0.0 || want.as_deref() == Some(p.id.as_str()));
+        let mut close = false;
+        for p in &self.pops {
+            let mut c = false;
+            popup(ui.ctx(), &p.dev, p.anchor, central, &mut c, kind_col(p.dev.kind), ease(p.a), p.uid);
+            if c && want.as_deref() == Some(p.id.as_str()) {
+                close = true;
+            }
+        }
+        if close {
+            self.sel = None;
+        }
+        // tooltips fade too
+        if let Some(w) = self.tip_want.take() {
+            if self.tip_last.as_ref().map_or(true, |l| l.title != w.title) {
+                self.tip_a = self.tip_a.min(0.2);
+            }
+            self.tip_last = Some(w);
+            self.tip_a = (self.tip_a + dt / 0.12).min(1.0);
+        } else {
+            self.tip_a = (self.tip_a - dt / 0.15).max(0.0);
+        }
+        if self.tip_a > 0.0 {
+            if let Some(c) = &self.tip_last {
+                let mut p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("airscope_tip")));
+                p.set_opacity(ease(self.tip_a));
+                draw_tip(&p, c, central);
             }
         }
     }
