@@ -1,6 +1,6 @@
 //! Data collectors. Each runs in its own thread, shells out to a system tool,
 //! and publishes into `Shared`. The UI only ever reads the shared snapshot.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -611,6 +611,29 @@ fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
             .and_then(|s| s.split_whitespace().skip_while(|w| *w != "via").nth(1).map(|x| x.to_string()))
             .unwrap_or_default();
         let mut v = vec![];
+        let mut answered: HashSet<String> = HashSet::new();
+        // STALE only means "not talked to recently". Probe those devices (ping triggers an ARP check) so
+        // the neighbour table tells us if they are really still there.
+        if let Some(out) = run("ip", &["-4", "neigh", "show"]) {
+            let stale: Vec<String> = out
+                .lines()
+                .filter(|l| l.trim_end().ends_with("STALE") && !l.contains("docker") && !l.contains("br-") && !l.contains("tailscale"))
+                .filter_map(|l| l.split_whitespace().next().map(|x| x.to_string()))
+                .collect();
+            // a device that answers the probe is online, whatever the kernel's neighbour state says
+            answered = std::thread::scope(|sc| {
+                let hs: Vec<_> = stale
+                    .iter()
+                    .map(|ip| {
+                        sc.spawn(move || {
+                            let ok = std::process::Command::new("ping").args(["-c", "1", "-W", "1", "-n", ip]).output().map(|o| o.status.success()).unwrap_or(false);
+                            (ip.clone(), ok)
+                        })
+                    })
+                    .collect();
+                hs.into_iter().filter_map(|h| h.join().ok()).filter(|(_, ok)| *ok).map(|(ip, _)| ip).collect::<HashSet<String>>()
+            });
+        }
         if let Some(out) = run("ip", &["-4", "neigh", "show"]) {
             let mm = mdns.lock().unwrap().clone();
             for l in out.lines() {
@@ -635,7 +658,7 @@ fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
                 d.icon = icon;
                 d.name = if !host.is_empty() { host.clone() } else { ip.to_string() };
                 d.vendor = vendor.clone();
-                d.online = state != "STALE";
+                d.online = state != "STALE" || answered.contains(ip);
                 d.connected = ip == gw;
                 d.details = vec![
                     ("Type".into(), what.into()),
