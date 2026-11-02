@@ -1982,6 +1982,32 @@ fn hill(dx: f32) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Battery icon with the percentage inside. The number has a dark outline so it reads on any fill colour.
+fn battery_icon(p: &egui::Painter, r: Rect, pct: i32) {
+    let pct = pct.clamp(0, 100);
+    let fill_col = if pct > 40 { GREEN } else if pct > 15 { AMBER } else { RED };
+    let body = Rect::from_min_max(r.min, pos2(r.right() - 4.0, r.bottom()));
+    p.rect_filled(body, 6.0, alpha(BG, 0.7));
+    let inner = body.shrink(2.5);
+    let fw = (inner.width() * pct as f32 / 100.0).max(if pct > 0 { 3.0 } else { 0.0 });
+    p.rect_filled(Rect::from_min_size(inner.min, vec2(fw, inner.height())), 4.0, alpha(fill_col, 0.9));
+    p.rect_stroke(body, 6.0, Stroke::new(1.5, alpha(Color32::WHITE, 0.55)), StrokeKind::Inside);
+    p.rect_filled(Rect::from_center_size(pos2(r.right() - 1.5, r.center().y), vec2(3.5, 10.0)), 1.5, alpha(Color32::WHITE, 0.55));
+    let (c, f) = (body.center(), FontId::monospace(13.0));
+    let txt = format!("{}%", pct);
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (1.0, 1.0), (-1.0, -1.0)] {
+        p.text(c + vec2(dx, dy), Align2::CENTER_CENTER, &txt, f.clone(), Color32::from_black_alpha(230));
+    }
+    p.text(c, Align2::CENTER_CENTER, &txt, f, Color32::WHITE);
+}
+
+/// One labelled indicator row: caption, segmented bar, value.
+fn meter(p: &egui::Painter, x0: f32, x1: f32, y: f32, label: &str, frac: f32, col: Color32, value: &str) {
+    p.text(pos2(x0, y + 4.5), Align2::LEFT_CENTER, label, FontId::monospace(10.5), alpha(CYAN, 0.8));
+    led_bar(p, Rect::from_min_size(pos2(x0 + 64.0, y), vec2(x1 - x0 - 64.0 - 112.0, 9.0)), frac.clamp(0.0, 1.0), col, 20);
+    p.text(pos2(x1, y + 4.5), Align2::RIGHT_CENTER, value, FontId::monospace(12.0), TEXT);
+}
+
 /// Slim scrollbar so a scrollable box looks scrollable.
 fn scrollbar(p: &egui::Painter, track: Rect, scroll: f32, max: f32, view: f32, content: f32, col: Color32) {
     if max <= 0.0 {
@@ -2006,8 +2032,9 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         .collect();
     let why = lp.layout(d.why.clone(), FontId::proportional(12.5), TEXT, w - 44.0);
     let rows_h: f32 = rows.iter().map(|(_, g)| g.size().y.max(14.0) + 7.0).sum();
-    let has_sig = d.dbm.is_some() || d.lq.is_some();
-    let top = if has_sig { 114.0 } else { 94.0 }; // where the detail rows start
+    // indicator rows under the name: dBm for Wi-Fi; link, signal and channels for a connected Bluetooth device
+    let sig_rows = if d.dbm.is_some() { 1 } else if d.lq.is_some() { 2 + d.rssi.is_some() as usize } else { 0 };
+    let top = 94.0 + if sig_rows == 0 { 0.0 } else { 2.0 + sig_rows as f32 * 18.0 }; // where the detail rows start
     let h_full = (top - 8.0) + rows_h + 30.0 + why.size().y + 34.0;
     let h = h_full.min((bounds.height() - 20.0).max(240.0)); // taller content scrolls with the mouse wheel
     let mut x = anchor.x + 40.0;
@@ -2019,7 +2046,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
 
     // inner box with the problem details (only measured when the device has an issue)
     let has_issue = !d.issue.is_empty();
-    let (acc, word) = if d.trouble > 0.0 { (RED, "ISSUE") } else { (AMBER, "WARNING") };
+    let acc = if d.trouble > 0.0 { RED } else { AMBER };
     let open_id = egui::Id::new(("issue_open", uid));
     let mut issue_open: bool = has_issue && ctx.data(|dt| dt.get_temp(open_id)).unwrap_or(std::env::var_os("AIRSCOPE_ISSUE").is_some()); // env: debug aid
     let ikw = 96.0;
@@ -2033,7 +2060,9 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
     let ih_full = 44.0 + irows_h + 14.0;
     let ih = ih_full.min(r.height() - (top - 16.0) - 12.0).max(120.0);
     let ir = Rect::from_min_size(r.min + vec2(10.0, top - 16.0), vec2(iw, ih));
-    let chip = Rect::from_min_max(pos2(r.right() - 22.0 - 92.0, r.top() + 42.0), pos2(r.right() - 22.0, r.top() + 66.0));
+    let chip = Rect::from_min_max(pos2(r.right() - 22.0 - 24.0, r.top() + 42.0), pos2(r.right() - 22.0, r.top() + 66.0));
+    let bat_right = if has_issue { chip.left() - 10.0 } else { r.right() - 22.0 };
+    let bat = Rect::from_min_max(pos2(bat_right - 62.0, r.top() + 42.0), pos2(bat_right, r.top() + 66.0));
 
     // the wheel goes to the box under the mouse
     let ptr = ctx.input(|i| i.pointer.hover_pos());
@@ -2072,23 +2101,41 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         let kindname = d.details.first().map(|x| x.1.clone()).unwrap_or_default();
         p.text(pos2(r.left() + 80.0, r.top() + 53.0), Align2::LEFT_CENTER, kindname, FontId::proportional(12.5), col);
         if has_issue {
-            let resp = hit(ui, chip, ui.id().with("issue_chip"), Sense::click());
+            // just a glowing dot in a ring: red = issue, amber = warning (the tooltip says which)
+            let resp = hit(ui, chip, ui.id().with("issue_chip"), Sense::click()).on_hover_text(if d.trouble > 0.0 { "Issue found: click for details" } else { "Warning: click for details" });
             let pulse = (ui.input(|i| i.time) as f32 * 4.0).sin() * 0.5 + 0.5;
-            p.rect_filled(chip, 12.0, alpha(acc, if issue_open { 0.45 } else if resp.hovered() { 0.32 } else { 0.18 }));
-            p.rect_stroke(chip, 12.0, Stroke::new(1.3, alpha(acc, 0.65 + 0.3 * pulse)), StrokeKind::Inside);
-            dot(&p, pos2(chip.left() + 13.0, chip.center().y), 3.5, acc, 0.3 + 0.4 * pulse);
-            p.text(pos2(chip.left() + 24.0, chip.center().y), Align2::LEFT_CENTER, word, FontId::monospace(12.5), Color32::WHITE);
+            let c = chip.center();
+            glow(&p, c, 17.0 + pulse * 4.0, acc, 0.3 + 0.2 * pulse);
+            p.circle_filled(c, 12.0, alpha(acc, if issue_open { 0.45 } else if resp.hovered() { 0.32 } else { 0.18 }));
+            p.circle_stroke(c, 12.0, Stroke::new(1.4, alpha(acc, 0.65 + 0.3 * pulse)));
+            dot(&p, c, 4.5, acc, 0.4 + 0.5 * pulse);
             chip_clicked = resp.clicked();
         }
-        // signal: dBm for Wi-Fi, link quality for connected Bluetooth, nothing when there is no reading
-        let by = r.top() + 86.0;
+        if let (Some(b), true) = (d.battery, d.kind == Kind::Bt) {
+            battery_icon(&p, bat, b);
+        }
+        // indicators: dBm for Wi-Fi; link, signal and channels for a connected Bluetooth device
+        let by = r.top() + 84.0;
+        let (x0, x1) = (r.left() + 22.0, r.right() - 22.0);
+        let has = |k: &str| d.issue.iter().any(|row| row.0 == k);
         if let Some(dbm) = d.dbm {
-            led_bar(&p, Rect::from_min_size(pos2(r.left() + 22.0, by), vec2(w - 130.0, 9.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 24);
-            p.text(pos2(r.right() - 22.0, by + 4.5), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(13.0), TEXT);
+            led_bar(&p, Rect::from_min_size(pos2(x0, by), vec2(w - 130.0, 9.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 24);
+            p.text(pos2(x1, by + 4.5), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(13.0), TEXT);
         } else if let Some(q) = d.lq {
-            let bc = if d.trouble > 0.0 { RED } else { col };
-            led_bar(&p, Rect::from_min_size(pos2(r.left() + 22.0, by), vec2(w - 150.0, 9.0)), (q as f32 / 255.0).clamp(0.0, 1.0), bc, 24);
-            p.text(pos2(r.right() - 22.0, by + 4.5), Align2::RIGHT_CENTER, format!("link {}/255", q), FontId::monospace(13.0), TEXT);
+            let mut y = by;
+            meter(&p, x0, x1, y, "LINK", q as f32 / 255.0, if has("Link health") { RED } else { col }, &format!("{}/255", q));
+            if let Some(rs) = d.rssi {
+                y += 18.0;
+                // RSSI is relative to the ideal receive range: 0 or above is fine, -20 or below is very weak
+                let v = if rs >= 0 { "in range".to_string() } else { format!("{} dB", rs) };
+                meter(&p, x0, x1, y, "SIGNAL", 1.0 + (rs.min(0) as f32) / 20.0, if has("Weak signal") { AMBER } else { col }, &v);
+            }
+            y += 18.0;
+            let (frac, v) = match d.chan_use {
+                Some(n) => (n as f32 / 79.0, format!("{} of 79", n)),
+                None => (1.0, "all 79 (fixed)".to_string()),
+            };
+            meter(&p, x0, x1, y, "CHANNELS", frac, if has("Channel map") { AMBER } else { col }, &v);
         }
         // rows
         let mut yy = r.top() + top;

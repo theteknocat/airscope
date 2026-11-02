@@ -65,7 +65,7 @@ pub fn start(h: &Handle, oui: &Oui) {
     .map(|b| parse_bt(b, oui))
     .collect();
     let mut links = vec![
-        BtLink { mac: "AC:80:0A:3D:62:C0".into(), name: String::new(), lq: Some(255), rssi: Some(0), tpl: Some(4), afh: Some(afh(&[0..=3, 21..=24, 46..=49, 73..=78])), lmp: "5.2 (0xb)".into(), mfr: "Sony (0x012d)".into() },
+        BtLink { mac: "AC:80:0A:3D:62:C0".into(), name: String::new(), lq: Some(255), rssi: Some(if degraded() { -14 } else { 0 }), tpl: Some(4), afh: Some(if degraded() { afh(&[0..=3, 21..=24, 46..=49, 77..=78]) } else { afh(&[0..=3, 21..=24, 46..=49, 73..=78]) }), lmp: "5.2 (0xb)".into(), mfr: "Sony (0x012d)".into() },
         BtLink { mac: "E4:11:5B:72:08:4D".into(), name: String::new(), lq: Some(if degraded() { 168 } else { 255 }), rssi: Some(-3), tpl: Some(0), afh: None, lmp: "3.0 (0x5)".into(), mfr: "Broadcom Corporation (15)".into() },
     ];
     for l in links.iter_mut() {

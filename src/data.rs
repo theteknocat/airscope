@@ -61,6 +61,7 @@ pub struct Dev {
     pub trouble: f32, // 0 = healthy .. 1 = real problem (red): drops, quality falling, reconnect loops
     pub caution: f32, // 0 .. 1 = early warning (amber): channels dropped, weak signal, low battery
     pub battery: Option<i32>,
+    pub chan_use: Option<usize>, // Bluetooth channels in use of 79 (None = not adaptive: hops over all of them)
     pub rssi: Option<i32>, // Bluetooth RSSI relative to the ideal receive range (0 = inside it)
     pub issue: Vec<(String, String)>, // what is wrong and the evidence, shown behind the ISSUE button in the info box
 }
@@ -87,6 +88,7 @@ impl Dev {
             trouble: 0.0,
             caution: 0.0,
             battery: None,
+            chan_use: None,
             rssi: None,
             issue: vec![],
         }
@@ -673,6 +675,7 @@ pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
         d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
         d.lq = l.lq;
         d.rssi = l.rssi;
+        d.chan_use = l.afh.as_ref().map(|m| m.iter().filter(|x| **x).count());
         d.details.push((
             "RSSI (relative)".into(),
             l.rssi.map(|r| format!("{} (0 = inside the ideal range; not a distance)", r)).unwrap_or("?".into()),
