@@ -189,6 +189,9 @@ struct App {
     bt_at: Option<Instant>,
     lan_at: Option<Instant>,
     errs: Vec<String>,
+    vendor_open: bool,
+    vendor_path: String,
+    vendor_msg: Option<(bool, String)>, // (ok, text) of the last import
     screen: Screen,
     sel: Option<String>,
     over: HashMap<String, (f32, f32)>, // id -> (angle rad, metres)
@@ -287,6 +290,9 @@ impl App {
             bt_at: None,
             lan_at: None,
             errs: vec![],
+            vendor_open: std::env::var("AIRSCOPE_VENDOR").is_ok(), // debug aid
+            vendor_path: String::new(),
+            vendor_msg: None,
             screen: match std::env::var("AIRSCOPE_SCREEN").as_deref() { Ok("spectrum") => Screen::Spectrum, Ok("devices") => Screen::Devices, _ => Screen::Radar }, // debug aid
             sel: std::env::var("AIRSCOPE_SEL").ok(), // debug aid
             over,
@@ -398,6 +404,57 @@ impl App {
         }
     }
 
+    /// Window for importing a newer vendor list: instructions, links to copy, drop a file or paste its path.
+    fn vendor_window(&mut self, ctx: &egui::Context) {
+        if !self.vendor_open {
+            return;
+        }
+        let Some(oui) = data::oui() else { return };
+        let dropped = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().display().to_string()).find(|s| !s.is_empty()));
+        if let Some(path) = dropped {
+            self.vendor_path = path;
+            self.import_vendors(&oui);
+        }
+        let mut open = true;
+        egui::Window::new("Vendor list").open(&mut open).collapsible(false).resizable(false).default_width(520.0).show(ctx, |ui| {
+            let (total, c) = oui.stats();
+            ui.label(format!("{} manufacturers known: {} built in, {} from the system, {} from your imported file.", total, c[0], c[1], c[2]));
+            ui.add_space(6.0);
+            ui.label("New manufacturers appear over time. To update the list:");
+            ui.label("1. Download one of these in your browser (copy the link):");
+            for (name, url) in [("IEEE text (oui.txt)", "https://standards-oui.ieee.org/oui/oui.txt"), ("IEEE CSV (oui.csv)", "https://standards-oui.ieee.org/oui/oui.csv"), ("Wireshark list (manuf)", "https://www.wireshark.org/download/automated/data/manuf")] {
+                ui.horizontal(|ui| {
+                    if ui.small_button("Copy link").clicked() {
+                        ui.ctx().copy_text(url.to_string());
+                    }
+                    ui.label(format!("{}  {}", name, url));
+                });
+            }
+            ui.label("2. Drag the downloaded file onto this window, or paste its path here:");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.vendor_path).desired_width(360.0).hint_text("/home/you/Downloads/oui.txt"));
+                if ui.button("Import").clicked() {
+                    self.import_vendors(&oui);
+                }
+            });
+            if let Some((ok, msg)) = &self.vendor_msg {
+                ui.colored_label(if *ok { GREEN } else { RED }, msg);
+            }
+            if let Some(p) = data::user_oui_path() {
+                ui.add_space(4.0);
+                ui.weak(format!("Saved to {} (delete it to go back to the built-in list).", p.display()));
+            }
+        });
+        self.vendor_open = open;
+    }
+
+    fn import_vendors(&mut self, oui: &data::Oui) {
+        self.vendor_msg = Some(match oui.import(&self.vendor_path) {
+            Ok(n) => (true, format!("Imported {} manufacturers. Names update within a few seconds.", n)),
+            Err(e) => (false, e),
+        });
+    }
+
     fn header(&mut self, ui: &mut egui::Ui, _t: f32) {
         let rect = ui.max_rect();
         let p = ui.painter().clone();
@@ -431,6 +488,18 @@ impl App {
             }
             resp.on_hover_text("Active scan. It briefly disturbs Bluetooth on the shared Wi-Fi/BT chip, so it only runs when you ask.");
             x -= 146.0;
+        }
+        // vendor database button
+        {
+            let r = Rect::from_min_size(pos2(x - 110.0, rect.center().y - 17.0), vec2(110.0, 34.0));
+            let resp = hit(ui, r, ui.scope_id().with("vendors"), Sense::click());
+            panel(&p, r, 9.0, if resp.hovered() { CYAN } else { alpha(BLUE, 0.6) });
+            p.text(r.center(), Align2::CENTER_CENTER, "Vendor list", FontId::proportional(14.0), Color32::WHITE);
+            if resp.clicked() {
+                self.vendor_open = !self.vendor_open;
+            }
+            resp.on_hover_text("Update the list that turns MAC addresses into manufacturer names.");
+            x -= 126.0;
         }
         for (c, txt) in chips.iter().rev() {
             let g = p.layout_no_wrap(txt.clone(), FontId::monospace(12.0), TEXT);
@@ -1872,6 +1941,7 @@ impl eframe::App for App {
             Screen::Spectrum => self.spectrum(ui, t),
             Screen::Devices => self.devices(ui),
         });
+        self.vendor_window(ui.ctx());
         // info boxes are shared by every screen: opening one fades it in, switching fades the old one out
         let dt = ui.input(|i| i.stable_dt).min(0.05);
         let want: Option<String> = if self.screen == Screen::Radar { self.sel.clone().filter(|id| self.radar_anchor.as_ref().map_or(false, |(i, _)| i == id)) } else { self.sel.clone() };

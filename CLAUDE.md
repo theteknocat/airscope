@@ -3,7 +3,7 @@
 Native Linux GUI (Rust, egui/eframe 0.37, glow) visualising Wi-Fi / Bluetooth / LAN around peter-pc as a radar. Repo: private `theteknocat/airscope`, branch `main`. Build `cargo build --release`; binary `target/release/airscope`. Plan: `docs/PLAN.md`.
 
 ## Layout
-- `src/data.rs` — collectors on threads publishing to `Arc<Mutex<Shared>>`: Wi-Fi via `nm.rs`, BlueZ device list via `bluez.rs`, LAN (neighbours via `net.rs`, mDNS via `mdns-sd` crate, stale devices pinged), OUI vendors from `/usr/share/hwdata/oui.txt`. `Dev` (id = BSSID/MAC), `BtLink`.
+- `src/data.rs` — collectors on threads publishing to `Arc<Mutex<Shared>>`: Wi-Fi via `nm.rs`, BlueZ device list via `bluez.rs`, LAN (neighbours via `net.rs`, mDNS via `mdns-sd` crate, stale devices pinged), OUI vendors (`Oui`: built-in `src/oui.tsv` < system `/usr/share/hwdata/oui.txt` < user `~/.config/airscope/oui.tsv`; `parse_oui` reads IEEE txt/csv, Wireshark manuf, plain TSV; header "Vendor list" button opens an import window — drop a file or paste a path; `AIRSCOPE_VENDOR=1` opens it at start). Regenerate built-in list: `scripts/gen-oui.sh [oui.txt]`. `Dev` (id = BSSID/MAC), `BtLink`.
 - `src/hci.rs` — native Bluetooth HCI (kernel socket, read-only commands, no root): connections, AFH map, link quality, RSSI, TX power, remote version. Replaced `hcitool`. Test: `cargo test live_dump -- --ignored --nocapture`.
 - `src/bluez.rs` — BlueZ over system D-Bus (zbus, blocking): one `GetManagedObjects` call gives all devices + properties (replaced `bluetoothctl`). Test: `cargo test bluez_dump -- --ignored --nocapture`.
 - `src/nm.rs` — NetworkManager over system D-Bus (one `GetManagedObjects` at `/org/freedesktop`): cached scan results, channel/security text like nmcli, `request_scan`. Replaced `nmcli`. Test: `cargo test nm_dump -- --ignored --nocapture` (diffed against nmcli: identical).
@@ -21,7 +21,7 @@ Native Linux GUI (Rust, egui/eframe 0.37, glow) visualising Wi-Fi / Bluetooth / 
 - Testing: screenshot with `spectacle -b -n -a -o <file>`; don't screenshot while Peter is using the screen (once captured his browser — deleted).
 
 ## Portability roadmap (goal: no external tools)
-Done: HCI (`hci.rs`), BlueZ D-Bus, NetworkManager D-Bus (stated requirement for Wi-Fi; nl80211 fallback only if someone asks), native LAN (`net.rs`, mdns-sd). Next: embed the OUI vendor DB (currently reads `/usr/share/hwdata/oui.txt`); then package (AppImage, Flatpak for Bazzite).
+Done: HCI (`hci.rs`), BlueZ D-Bus, NetworkManager D-Bus (stated requirement for Wi-Fi; nl80211 fallback only if someone asks), native LAN (`net.rs`, mdns-sd). Embedded OUI DB + user import done. Next: package (AppImage, Flatpak for Bazzite).
 
 ## Not done yet
 Interference suspects (red halos), settings panel, LAN scan button, `.desktop` launcher, reset-positions option.

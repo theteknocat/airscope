@@ -125,21 +125,112 @@ pub fn parse_mac(mac: &str) -> Option<[u8; 6]> {
     Some(b)
 }
 
-pub struct Oui(HashMap<u32, String>);
+const BUILT_IN_OUI: &str = include_str!("oui.tsv"); // regenerate with scripts/gen-oui.sh
+
+/// Where an imported vendor list is kept.
+pub fn user_oui_path() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".config/airscope/oui.tsv"))
+}
+
+fn csv_fields(l: &str) -> Vec<String> {
+    let (mut out, mut cur, mut q) = (vec![], String::new(), false);
+    for c in l.chars() {
+        match c {
+            '"' => q = !q,
+            ',' if !q => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
+}
+
+/// Vendor prefixes from any of: IEEE oui.txt, IEEE oui.csv, Wireshark `manuf`, or plain "AABBCC<tab>Name".
+/// Only 24-bit prefixes are used; other lines are skipped.
+pub fn parse_oui(text: &str) -> Vec<(u32, String)> {
+    let mut out = vec![];
+    for l in text.lines() {
+        let l = l.trim_end_matches('\r');
+        if l.is_empty() || l.starts_with('#') || l.starts_with(char::is_whitespace) || l.contains("(base 16)") {
+            continue;
+        }
+        let (key, name) = if let Some((a, b)) = l.split_once("(hex)") {
+            (a.trim().to_string(), b.trim().to_string())
+        } else if l.starts_with("MA-L,") {
+            let f = csv_fields(l);
+            if f.len() < 3 {
+                continue;
+            }
+            (f[1].clone(), f[2].trim().to_string())
+        } else if l.starts_with("MA-") || l.starts_with("IAB,") || l.starts_with("CID,") {
+            continue;
+        } else {
+            match l.split_once(char::is_whitespace) {
+                Some((k, r)) => (k.to_string(), r.rsplit('\t').next().unwrap_or("").trim().to_string()),
+                None => continue,
+            }
+        };
+        let hex: String = key.chars().filter(|c| *c != '-' && *c != ':').collect();
+        if hex.len() == 6 && !name.is_empty() {
+            if let Ok(v) = u32::from_str_radix(&hex, 16) {
+                out.push((v, name));
+            }
+        }
+    }
+    out
+}
+
+/// Vendor names by MAC prefix. Layers, later wins: built-in list, the system's hwdata copy, the user's imported file.
+pub struct Oui {
+    map: std::sync::RwLock<HashMap<u32, String>>,
+    counts: std::sync::RwLock<[usize; 3]>, // built-in, system, user entries
+}
+
+static OUI: std::sync::OnceLock<Arc<Oui>> = std::sync::OnceLock::new();
+
+/// The shared instance (for the UI).
+pub fn oui() -> Option<Arc<Oui>> {
+    OUI.get().cloned()
+}
 
 impl Oui {
     pub fn load() -> Self {
+        let o = Oui { map: Default::default(), counts: Default::default() };
+        o.reload();
+        o
+    }
+    pub fn reload(&self) {
         let mut m = HashMap::new();
-        if let Ok(s) = std::fs::read_to_string("/usr/share/hwdata/oui.txt") {
-            for l in s.lines() {
-                if let Some((a, b)) = l.split_once("(hex)") {
-                    if let Ok(v) = u32::from_str_radix(&a.trim().replace('-', ""), 16) {
-                        m.insert(v, b.trim().to_string());
-                    }
+        let mut c = [0usize; 3];
+        let layers = [Some(BUILT_IN_OUI.to_string()), std::fs::read_to_string("/usr/share/hwdata/oui.txt").ok(), user_oui_path().and_then(|p| std::fs::read_to_string(p).ok())];
+        for (i, text) in layers.iter().enumerate() {
+            if let Some(t) = text {
+                for (k, v) in parse_oui(t) {
+                    m.insert(k, v);
+                    c[i] += 1;
                 }
             }
         }
-        Oui(m)
+        *self.map.write().unwrap() = m;
+        *self.counts.write().unwrap() = c;
+    }
+    /// (total vendors, built-in entries, system entries, imported entries)
+    pub fn stats(&self) -> (usize, [usize; 3]) {
+        (self.map.read().unwrap().len(), *self.counts.read().unwrap())
+    }
+    /// Read a downloaded list, keep it as the user's file and use it from now on. Returns the number of entries.
+    pub fn import(&self, path: &str) -> Result<usize, String> {
+        let bytes = std::fs::read(path.trim().trim_matches('"')).map_err(|e| format!("Can't read that file: {}", e))?;
+        let list = parse_oui(&String::from_utf8_lossy(&bytes));
+        if list.is_empty() {
+            return Err("No vendor entries found. Expected the IEEE oui.txt / oui.csv or a Wireshark manuf file.".into());
+        }
+        let dest = user_oui_path().ok_or("HOME is not set")?;
+        std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+        let tsv: String = list.iter().map(|(k, v)| format!("{:06X}\t{}\n", k, v)).collect();
+        std::fs::write(&dest, tsv).map_err(|e| format!("Can't save {}: {}", dest.display(), e))?;
+        self.reload();
+        Ok(list.len())
     }
     pub fn vendor(&self, mac: &str) -> String {
         match parse_mac(mac) {
@@ -148,7 +239,7 @@ impl Oui {
                     return "Private / randomized address".into();
                 }
                 let k = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-                self.0.get(&k).cloned().unwrap_or_else(|| "Unknown vendor".into())
+                self.map.read().unwrap().get(&k).cloned().unwrap_or_else(|| "Unknown vendor".into())
             }
             None => "Unknown".into(),
         }
@@ -600,6 +691,7 @@ fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
 pub fn spawn() -> Handle {
     let h: Handle = Arc::new(Mutex::new(Shared::default()));
     let oui = Arc::new(Oui::load());
+    let _ = OUI.set(oui.clone());
     let mdns: Mdns = Arc::new(Mutex::new(HashMap::new()));
     {
         let (h, o) = (h.clone(), oui.clone());
@@ -623,6 +715,33 @@ pub fn spawn() -> Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oui_formats() {
+        let ieee = "28-6F-B9   (hex)\t\tNokia Shanghai Bell Co., Ltd.\n286FB9     (base 16)\t\tNokia Shanghai Bell Co., Ltd.\n\t\t\t\tNo.388 Road\n";
+        assert_eq!(parse_oui(ieee), vec![(0x286FB9, "Nokia Shanghai Bell Co., Ltd.".to_string())]);
+        let csv = "Registry,Assignment,Organization Name,Organization Address\nMA-L,286FB9,\"Nokia, Ltd.\",Road\nMA-S,70B3D5E0A,Small Co,Street\n";
+        assert_eq!(parse_oui(csv), vec![(0x286FB9, "Nokia, Ltd.".to_string())]);
+        let manuf = "# comment\n00:00:00\tXerox\tXerox Corporation\n00:1B:C5:00:00:00/36\tConverging\tConverging Systems\n";
+        assert_eq!(parse_oui(manuf), vec![(0, "Xerox Corporation".to_string())]);
+        assert_eq!(parse_oui("AABBCC\tSome Vendor\n"), vec![(0xAABBCC, "Some Vendor".to_string())]);
+        assert!(parse_oui(BUILT_IN_OUI).len() > 30000);
+    }
+
+    #[test]
+    fn oui_import() {
+        let dir = std::env::temp_dir().join(format!("airscope-oui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("HOME", &dir) }; // keep the user's real config untouched
+        let src = dir.join("new.txt");
+        std::fs::write(&src, "04-AB-CD   (hex)\t\tBrand New Vendor Inc\n").unwrap();
+        let o = Oui::load();
+        assert_eq!(o.vendor("04:AB:CD:00:00:01"), "Unknown vendor");
+        assert_eq!(o.import(src.to_str().unwrap()), Ok(1));
+        assert_eq!(o.vendor("04:AB:CD:00:00:01"), "Brand New Vendor Inc");
+        assert!(o.import("/nonexistent").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// Prints what mDNS discovery finds after 10 s; compare with `avahi-browse -a -r -t -p`.
     /// Run with: cargo test mdns_dump -- --ignored --nocapture
