@@ -192,6 +192,7 @@ struct App {
     vendor_open: bool,
     vendor_path: String,
     vendor_msg: Option<(bool, String)>, // (ok, text) of the last import
+    vendor_copied: Option<(usize, Instant)>, // which link was just opened
     screen: Screen,
     sel: Option<String>,
     over: HashMap<String, (f32, f32)>, // id -> (angle rad, metres)
@@ -293,6 +294,7 @@ impl App {
             vendor_open: std::env::var("AIRSCOPE_VENDOR").is_ok(), // debug aid
             vendor_path: String::new(),
             vendor_msg: None,
+            vendor_copied: None,
             screen: match std::env::var("AIRSCOPE_SCREEN").as_deref() { Ok("spectrum") => Screen::Spectrum, Ok("devices") => Screen::Devices, _ => Screen::Radar }, // debug aid
             sel: std::env::var("AIRSCOPE_SEL").ok(), // debug aid
             over,
@@ -404,7 +406,7 @@ impl App {
         }
     }
 
-    /// Window for importing a newer vendor list: instructions, links to copy, drop a file or paste its path.
+    /// Dialog for importing a newer vendor list, drawn like the rest of the app: centred, dimmed backdrop.
     fn vendor_window(&mut self, ctx: &egui::Context) {
         if !self.vendor_open {
             return;
@@ -415,37 +417,103 @@ impl App {
             self.vendor_path = path;
             self.import_vendors(&oui);
         }
-        let mut open = true;
-        egui::Window::new("Vendor list").open(&mut open).collapsible(false).resizable(false).default_width(520.0).show(ctx, |ui| {
-            let (total, c) = oui.stats();
-            ui.label(format!("{} manufacturers known: {} built in, +{} more from the system list, +{} more from your imported file.", total, c[0], c[1], c[2]));
-            ui.add_space(6.0);
-            ui.label("New manufacturers appear over time. To update the list:");
-            ui.label("1. Download one of these in your browser (copy the link):");
-            for (name, url) in [("IEEE text (oui.txt)", "https://standards-oui.ieee.org/oui/oui.txt"), ("IEEE CSV (oui.csv)", "https://standards-oui.ieee.org/oui/oui.csv"), ("Wireshark list (manuf)", "https://www.wireshark.org/download/automated/data/manuf")] {
-                ui.horizontal(|ui| {
-                    if ui.small_button("Copy link").clicked() {
-                        ui.ctx().copy_text(url.to_string());
-                    }
-                    ui.label(format!("{}  {}", name, url));
-                });
-            }
-            ui.label("2. Drag the downloaded file onto this window, or paste its path here:");
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.vendor_path).desired_width(360.0).hint_text("/home/you/Downloads/oui.txt"));
-                if ui.button("Import").clicked() {
-                    self.import_vendors(&oui);
-                }
-            });
-            if let Some((ok, msg)) = &self.vendor_msg {
-                ui.colored_label(if *ok { GREEN } else { RED }, msg);
-            }
-            if let Some(p) = data::user_oui_path() {
-                ui.add_space(4.0);
-                ui.weak(format!("Saved to {} (delete it to go back to the built-in list).", p.display()));
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.vendor_open = false;
+        }
+        let screen = ctx.content_rect();
+        let (w, h) = (620.0f32, 520.0f32);
+        let r = Rect::from_center_size(screen.center(), vec2(w.min(screen.width() - 20.0), h.min(screen.height() - 20.0)));
+        // backdrop: dims the app and closes the dialog when clicked
+        let mut close = false;
+        egui::Area::new(egui::Id::new("vendor_scrim")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            let (sr, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
+            ui.painter().rect_filled(sr, 0.0, alpha(BG, 0.72));
+            if resp.clicked() {
+                close = true;
             }
         });
-        self.vendor_open = open;
+        let (total, c) = oui.stats();
+        let col = CYAN;
+        egui::Area::new(egui::Id::new("vendor_dialog")).order(egui::Order::Foreground).fixed_pos(r.min).show(ctx, |ui| {
+            let (_, _) = ui.allocate_exact_size(r.size(), Sense::click()); // swallow clicks so the backdrop doesn't see them
+            let p = ui.painter_at(r.expand(40.0));
+            panel(&p, r, 16.0, col);
+            let (l, rr) = (r.left() + 30.0, r.right() - 30.0);
+            let inner = rr - l;
+            // title
+            lcd(&p, pos2(l, r.top() + 38.0), Align2::LEFT_CENTER, "VENDOR LIST", 24.0, col);
+            p.text(pos2(l, r.top() + 66.0), Align2::LEFT_CENTER, "Turns the first half of a MAC address into a manufacturer name.", FontId::proportional(13.0), DIM);
+            let cr = Rect::from_center_size(pos2(r.right() - 26.0, r.top() + 26.0), Vec2::splat(26.0));
+            let resp = hit(ui, cr, ui.id().with("vclose"), Sense::click());
+            let cc = if resp.hovered() { Color32::WHITE } else { DIM };
+            p.line_segment([cr.center() + vec2(-5.0, -5.0), cr.center() + vec2(5.0, 5.0)], Stroke::new(2.0, cc));
+            p.line_segment([cr.center() + vec2(5.0, -5.0), cr.center() + vec2(-5.0, 5.0)], Stroke::new(2.0, cc));
+            if resp.clicked() {
+                close = true;
+            }
+            // counts
+            let tiles = [("KNOWN", total.to_string(), GREEN), ("BUILT IN", c[0].to_string(), CYAN), ("+ SYSTEM LIST", format!("+{}", c[1]), BLUE), ("+ YOUR FILE", format!("+{}", c[2]), AMBER)];
+            let tw = (inner - 3.0 * 12.0) / 4.0;
+            for (i, (label, num, tc)) in tiles.iter().enumerate() {
+                let t = Rect::from_min_size(pos2(l + i as f32 * (tw + 12.0), r.top() + 92.0), vec2(tw, 62.0));
+                p.rect_filled(t, 10.0, alpha(BG, 0.55));
+                p.rect_stroke(t, 10.0, Stroke::new(1.0, alpha(*tc, 0.35)), StrokeKind::Inside);
+                lcd(&p, pos2(t.left() + 14.0, t.top() + 24.0), Align2::LEFT_CENTER, num, 22.0, *tc);
+                p.text(pos2(t.left() + 14.0, t.top() + 46.0), Align2::LEFT_CENTER, *label, FontId::monospace(10.5), alpha(*tc, 0.8));
+            }
+            let step = |y: f32, n: &str, title: &str| {
+                let c = pos2(l + 13.0, y);
+                p.circle_stroke(c, 13.0, Stroke::new(1.5, col));
+                p.text(c, Align2::CENTER_CENTER, n, FontId::monospace(13.0), col);
+                p.text(pos2(l + 38.0, y), Align2::LEFT_CENTER, title, FontId::proportional(15.0), Color32::WHITE);
+            };
+            let pill = |ui: &egui::Ui, rect: Rect, id: &str, label: &str, accent: Color32| -> bool {
+                let resp = hit(ui, rect, ui.id().with(id), Sense::click());
+                panel(&p, rect, 9.0, if resp.hovered() { CYAN } else { accent });
+                p.text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.5), Color32::WHITE);
+                resp.clicked()
+            };
+            // step 1
+            let mut y = r.top() + 190.0;
+            p.line_segment([pos2(l, y - 18.0), pos2(rr, y - 18.0)], Stroke::new(1.0, alpha(col, 0.15)));
+            step(y, "1", "Download a newer list in your browser");
+            y += 30.0;
+            let links = [("IEEE text file", "oui.txt", "https://standards-oui.ieee.org/oui/oui.txt"), ("IEEE spreadsheet", "oui.csv", "https://standards-oui.ieee.org/oui/oui.csv"), ("Wireshark list", "manuf", "https://www.wireshark.org/download/automated/data/manuf")];
+            for (i, (name, file, url)) in links.iter().enumerate() {
+                p.text(pos2(l + 38.0, y + 12.0), Align2::LEFT_CENTER, format!("{}  ·  {}", name, file), FontId::proportional(13.5), TEXT);
+                p.text(pos2(l + 38.0, y + 32.0), Align2::LEFT_CENTER, *url, FontId::monospace(11.5), DIM);
+                let copied = self.vendor_copied.map_or(false, |(j, t)| j == i && t.elapsed().as_secs_f32() < 1.6);
+                let b = Rect::from_min_size(pos2(rr - 112.0, y + 8.0), vec2(112.0, 32.0));
+                if pill(ui, b, &format!("copy{}", i), if copied { "Opened" } else { "Open link" }, if copied { GREEN } else { BLUE }) {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(*url));
+                    self.vendor_copied = Some((i, Instant::now()));
+                }
+                y += 54.0;
+            }
+            // step 2
+            y += 8.0;
+            step(y, "2", "Give the downloaded file to Airscope");
+            p.text(pos2(l + 38.0, y + 26.0), Align2::LEFT_CENTER, "Drag it onto this window, or paste its location below.", FontId::proportional(12.5), DIM);
+            let field = Rect::from_min_size(pos2(l + 38.0, y + 46.0), vec2(inner - 38.0 - 124.0, 32.0));
+            ui.put(field, egui::TextEdit::singleline(&mut self.vendor_path).hint_text("/home/you/Downloads/oui.txt").align(egui::Align2::LEFT_CENTER).min_size(field.size()));
+            if pill(ui, Rect::from_min_size(pos2(rr - 112.0, y + 46.0), vec2(112.0, 32.0)), "import", "Import", BLUE) {
+                self.import_vendors(&oui);
+            }
+            // result and footer
+            if let Some((ok, msg)) = &self.vendor_msg {
+                let mc = if *ok { GREEN } else { RED };
+                dot(&p, pos2(l + 46.0, y + 98.0), 4.0, mc, 0.2);
+                let g = p.layout(msg.clone(), FontId::proportional(13.0), mc, inner - 70.0);
+                p.galley(pos2(l + 60.0, y + 90.0), g, mc);
+            }
+            if let Some(path) = data::user_oui_path() {
+                let g = p.layout(format!("Your imported list is saved to {}. Delete that file to go back to the built-in list.", path.display()), FontId::proportional(11.5), DIM, inner);
+                p.galley(pos2(l, r.bottom() - 18.0 - g.size().y), g, DIM);
+            }
+        });
+        if close {
+            self.vendor_open = false;
+        }
     }
 
     fn import_vendors(&mut self, oui: &data::Oui) {

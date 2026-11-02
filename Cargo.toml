@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "links"] }
 libc = "0.2"
 mdns-sd = "0.21.7"
 zbus = "5"
