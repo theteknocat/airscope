@@ -189,6 +189,7 @@ struct App {
     scope: u8,
     hide_unnamed: bool,
     collapsed: HashSet<usize>,
+    anchor: Pos2,                  // where the info box opens when picked on a non-radar screen
 }
 
 fn cfg_path() -> Option<std::path::PathBuf> {
@@ -250,7 +251,7 @@ impl App {
             lan_at: None,
             errs: vec![],
             screen: match std::env::var("AIRSCOPE_SCREEN").as_deref() { Ok("spectrum") => Screen::Spectrum, Ok("devices") => Screen::Devices, _ => Screen::Radar }, // debug aid
-            sel: None,
+            sel: std::env::var("AIRSCOPE_SEL").ok(), // debug aid
             over,
             host: if host.is_empty() { "this PC".into() } else { host },
             t0: Instant::now(),
@@ -278,6 +279,7 @@ impl App {
             scope: 0,
             hide_unnamed: false,
             collapsed: HashSet::from([4]),
+            anchor: pos2(700.0, 400.0),
         }
     }
 
@@ -1069,10 +1071,13 @@ impl App {
             let hidden = !d.known;
             let name = if hidden { "(unnamed)".to_string() } else { d.name.clone() };
             let mine = self.is_mine(d);
-            let e = m.entry((name.clone(), ch)).or_insert(Net { name, chan: ch, f: f as f32, dbm, aps: 0, mine, hidden });
+            let e = m.entry((name.clone(), ch)).or_insert(Net { id: d.id.clone(), name, chan: ch, f: f as f32, dbm, aps: 0, mine, hidden });
             e.aps += 1;
             e.mine |= mine;
-            e.dbm = e.dbm.max(dbm);
+            if dbm > e.dbm {
+                e.dbm = dbm;
+                e.id = d.id.clone();
+            }
         }
         let mut v: Vec<Net> = m.into_values().collect();
         v.sort_by(|a, b| b.dbm.partial_cmp(&a.dbm).unwrap().then(a.name.cmp(&b.name)));
@@ -1085,8 +1090,21 @@ impl App {
     }
 
     /// `crowd(i)` = estimated Wi-Fi crowding (0..1) on Bluetooth channel i: busier channels are drawn dimmer.
-    fn bt_rows(&self, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, end_x: f32, mut y: f32, crowd: &dyn Fn(usize) -> f32) -> f32 {
-        for l in &self.links {
+    /// Returns (y after the rows, hovered row, clicked row). Every row has the same full-width hit area.
+    #[allow(clippy::too_many_arguments)]
+    fn bt_rows(&self, ui: &egui::Ui, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, end_x: f32, mut y: f32, crowd: &dyn Fn(usize) -> f32) -> (f32, Option<usize>, Option<usize>) {
+        let (mut hov, mut clk) = (None, None);
+        for (li, l) in self.links.iter().enumerate() {
+            let row = Rect::from_min_max(pos2(label_x - 108.0, y - 3.0), pos2(end_x + 92.0, y + 21.0));
+            let resp = hit(ui, row, ui.scope_id().with(("btrow", &l.mac)), Sense::click());
+            if resp.hovered() {
+                hov = Some(li);
+                p.rect_filled(row, 8.0, alpha(CYAN, 0.08));
+                p.rect_stroke(row, 8.0, Stroke::new(1.0, alpha(CYAN, 0.5)), StrokeKind::Inside);
+            }
+            if resp.clicked() {
+                clk = Some(li);
+            }
             p.text(pos2(label_x, y + 9.0), Align2::RIGHT_CENTER, if l.name.is_empty() { &l.mac } else { &l.name }, FontId::proportional(12.0), TEXT);
             for i in 0..79usize {
                 let r = Rect::from_min_size(pos2(xl(i), y), vec2((cw - 1.5).max(1.0), 18.0));
@@ -1099,14 +1117,11 @@ impl App {
                     p.rect_stroke(r, 2.0, Stroke::new(1.0, alpha(DIM, 0.45)), StrokeKind::Inside);
                 }
             }
-            let txt = match &l.afh {
-                Some(m) => format!("{}/79 in use", m.iter().filter(|x| **x).count()),
-                None => "no AFH · hops on all".to_string(),
-            };
-            p.text(pos2(end_x + 6.0, y + 9.0), Align2::LEFT_CENTER, txt, FontId::monospace(10.0), DIM);
+            let n = l.afh.as_ref().map_or(79, |m| m.iter().filter(|x| **x).count());
+            p.text(pos2(end_x + 12.0, y + 9.0), Align2::LEFT_CENTER, format!("{}/79 in use", n), FontId::monospace(10.0), DIM);
             y += 26.0;
         }
-        y
+        (y, hov, clk)
     }
 
     // ---------- spectrum ----------
@@ -1133,14 +1148,14 @@ impl App {
         let legend_w = 300.0;
         let n_links = self.links.len().max(1) as f32;
         let has_bt = !self.links.is_empty();
-        let bt_h = if has_bt { n_links * 26.0 + 104.0 } else { 44.0 };
-        let gh = (rect.height() - 60.0 - 40.0 - bt_h - 200.0).clamp(150.0, 330.0);
+        let tail = 26.0 + if has_bt { 34.0 + 26.0 + n_links * 26.0 + 22.0 } else { 26.0 } + 14.0; // content below the axis, plus bottom padding
+        let gh = (rect.height() - 74.0 - 40.0 - tail - 200.0).clamp(150.0, 330.0);
         let gx0 = l + 130.0;
         let gx1 = rect.right() - legend_w - 170.0;
         let gw = gx1 - gx0;
-        let base = rect.top() + 60.0 + gh;
+        let base = rect.top() + 74.0 + gh;
         let fx = |f: f32| gx0 + (f - 2399.0) / 87.0 * gw;
-        let frame = Rect::from_min_max(pos2(l, rect.top() + 52.0), pos2(gx1 + 134.0, base + 30.0 + bt_h));
+        let frame = Rect::from_min_max(pos2(l, rect.top() + 52.0), pos2(gx1 + 134.0, base + tail));
         panel(&p, frame, 14.0, CYAN);
         // gridlines + axes
         for (dbm, lbl) in [(-85.0, "-85"), (-70.0, "-70"), (-55.0, "-55")] {
@@ -1148,10 +1163,10 @@ impl App {
             p.line_segment([pos2(gx0, y), pos2(gx1, y)], Stroke::new(1.0, alpha(CYAN, 0.07)));
             p.text(pos2(gx0 - 6.0, y), Align2::RIGHT_CENTER, lbl, FontId::monospace(9.5), DIM);
         }
-        p.text(pos2(l + 8.0, rect.top() + 66.0), Align2::LEFT_TOP, "dBm", FontId::monospace(9.5), DIM);
+        p.text(pos2(l + 18.0, rect.top() + 66.0), Align2::LEFT_TOP, "dBm", FontId::monospace(9.5), DIM);
         for n in 1..=13 {
             let f = 2407.0 + 5.0 * n as f32;
-            p.line_segment([pos2(fx(f), rect.top() + 62.0), pos2(fx(f), base)], Stroke::new(1.0, alpha(CYAN, if [1, 6, 11].contains(&n) { 0.16 } else { 0.06 })));
+            p.line_segment([pos2(fx(f), rect.top() + 72.0), pos2(fx(f), base)], Stroke::new(1.0, alpha(CYAN, if [1, 6, 11].contains(&n) { 0.16 } else { 0.06 })));
             p.text(pos2(fx(f), base + 9.0), Align2::CENTER_CENTER, n.to_string(), FontId::monospace(11.0), if [1, 6, 11].contains(&n) { CYAN } else { DIM });
         }
         p.text(pos2(gx0 - 6.0, base + 9.0), Align2::RIGHT_CENTER, "Wi-Fi ch", FontId::proportional(10.5), DIM);
@@ -1159,6 +1174,7 @@ impl App {
 
         // hover target: from the legend, else from the graph
         let ptr = ui.input(|i| i.pointer.hover_pos());
+        let mut pick: Option<(String, Pos2)> = None;
         let hh = |n: &Net, dx: f32| n.strength() * (gh - 20.0) * hill(dx);
         let mut hover: Option<usize> = None;
         let lx = gx1 + 154.0;
@@ -1170,18 +1186,24 @@ impl App {
             ly += 24.0;
         }
         for (r, i) in &legend {
-            if hit(ui, *r, ui.scope_id().with(("lg", *i)), Sense::hover()).hovered() {
+            if hit(ui, *r, ui.scope_id().with(("lg", *i)), Sense::click()).hovered() {
                 hover = Some(*i);
             }
         }
         if hover.is_none() {
-            if let Some(q) = ptr.filter(|q| q.x > gx0 && q.x < gx1 && q.y < base && q.y > rect.top() + 62.0) {
+            if let Some(q) = ptr.filter(|q| q.x > gx0 && q.x < gx1 && q.y < base && q.y > rect.top() + 72.0) {
                 let f = 2399.0 + (q.x - gx0) / gw * 87.0;
                 for (i, n) in nets.iter().enumerate() {
                     if base - q.y <= hh(n, f - n.f) && hover.map_or(true, |_| false) {
                         hover = Some(i); // strongest first
                     }
                 }
+            }
+        }
+        if let Some(h) = hover {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            if let Some(q) = ptr.filter(|q| ui.input(|i| i.pointer.primary_clicked()) && ui.ctx().layer_id_at(*q) == Some(ui.layer_id())) {
+                pick = Some((nets[h].id.clone(), q));
             }
         }
         // hills, weakest first so strong ones sit on top
@@ -1218,7 +1240,7 @@ impl App {
                 r = Rect::from_center_size(pos2(fx(n.f), y), g.size() + vec2(10.0, 4.0));
                 tries += 1;
             }
-            if tries >= 6 && hover != Some(i) || r.top() < rect.top() + 56.0 {
+            if tries >= 6 && hover != Some(i) || r.top() < rect.top() + 66.0 {
                 continue;
             }
             placed.push(r);
@@ -1230,6 +1252,7 @@ impl App {
         // Bluetooth channels aligned under the same frequency axis
         let bcw = gw / 87.0;
         let crowd = |i: usize| (Self::load_at(&nets, 2402.0 + i as f32) / 2.2).clamp(0.0, 1.0);
+        let mut tip_box: Option<(Pos2, String, Vec<String>)> = None;
         let mut yc = base + 26.0;
         if has_bt {
             // Wi-Fi crowding on each Bluetooth channel: how much Wi-Fi is transmitting on that frequency
@@ -1267,7 +1290,24 @@ impl App {
         let mid = (gx0 + gx1) / 2.0;
         lcd(&p, pos2(mid, yc + 8.0), Align2::CENTER_CENTER, &title, 12.0, BLUE);
         if has_bt {
-            let yend = self.bt_rows(&p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, &crowd);
+            let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, &crowd);
+            if let (Some(i), Some(q)) = (bt_click, ptr) {
+                pick = Some((self.links[i].mac.clone(), q));
+            }
+            if let (Some(i), Some(q)) = (bt_hover, ptr) {
+                let l = &self.links[i];
+                let n = l.afh.as_ref().map_or(79, |m| m.iter().filter(|x| **x).count());
+                let hot = (0..79).filter(|&c| l.afh.as_ref().map_or(true, |m| m[c]) && crowd(c) > 0.5).count();
+                let mut lines = vec![match &l.afh {
+                    Some(_) => format!("Adaptive frequency hopping: uses {} of the 79 channels and steers around the {} it found noisy or blocked.", n, 79 - n),
+                    None => "No AFH (adaptive frequency hopping): this device can't avoid busy channels, so it hops across all 79, including every one Wi-Fi is using. It is the most exposed to Wi-Fi interference.".to_string(),
+                }];
+                lines.push(format!("Estimate: {} of its {} channels sit under busy Wi-Fi right now.", hot, n));
+                if let Some(lq) = l.lq {
+                    lines.push(format!("Link quality {}/255 · {}", lq, if l.mfr.is_empty() { l.mac.clone() } else { format!("{} · {}", l.mfr, l.mac) }));
+                }
+                tip_box = Some((q, if l.name.is_empty() { l.mac.clone() } else { l.name.clone() }, lines));
+            }
             p.text(pos2(mid, yend + 6.0), Align2::CENTER_CENTER, "brighter channel = less Wi-Fi expected on it (estimate) · dark outline = avoided", FontId::proportional(10.5), DIM);
         }
 
@@ -1325,6 +1365,13 @@ impl App {
             }
         };
         card(2, "YOUR NETWORK", &mine_txt, GREEN);
+        if let Some((q, title, lines)) = tip_box {
+            tip(&p, q, rect, &title, &lines, BLUE);
+        }
+        if let Some((id, q)) = pick {
+            self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+            self.anchor = q;
+        }
     }
 
     // ---------- devices ----------
@@ -1404,7 +1451,7 @@ impl App {
         }
         p.text(pos2(tb.right() - 24.0, y1 + 14.0), Align2::RIGHT_CENTER, format!("Showing {} of {} devices", total, self.devs.len()), FontId::proportional(12.0), DIM);
         // --- list
-        let mut pick = None;
+        let mut pick: Option<(String, Pos2)> = None;
         let mut toggle = None;
         let collapsed = self.collapsed.clone();
         let devs = &self.devs;
@@ -1467,7 +1514,7 @@ impl App {
                     }
                     ui.add_space(8.0);
                     if resp.clicked() {
-                        pick = Some(d.id.clone());
+                        pick = Some((d.id.clone(), resp.interact_pointer_pos().unwrap_or(r.center())));
                     }
                 }
             }
@@ -1481,15 +1528,36 @@ impl App {
                 self.collapsed.insert(g);
             }
         }
-        if let Some(id) = pick {
-            self.reveal = Some(id.clone());
-            self.sel = Some(id);
-            self.screen = Screen::Radar;
+        if let Some((id, q)) = pick {
+            self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+            self.anchor = q;
         }
     }
 }
 
+/// Multi-line hover box above `anchor`.
+fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[String], col: Color32) {
+    let w = 340.0;
+    let g0 = p.layout_no_wrap(title.to_string(), FontId::proportional(14.0), Color32::WHITE);
+    let gs: Vec<_> = lines.iter().map(|l| p.layout(l.clone(), FontId::proportional(12.0), TEXT, w - 28.0)).collect();
+    let h = 14.0 + g0.size().y + 6.0 + gs.iter().map(|g| g.size().y + 5.0).sum::<f32>() + 8.0;
+    let x = (anchor.x - w / 2.0).clamp(bounds.left() + 8.0, bounds.right() - w - 8.0);
+    let y = (anchor.y - h - 14.0).max(bounds.top() + 8.0);
+    let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
+    panel(p, r, 10.0, col);
+    let mut yy = r.top() + 12.0;
+    let hh = g0.size().y;
+    p.galley(pos2(r.left() + 14.0, yy), g0, Color32::WHITE);
+    yy += hh + 6.0;
+    for g in gs {
+        let gh = g.size().y;
+        p.galley(pos2(r.left() + 14.0, yy), g, TEXT);
+        yy += gh + 5.0;
+    }
+}
+
 struct Net {
+    id: String, // strongest access point of this network (for the info box)
     name: String,
     chan: u32,
     f: f32, // centre MHz
@@ -1602,6 +1670,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _f: &mut eframe::Frame) {
         self.sync();
         ui.ctx().request_repaint();
+        let full = ui.max_rect();
         let t = self.t0.elapsed().as_secs_f32();
         egui::Panel::left("nav").exact_size(210.0).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.nav(ui));
         egui::Panel::top("hdr").exact_size(70.0).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.header(ui, t));
@@ -1610,6 +1679,16 @@ impl eframe::App for App {
             Screen::Spectrum => self.spectrum(ui, t),
             Screen::Devices => self.devices(ui),
         });
+        // the info box is shared: on other screens it opens where you clicked (the radar anchors it to the dot)
+        if self.screen != Screen::Radar {
+            if let Some(d) = self.sel.as_ref().and_then(|id| self.devs.iter().find(|d| &d.id == id)).cloned() {
+                let mut close = false;
+                popup(ui.ctx(), &d, self.anchor, full, &mut close, kind_col(d.kind));
+                if close {
+                    self.sel = None;
+                }
+            }
+        }
     }
 }
 
