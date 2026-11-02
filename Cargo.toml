@@ -2,6 +2,9 @@
 name = "airscope"
 version = "0.1.0"
 edition = "2024"
+description = "See the Wi-Fi, Bluetooth and LAN devices around you as a radar, and how crowded the 2.4 GHz band is"
+license = "MIT"
+repository = "https://github.com/theteknocat/airscope"
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "default_fonts", "links"] }
