@@ -62,8 +62,8 @@ target/release/airscope
 | Bluetooth link details (channel map, link quality) | A Bluetooth adapter and a connected device. These are read with read-only HCI commands, no root needed on the systems I tried |
 | LAN devices | Nothing extra: ARP table, mDNS and a ping |
 
-Without NetworkManager the Wi-Fi part shows a message and the rest keeps working. Packaged as a Flatpak it
-would need access to the system D-Bus and Bluetooth, which is not done yet.
+Without NetworkManager the Wi-Fi part shows a message and the rest keeps working. There is deliberately no Flatpak: the app needs
+the system D-Bus, raw Bluetooth sockets and the LAN, which the sandbox would have to be opened up for anyway.
 
 ## Privacy and what it touches
 

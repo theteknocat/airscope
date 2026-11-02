@@ -22,7 +22,7 @@ Native Linux GUI (Rust, egui/eframe 0.37, glow) visualising Wi-Fi / Bluetooth / 
 - Testing: screenshot with `spectacle -b -n -a -o <file>`; don't screenshot while Peter is using the screen (once captured his browser — deleted).
 
 ## Portability roadmap (goal: no external tools)
-Done: HCI (`hci.rs`), BlueZ D-Bus, NetworkManager D-Bus (stated requirement for Wi-Fi; nl80211 fallback only if someone asks), native LAN (`net.rs`, mdns-sd). Embedded OUI DB + user import done. AppImage done: `packaging/build-appimage.sh` (podman, Ubuntu 22.04 → needs glibc 2.35; GUI libs come from the host; output `dist/Airscope-x86_64.AppImage`, ~6 MB). Releases: push tag `vX.Y.Z` matching `Cargo.toml` → `.github/workflows/release.yml` builds + publishes (untested until first tag). Next: README/LICENSE (MIT, vibe-coded disclosure, coffee link https://buymeacoffee.com/teknocat), Flatpak. Was: package (AppImage, Flatpak for Bazzite).
+Done: HCI (`hci.rs`), BlueZ D-Bus, NetworkManager D-Bus (stated requirement for Wi-Fi; nl80211 fallback only if someone asks), native LAN (`net.rs`, mdns-sd). Embedded OUI DB + user import done. AppImage done: `packaging/build-appimage.sh` (podman, Ubuntu 22.04 → needs glibc 2.35; GUI libs come from the host; output `dist/Airscope-x86_64.AppImage`, ~6 MB). Releases: push tag `vX.Y.Z` matching `Cargo.toml` → `.github/workflows/release.yml` builds + publishes (untested until first tag). README/LICENSE (MIT, Peter Epp) done. No Flatpak by choice (AppImage only; app needs system D-Bus, HCI sockets, LAN). (AppImage, Flatpak for Bazzite).
 
 ## Not done yet
 Interference suspects (red halos), settings panel, LAN scan button, `.desktop` launcher, reset-positions option.
