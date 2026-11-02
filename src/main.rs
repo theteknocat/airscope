@@ -1084,19 +1084,17 @@ impl App {
         nets.iter().map(|n| n.strength() * hill((f - n.f).abs())).sum()
     }
 
-    fn bt_rows(&self, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, end_x: f32, mut y: f32) -> f32 {
-        if self.links.is_empty() {
-            p.text(pos2(xl(0), y + 10.0), Align2::LEFT_CENTER, "No Bluetooth link is connected right now.", FontId::proportional(12.0), DIM);
-            return y + 26.0;
-        }
+    /// `crowd(i)` = estimated Wi-Fi crowding (0..1) on Bluetooth channel i: busier channels are drawn dimmer.
+    fn bt_rows(&self, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, end_x: f32, mut y: f32, crowd: &dyn Fn(usize) -> f32) -> f32 {
         for l in &self.links {
             p.text(pos2(label_x, y + 9.0), Align2::RIGHT_CENTER, if l.name.is_empty() { &l.mac } else { &l.name }, FontId::proportional(12.0), TEXT);
             for i in 0..79usize {
                 let r = Rect::from_min_size(pos2(xl(i), y), vec2((cw - 1.5).max(1.0), 18.0));
                 if l.afh.as_ref().map(|m| m[i]).unwrap_or(true) {
-                    glow_rect(p, r, 5.0, GREEN, 0.22);
-                    p.rect_filled(r, 2.0, GREEN);
-                    p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.22));
+                    let q = 0.5 + 0.5 * (1.0 - crowd(i)); // brightness floor: a used channel never looks "off"
+                    glow_rect(p, r, 5.0, GREEN, 0.22 * q * q);
+                    p.rect_filled(r, 2.0, mix(Color32::from_rgb(24, 70, 48), GREEN, (q - 0.5) * 2.0 * 0.85 + 0.15));
+                    p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.22 * q));
                 } else {
                     p.rect_stroke(r, 2.0, Stroke::new(1.0, alpha(DIM, 0.45)), StrokeKind::Inside);
                 }
@@ -1134,7 +1132,8 @@ impl App {
 
         let legend_w = 300.0;
         let n_links = self.links.len().max(1) as f32;
-        let bt_h = n_links * 26.0 + 34.0 + 34.0;
+        let has_bt = !self.links.is_empty();
+        let bt_h = if has_bt { n_links * 26.0 + 84.0 } else { 44.0 };
         let gh = (rect.height() - 60.0 - 40.0 - bt_h - 200.0).clamp(150.0, 330.0);
         let gx0 = l + 130.0;
         let gx1 = rect.right() - legend_w - 170.0;
@@ -1229,39 +1228,47 @@ impl App {
             p.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
         }
         // Bluetooth channels aligned under the same frequency axis
-        p.text(pos2(l + 12.0, base + 30.0 + 8.0), Align2::LEFT_CENTER, "BLUETOOTH'S 79 CHANNELS · the same frequencies as the graph above", FontId::proportional(10.5), DIM);
         let bcw = gw / 87.0;
-        // Wi-Fi crowding on each Bluetooth channel: how much Wi-Fi is transmitting on that frequency
-        let yc = base + 46.0;
-        p.text(pos2(gx0 - 12.0, yc + 9.0), Align2::RIGHT_CENTER, "Wi-Fi crowding", FontId::proportional(12.0), AMBER);
-        for i in 0..79usize {
-            let v = (Self::load_at(&nets, 2402.0 + i as f32) / 2.2).clamp(0.0, 1.0);
-            let heat = mix(AMBER, RED, ((v - 0.4) * 1.7).clamp(0.0, 1.0));
-            let r = Rect::from_min_size(pos2(fx(2401.5 + i as f32), yc), vec2((bcw - 1.5).max(1.0), 18.0));
-            if v > 0.12 {
-                glow_rect(&p, r, 5.0, heat, 0.22 * v);
+        let crowd = |i: usize| (Self::load_at(&nets, 2402.0 + i as f32) / 2.2).clamp(0.0, 1.0);
+        let mut yc = base + 26.0;
+        if has_bt {
+            // Wi-Fi crowding on each Bluetooth channel: how much Wi-Fi is transmitting on that frequency
+            p.text(pos2(gx0 - 12.0, yc + 9.0), Align2::RIGHT_CENTER, "Wi-Fi crowding", FontId::proportional(12.0), AMBER);
+            for i in 0..79usize {
+                let v = crowd(i);
+                let heat = mix(AMBER, RED, ((v - 0.4) * 1.7).clamp(0.0, 1.0));
+                let r = Rect::from_min_size(pos2(fx(2401.5 + i as f32), yc), vec2((bcw - 1.5).max(1.0), 18.0));
+                if v > 0.12 {
+                    glow_rect(&p, r, 5.0, heat, 0.22 * v);
+                }
+                p.rect_filled(r, 2.0, mix(shade(BG, 1.8), heat, 0.12 + 0.88 * v));
+                if v > 0.12 {
+                    p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.12 * v));
+                }
             }
-            p.rect_filled(r, 2.0, mix(shade(BG, 1.8), heat, 0.12 + 0.88 * v));
-            if v > 0.12 {
-                p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.12 * v));
+            // key: quiet -> crowded
+            let kr = Rect::from_min_size(pos2(gx1 + 10.0, yc + 3.0), vec2(64.0, 12.0));
+            let mut km = egui::Mesh::default();
+            let (c0, c1) = (shade(BG, 1.8), RED);
+            for (x, c) in [(kr.left(), c0), (kr.center().x, mix(AMBER, c0, 0.2)), (kr.right(), c1)] {
+                km.colored_vertex(pos2(x, kr.top()), c);
+                km.colored_vertex(pos2(x, kr.bottom()), c);
             }
+            km.add_triangle(0, 1, 2);
+            km.add_triangle(1, 3, 2);
+            km.add_triangle(2, 3, 4);
+            km.add_triangle(3, 5, 4);
+            p.add(egui::Shape::mesh(km));
+            p.text(pos2(kr.left(), kr.bottom() + 9.0), Align2::LEFT_CENTER, "quiet", FontId::proportional(9.5), DIM);
+            p.text(pos2(kr.right(), kr.bottom() + 9.0), Align2::RIGHT_CENTER, "crowded", FontId::proportional(9.5), DIM);
+            yc += 34.0;
         }
-        // key: quiet -> crowded
-        let kr = Rect::from_min_size(pos2(gx1 + 6.0, yc + 3.0), vec2(64.0, 12.0));
-        let mut km = egui::Mesh::default();
-        let (c0, c1) = (shade(BG, 1.8), RED);
-        for (x, c) in [(kr.left(), c0), (kr.center().x, mix(AMBER, c0, 0.2)), (kr.right(), c1)] {
-            km.colored_vertex(pos2(x, kr.top()), c);
-            km.colored_vertex(pos2(x, kr.bottom()), c);
+        let title = if has_bt { format!("CONNECTED BLUETOOTH DEVICES: {}", self.links.len()) } else { "NO BLUETOOTH DEVICES".to_string() };
+        lcd(&p, pos2(l + 14.0, yc + 8.0), Align2::LEFT_CENTER, &title, 12.0, BLUE);
+        if has_bt {
+            p.text(pos2(l + 14.0 + title.len() as f32 * 9.0 + 14.0, yc + 8.0), Align2::LEFT_CENTER, "brighter channel = less Wi-Fi expected on it (estimate) · dark outline = avoided", FontId::proportional(10.5), DIM);
+            self.bt_rows(&p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, &crowd);
         }
-        km.add_triangle(0, 1, 2);
-        km.add_triangle(1, 3, 2);
-        km.add_triangle(2, 3, 4);
-        km.add_triangle(3, 5, 4);
-        p.add(egui::Shape::mesh(km));
-        p.text(pos2(kr.left(), kr.bottom() + 9.0), Align2::LEFT_CENTER, "quiet", FontId::proportional(9.5), DIM);
-        p.text(pos2(kr.right(), kr.bottom() + 9.0), Align2::RIGHT_CENTER, "crowded", FontId::proportional(9.5), DIM);
-        self.bt_rows(&p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, base + 46.0 + 34.0);
 
         // legend
         lcd(&p, pos2(lx, rect.top() + 36.0 + 12.0), Align2::LEFT_CENTER, "NETWORKS", 12.0, CYAN);
