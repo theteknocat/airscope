@@ -1,5 +1,6 @@
 mod data;
 mod fx;
+mod hci;
 
 use data::{hash64, BtLink, Dev, Handle, Icon, Kind};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};

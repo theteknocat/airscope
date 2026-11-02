@@ -296,36 +296,6 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
 
 // ---------- Bluetooth ----------
 
-fn hci_tool() -> String {
-    if let Ok(p) = std::env::var("AIRSCOPE_HCITOOL") {
-        return p;
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let p = format!("{}/bt-tools/hcitool", home);
-        if std::path::Path::new(&p).exists() {
-            return p;
-        }
-    }
-    "hcitool".into()
-}
-
-fn int_in(s: &str, key: &str) -> Option<i32> {
-    let l = s.lines().find(|l| l.contains(key))?;
-    l.split(':').nth(1)?.trim().split_whitespace().last()?.trim_matches(|c| c == '(' || c == ')').parse().ok()
-}
-
-fn afh_parse(s: &str) -> Option<Vec<bool>> {
-    let hex = s.lines().find(|l| l.contains("AFH map"))?.split("0x").nth(1)?.trim().to_string();
-    if hex.len() < 20 {
-        return None;
-    }
-    let bytes: Vec<u8> = (0..10).filter_map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()).collect();
-    if bytes.len() < 10 {
-        return None;
-    }
-    Some((0..79).map(|i| bytes[i / 8] >> (i % 8) & 1 == 1).collect())
-}
-
 fn class_text(class: u32) -> String {
     let major = (class >> 8) & 0x1f;
     let minor = (class >> 2) & 0x3f;
@@ -453,24 +423,13 @@ fn parse_bt(mac: &str, info: &str, oui: &Oui) -> Dev {
     d
 }
 
-fn link_info(hci: &str, mac: &str, cache: &mut HashMap<String, (String, String)>) -> BtLink {
-    let afh_raw = run(hci, &["afh", mac]).unwrap_or_default();
-    let lq = run(hci, &["lq", mac]).and_then(|s| int_in(&s, "Link quality"));
-    let rssi = run(hci, &["rssi", mac]).and_then(|s| int_in(&s, "RSSI"));
-    let tpl = run(hci, &["tpl", mac]).and_then(|s| int_in(&s, "power level"));
-    let (lmp, mfr) = cache
-        .entry(mac.to_string())
-        .or_insert_with(|| {
-            let i = run(hci, &["info", mac]).unwrap_or_default();
-            let g = |k: &str| i.lines().find(|l| l.contains(k)).map(|l| l.split(':').skip(1).next().unwrap_or("").trim().split(" LMP").next().unwrap_or("").to_string()).unwrap_or_default();
-            (g("LMP Version"), g("Manufacturer"))
-        })
-        .clone();
-    BtLink { mac: mac.to_uppercase(), name: String::new(), lq, rssi, tpl, afh: afh_parse(&afh_raw), lmp, mfr }
+fn link_info(c: &crate::hci::Conn, cache: &mut HashMap<String, (String, String)>) -> BtLink {
+    let d = crate::hci::link_data(c);
+    let (lmp, mfr) = cache.entry(c.mac.clone()).or_insert_with(|| crate::hci::remote_version(c)).clone();
+    BtLink { mac: c.mac.clone(), name: String::new(), lq: d.lq, rssi: d.rssi, tpl: d.tpl, afh: d.afh, lmp, mfr }
 }
 
 fn bt_loop(h: Handle, oui: Arc<Oui>) {
-    let hci = hci_tool();
     let mut cache: HashMap<String, (String, String)> = HashMap::new();
     loop {
         let mut devs = vec![];
@@ -488,11 +447,10 @@ fn bt_loop(h: Handle, oui: Arc<Oui>) {
                 }
             }
         }
-        if let Some(con) = run(&hci, &["con"]) {
-            for line in con.lines() {
-                let w: Vec<&str> = line.split_whitespace().collect();
-                if w.len() > 2 && w[1] == "ACL" {
-                    let mut l = link_info(&hci, w[2], &mut cache);
+        {
+            for conn in crate::hci::connections() {
+                {
+                    let mut l = link_info(&conn, &mut cache);
                     if let Some(d) = devs.iter_mut().find(|d| d.id == l.mac) {
                         l.name = d.name.clone();
                         d.connected = true;

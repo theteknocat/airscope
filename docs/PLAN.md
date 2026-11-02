@@ -22,7 +22,7 @@ Rejected for now: Qt/QML (best built-in effects, but needs Qt dev packages in a 
 ## What the radios can and can't tell us
 
 - **Wi-Fi (scan list via NetworkManager):** SSID, BSSID, channel, frequency, width, rate, signal, security. Signal gives a distance estimate; direction is unknown. Cached scans only by default, because active scans briefly disturb Bluetooth on the shared AX200 chip.
-- **Bluetooth (BlueZ via `bluetoothctl`, plus `hcitool` for connected links):** name, class/icon, UUIDs, vendor, battery, RSSI where reported, link quality, and the **AFH channel map** (which of the 79 channels the controller avoids). No active discovery by default (it would add radio traffic); known/paired devices only, discovery is opt-in.
+- **Bluetooth (BlueZ via `bluetoothctl`, plus native HCI for connected links):** name, class/icon, UUIDs, vendor, battery, RSSI where reported, link quality, and the **AFH channel map** (which of the 79 channels the controller avoids). No active discovery by default (it would add radio traffic); known/paired devices only, discovery is opt-in.
 - **LAN (neighbour table + mDNS):** IP, MAC, vendor (from the OUI list), name and services when advertised. No signal strength (wired or Wi-Fi unknown); shown on their own ring.
 - **Location:** a single receiver cannot get direction. Distance comes from signal strength (log-distance model, tunable); the angle is stable-hashed per device, and the user drags devices to their real spot. Positions are saved.
 - **Interference:** non-Wi-Fi 2.4 GHz noise (microwaves, USB 3 hubs, cordless gear) is invisible without extra hardware. We can only score Wi-Fi networks whose channel overlaps the Bluetooth channels the controller has blocked, weighted by signal.
@@ -36,7 +36,7 @@ Rejected for now: Qt/QML (best built-in effects, but needs Qt dev packages in a 
 
 ## Data flow
 
-Collector threads (Wi-Fi, Bluetooth, LAN, OUI loader) -> one shared snapshot behind a mutex -> UI reads each frame. UI never blocks on a subprocess. Collectors shell out to `nmcli`, `bluetoothctl`, `hcitool`, `ip`, `avahi-browse` for now (simple, robust); native D-Bus/HCI can replace them later if CPU shows up in profiling.
+Collector threads (Wi-Fi, Bluetooth, LAN, OUI loader) -> one shared snapshot behind a mutex -> UI reads each frame. UI never blocks on a subprocess. Collectors shell out to `nmcli`, `bluetoothctl`, `ip`, `avahi-browse` for now (Bluetooth link data is already read natively via HCI) (simple, robust); native D-Bus/HCI can replace them later if CPU shows up in profiling.
 
 ## Phases (iterative; feedback after each)
 

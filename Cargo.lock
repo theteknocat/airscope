@@ -35,6 +35,7 @@ name = "airscope"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "libc",
 ]
 
 [[package]]
