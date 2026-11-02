@@ -58,6 +58,7 @@ pub struct Dev {
     pub details: Vec<(String, String)>,
     pub why: String,
     pub trouble: f32, // 0 = healthy .. 1 = badly degraded link (shown as a red halo)
+    pub issue: Vec<(String, String)>, // what is wrong and the evidence, shown behind the ISSUE button in the info box
 }
 
 impl Dev {
@@ -79,6 +80,7 @@ impl Dev {
             details: vec![],
             why: String::new(),
             trouble: 0.0,
+            issue: vec![],
         }
     }
 }
@@ -553,29 +555,10 @@ fn ev_code(e: &DevEvent) -> Option<u8> {
 /// Adds what is known about a device's problems to its info box and sets `trouble`: recent drops with the
 /// controller's reason, link history, and what the Wi-Fi around it looks like.
 pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) {
-    let start = d.details.len();
     let now = SystemTime::now();
     let age = |e: &DevEvent| now.duration_since(e.at).map(|x| x.as_secs()).unwrap_or(0);
-    let lqs: Vec<i32> = hist.iter().filter_map(|s| s.lq).collect();
-    if lqs.len() >= 3 {
-        let (min, avg) = (*lqs.iter().min().unwrap(), lqs.iter().sum::<i32>() / lqs.len() as i32);
-        let span = hist.back().zip(hist.front()).map(|(b, f)| b.at.duration_since(f.at).as_secs()).unwrap_or(0);
-        d.details.push(("Link history".into(), format!("last {} min: quality lowest {}, average {} (of 255)", (span / 60).max(1), min, avg)));
-    }
-    let chans: Vec<usize> = hist.iter().filter_map(|s| s.afh).collect();
-    if let (Some(lo), Some(hi)) = (chans.iter().min(), chans.iter().max()) {
-        if chans.len() >= 3 && hi - lo >= 6 {
-            d.details.push(("Channel map".into(), format!("channels in use ranged {} to {} of 79: the controller is steering around noise it finds", lo, hi)));
-        }
-    }
-    for e in ev.iter().rev().take(4) {
-        let text = match e.kind {
-            EvKind::Connected => "Connected".to_string(),
-            EvKind::ConnectFailed(c) => format!("Connection attempt failed: {} (0x{:02x})", crate::hci::reason(c).0, c),
-            EvKind::Disconnected(c) => format!("Disconnected: {} (0x{:02x})", crate::hci::reason(c).0, c),
-        };
-        d.details.push((clock(e.at), text));
-    }
+    let mut diagnosis: Option<(String, String)> = None;
+    let mut rows: Vec<(String, String)> = vec![];
     let bad: Vec<&DevEvent> = ev.iter().filter(|e| age(e) < TROUBLE_WINDOW_SECS && ev_code(e).map_or(false, |c| crate::hci::reason(c).2)).collect();
     if let Some(last) = bad.last() {
         let code = ev_code(last).unwrap_or(0);
@@ -587,22 +570,36 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
         if matches!(code, 0x08 | 0x22 | 0x3E | 0x3D) {
             text += &format!(" {}", wifi_context(wifi));
         }
-        d.details.push(("What it means".into(), text));
+        diagnosis = Some(("What it means".into(), text));
         let fresh = (1.0 - age(last) as f32 / TROUBLE_WINDOW_SECS as f32).max(0.25);
         d.trouble = d.trouble.max((0.5 + 0.25 * (bad.len() as f32 - 1.0)).min(1.0) * fresh);
     }
-    // problems first: right after "Type", the diagnosis, then the evidence behind it
-    let mut issue: Vec<(String, String)> = d.details.drain(start..).collect();
-    if let Some(i) = d.details.iter().position(|r| r.0 == "Link health") {
-        issue.insert(0, d.details.remove(i));
+    for e in ev.iter().rev().take(4) {
+        let text = match e.kind {
+            EvKind::Connected => "Connected".to_string(),
+            EvKind::ConnectFailed(c) => format!("Connection attempt failed: {} (0x{:02x})", crate::hci::reason(c).0, c),
+            EvKind::Disconnected(c) => format!("Disconnected: {} (0x{:02x})", crate::hci::reason(c).0, c),
+        };
+        rows.push((clock(e.at), text));
     }
-    if let Some(i) = issue.iter().position(|r| r.0 == "What it means") {
-        let r = issue.remove(i);
-        let at = issue.iter().position(|r| r.0 != "Link health").unwrap_or(issue.len());
-        issue.insert(at, r);
+    let lqs: Vec<i32> = hist.iter().filter_map(|s| s.lq).collect();
+    if lqs.len() >= 3 {
+        let (min, avg) = (*lqs.iter().min().unwrap(), lqs.iter().sum::<i32>() / lqs.len() as i32);
+        let span = hist.back().zip(hist.front()).map(|(b, f)| b.at.duration_since(f.at).as_secs()).unwrap_or(0);
+        rows.push(("Link history".into(), format!("last {} min: quality lowest {}, average {} (of 255)", (span / 60).max(1), min, avg)));
     }
-    for (n, row) in issue.into_iter().enumerate() {
-        d.details.insert(1 + n, row);
+    let chans: Vec<usize> = hist.iter().filter_map(|s| s.afh).collect();
+    if let (Some(lo), Some(hi)) = (chans.iter().min(), chans.iter().max()) {
+        if chans.len() >= 3 && hi - lo >= 6 {
+            rows.push(("Channel map".into(), format!("channels in use ranged {} to {} of 79: the controller is steering around noise it finds", lo, hi)));
+        }
+    }
+    // only worth showing when something is actually wrong: health row, diagnosis, then the evidence
+    if d.trouble > 0.0 {
+        d.issue.extend(diagnosis);
+        d.issue.extend(rows);
+    } else {
+        d.issue.clear();
     }
 }
 
@@ -627,7 +624,7 @@ pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
     // Link quality is 255 on a healthy link and falls when packets are being lost or retried (interference, distance, obstacles).
     if let Some(q) = l.lq.filter(|q| *q < LINK_WARN) {
         d.trouble = ((LINK_WARN - q) as f32 / 130.0).clamp(0.25, 1.0);
-        d.details.push(("Link health".into(), format!("DEGRADED: quality {} of 255. Packets are being lost or retried, which is what interference looks like.", q)));
+        d.issue.push(("Link health".into(), format!("DEGRADED: quality {} of 255. Packets are being lost or retried, which is what interference looks like.", q)));
     }
         d.details.push((
             "RSSI (relative)".into(),

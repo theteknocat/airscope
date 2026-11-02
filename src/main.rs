@@ -201,6 +201,8 @@ struct App {
     lan_at: Option<Instant>,
     errs: Vec<String>,
     vendor_open: bool,
+    popup_rects: Vec<Rect>, // where info boxes were drawn last frame: the wheel scrolls them instead of zooming the radar
+    wheel: f32,             // wheel movement taken for an info box this frame
     shot_sent: bool, // AIRSCOPE_SHOT: screenshot already requested
     vendor_path: String,
     vendor_msg: Option<(bool, String)>, // (ok, text) of the last import
@@ -307,6 +309,8 @@ impl App {
             lan_at: None,
             errs: vec![],
             shot_sent: false,
+            popup_rects: vec![],
+            wheel: 0.0,
             vendor_open: std::env::var("AIRSCOPE_VENDOR").is_ok(), // debug aid
             vendor_path: String::new(),
             vendor_msg: None,
@@ -1972,7 +1976,20 @@ fn hill(dx: f32) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut bool, col: Color32, a: f32, uid: u64) {
+/// Slim scrollbar so a scrollable box looks scrollable.
+fn scrollbar(p: &egui::Painter, track: Rect, scroll: f32, max: f32, view: f32, content: f32, col: Color32) {
+    if max <= 0.0 {
+        return;
+    }
+    p.rect_filled(track, 3.0, alpha(col, 0.14));
+    let th = (view / content * track.height()).clamp(26.0, track.height());
+    let ty = track.top() + (scroll / max) * (track.height() - th);
+    p.rect_filled(Rect::from_min_size(pos2(track.left(), ty), vec2(track.width(), th)), 3.0, alpha(col, 0.75));
+}
+
+/// Info box for one device. Returns the screen rects it covers (the wheel belongs to whatever box the mouse is over).
+/// A device with a problem gets an ISSUE button by its name; it opens an inner box with the diagnosis.
+fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut bool, col: Color32, a: f32, uid: u64, wheel: f32) -> Vec<Rect> {
     let w = 380.0;
     let lp = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("popup_measure")));
     let kw = 118.0;
@@ -1990,18 +2007,50 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         x = anchor.x - 40.0 - w;
     }
     let y = (anchor.y - 50.0).clamp(bounds.top() + 10.0, (bounds.bottom() - h - 10.0).max(bounds.top() + 10.0));
-    egui::Area::new(egui::Id::new(("popup", uid))).order(egui::Order::Foreground).fade_in(false).fixed_pos(pos2(x.max(bounds.left() + 10.0), y)).show(ctx, |ui| {
+    let r = Rect::from_min_size(pos2(x.max(bounds.left() + 10.0), y), vec2(w, h));
+
+    // inner box with the problem details (only measured when the device has an issue)
+    let has_issue = !d.issue.is_empty();
+    let open_id = egui::Id::new(("issue_open", uid));
+    let mut issue_open: bool = has_issue && ctx.data(|dt| dt.get_temp(open_id)).unwrap_or(std::env::var_os("AIRSCOPE_ISSUE").is_some()); // env: debug aid
+    let ikw = 96.0;
+    let iw = w - 20.0;
+    let irows: Vec<_> = d
+        .issue
+        .iter()
+        .map(|(k, v)| (lp.layout_no_wrap(k.to_uppercase(), FontId::monospace(10.5), alpha(RED, 0.9)), lp.layout(v.clone(), FontId::proportional(13.0), TEXT, iw - 52.0 - ikw)))
+        .collect();
+    let irows_h: f32 = irows.iter().map(|(_, g)| g.size().y.max(14.0) + 8.0).sum();
+    let ih_full = 54.0 + irows_h + 14.0;
+    let ih = ih_full.min(r.height() - 84.0 - 12.0).max(120.0);
+    let ir = Rect::from_min_size(r.min + vec2(10.0, 84.0), vec2(iw, ih));
+    let chip = Rect::from_min_max(pos2(r.right() - 22.0 - 92.0, r.top() + 42.0), pos2(r.right() - 22.0, r.top() + 66.0));
+
+    // the wheel goes to the box under the mouse
+    let ptr = ctx.input(|i| i.pointer.hover_pos());
+    let main_id = egui::Id::new(("popup_scroll", uid));
+    let inner_id = egui::Id::new(("issue_scroll", uid));
+    let mut scroll: f32 = ctx.data(|dt| dt.get_temp(main_id)).unwrap_or(0.0);
+    let mut iscroll: f32 = ctx.data(|dt| dt.get_temp(inner_id)).unwrap_or(0.0);
+    let (max_scroll, imax) = ((h_full - h).max(0.0), (ih_full - ih).max(0.0));
+    if let Some(q) = ptr {
+        if issue_open && ir.contains(q) {
+            iscroll = (iscroll - wheel).clamp(0.0, imax);
+        } else if r.contains(q) && !issue_open {
+            scroll = (scroll - wheel).clamp(0.0, max_scroll);
+        }
+    }
+    ctx.data_mut(|dt| {
+        dt.insert_temp(main_id, scroll);
+        dt.insert_temp(inner_id, iscroll);
+    });
+
+    let mut chip_clicked = false;
+    egui::Area::new(egui::Id::new(("popup", uid))).order(egui::Order::Foreground).fade_in(false).fixed_pos(r.min).show(ctx, |ui| {
         ui.set_opacity(a);
-        let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+        let (_, _) = ui.allocate_exact_size(r.size(), Sense::click());
         let p = ui.painter_at(r.expand(40.0));
         panel(&p, r, 16.0, col);
-        let max_scroll = (h_full - h).max(0.0);
-        let sid = egui::Id::new(("popup_scroll", uid));
-        let mut scroll: f32 = ui.ctx().data(|d| d.get_temp(sid)).unwrap_or(0.0);
-        if max_scroll > 0.0 && ui.input(|i| i.pointer.hover_pos()).map_or(false, |q| r.contains(q)) {
-            scroll = (scroll - ui.input(|i| i.smooth_scroll_delta.y)).clamp(0.0, max_scroll);
-            ui.ctx().data_mut(|d| d.insert_temp(sid, scroll));
-        }
         // header
         let ic = pos2(r.left() + 42.0, r.top() + 44.0);
         if d.known {
@@ -2013,6 +2062,15 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         p.text(pos2(r.left() + 80.0, r.top() + 32.0), Align2::LEFT_CENTER, &d.name, FontId::proportional(19.0), Color32::WHITE);
         let kindname = d.details.first().map(|x| x.1.clone()).unwrap_or_default();
         p.text(pos2(r.left() + 80.0, r.top() + 53.0), Align2::LEFT_CENTER, kindname, FontId::proportional(12.5), col);
+        if has_issue {
+            let resp = hit(ui, chip, ui.id().with("issue_chip"), Sense::click());
+            let pulse = (ui.input(|i| i.time) as f32 * 4.0).sin() * 0.5 + 0.5;
+            p.rect_filled(chip, 12.0, alpha(RED, if issue_open { 0.45 } else if resp.hovered() { 0.32 } else { 0.18 }));
+            p.rect_stroke(chip, 12.0, Stroke::new(1.3, alpha(RED, 0.65 + 0.3 * pulse)), StrokeKind::Inside);
+            dot(&p, pos2(chip.left() + 13.0, chip.center().y), 3.5, RED, 0.3 + 0.4 * pulse);
+            p.text(pos2(chip.left() + 24.0, chip.center().y), Align2::LEFT_CENTER, "ISSUE", FontId::monospace(12.5), Color32::WHITE);
+            chip_clicked = resp.clicked();
+        }
         // signal
         let by = r.top() + 72.0;
         match d.dbm {
@@ -2038,8 +2096,10 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         yy += 6.0;
         lcd(&body, pos2(r.left() + 22.0, yy + 6.0), Align2::LEFT_CENTER, "HOW WE KNOW", 11.0, col);
         body.galley(pos2(r.left() + 22.0, yy + 20.0), why, TEXT);
-        let foot = if scroll < max_scroll - 1.0 { "Scroll for more (mouse wheel)" } else { "Drag the node to where this device really is." };
-        p.text(pos2(r.left() + 22.0, r.bottom() - 14.0), Align2::LEFT_CENTER, foot, FontId::proportional(11.0), if max_scroll > 0.0 && scroll < max_scroll - 1.0 { CYAN } else { DIM });
+        scrollbar(&p, Rect::from_min_max(pos2(r.right() - 13.0, r.top() + 98.0), pos2(r.right() - 8.0, r.bottom() - 34.0)), scroll, max_scroll, h - 132.0, h_full - 132.0, col);
+        let more = max_scroll > 0.0 && scroll < max_scroll - 1.0;
+        let foot = if more { "Scroll for more (mouse wheel)" } else { "Drag the node to where this device really is." };
+        p.text(pos2(r.left() + 22.0, r.bottom() - 14.0), Align2::LEFT_CENTER, foot, FontId::proportional(11.0), if more { CYAN } else { DIM });
         // close
         let cr = Rect::from_center_size(pos2(r.right() - 24.0, r.top() + 24.0), Vec2::splat(24.0));
         let resp = hit(ui, cr, ui.scope_id().with("close"), Sense::click());
@@ -2050,12 +2110,57 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
             *close = true;
         }
     });
+
+    // inner box: the ISSUE button toggles it; a click anywhere outside it closes it
+    if has_issue {
+        let outside = ctx.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !ir.contains(q) && !chip.contains(q)));
+        if chip_clicked {
+            issue_open = !issue_open;
+        } else if outside {
+            issue_open = false;
+        }
+        ctx.data_mut(|dt| dt.insert_temp(open_id, issue_open));
+        if issue_open {
+            egui::Area::new(egui::Id::new(("popup_issue", uid))).order(egui::Order::Foreground).fade_in(false).fixed_pos(ir.min).show(ctx, |ui| {
+                ui.set_opacity(a);
+                let (_, _) = ui.allocate_exact_size(ir.size(), Sense::click());
+                let p = ui.painter_at(ir.expand(40.0));
+                p.rect_filled(ir.expand(2.0), 16.0, alpha(BG, 0.5));
+                panel(&p, ir, 14.0, RED);
+                lcd(&p, pos2(ir.left() + 22.0, ir.top() + 24.0), Align2::LEFT_CENTER, "WHAT'S HAPPENING", 13.0, RED);
+                p.text(pos2(ir.left() + 22.0, ir.top() + 42.0), Align2::LEFT_CENTER, "Click ISSUE again or anywhere outside to close.", FontId::proportional(11.0), DIM);
+                let body = p.with_clip_rect(Rect::from_min_max(pos2(ir.left(), ir.top() + 52.0), pos2(ir.right(), ir.bottom() - 6.0)));
+                let mut yy = ir.top() + 60.0 - iscroll;
+                for (k, v) in irows {
+                    let rh = v.size().y.max(14.0);
+                    body.galley(pos2(ir.left() + 22.0, yy + 2.0), k, RED);
+                    body.galley(pos2(ir.left() + 22.0 + ikw, yy), v, TEXT);
+                    yy += rh + 8.0;
+                }
+                scrollbar(&p, Rect::from_min_max(pos2(ir.right() - 13.0, ir.top() + 56.0), pos2(ir.right() - 8.0, ir.bottom() - 10.0)), iscroll, imax, ih - 66.0, ih_full - 66.0, RED);
+            });
+        }
+    }
+    let mut rects = vec![r];
+    if issue_open {
+        rects.push(ir);
+    }
+    rects
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _f: &mut eframe::Frame) {
         self.sync();
         ui.ctx().request_repaint();
+        // the wheel belongs to an info box (or the vendor dialog) when the mouse is over one, not to what is behind it
+        self.wheel = 0.0;
+        if let Some(q) = ui.input(|i| i.pointer.hover_pos()) {
+            if self.vendor_open || self.popup_rects.iter().any(|r| r.contains(q)) {
+                self.wheel = ui.input(|i| i.smooth_scroll_delta.y);
+                ui.ctx().input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+            }
+        }
+        self.popup_rects.clear();
         let t = self.t0.elapsed().as_secs_f32();
         egui::Panel::left("nav").exact_size(210.0).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.nav(ui));
         egui::Panel::top("hdr").exact_size(70.0).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| self.header(ui, t));
@@ -2096,7 +2201,8 @@ impl eframe::App for App {
         let mut close = false;
         for p in &self.pops {
             let mut c = false;
-            popup(ui.ctx(), &p.dev, p.anchor, central, &mut c, kind_col(p.dev.kind), ease(p.a), p.uid);
+            let rs = popup(ui.ctx(), &p.dev, p.anchor, central, &mut c, kind_col(p.dev.kind), ease(p.a), p.uid, self.wheel);
+            self.popup_rects.extend(rs);
             if c && want.as_deref() == Some(p.id.as_str()) {
                 close = true;
             }
