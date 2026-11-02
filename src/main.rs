@@ -418,7 +418,7 @@ impl App {
         let mut open = true;
         egui::Window::new("Vendor list").open(&mut open).collapsible(false).resizable(false).default_width(520.0).show(ctx, |ui| {
             let (total, c) = oui.stats();
-            ui.label(format!("{} manufacturers known: {} built in, {} from the system, {} from your imported file.", total, c[0], c[1], c[2]));
+            ui.label(format!("{} manufacturers known: {} built in, +{} more from the system list, +{} more from your imported file.", total, c[0], c[1], c[2]));
             ui.add_space(6.0);
             ui.label("New manufacturers appear over time. To update the list:");
             ui.label("1. Download one of these in your browser (copy the link):");

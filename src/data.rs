@@ -183,7 +183,7 @@ pub fn parse_oui(text: &str) -> Vec<(u32, String)> {
 /// Vendor names by MAC prefix. Layers, later wins: built-in list, the system's hwdata copy, the user's imported file.
 pub struct Oui {
     map: std::sync::RwLock<HashMap<u32, String>>,
-    counts: std::sync::RwLock<[usize; 3]>, // built-in, system, user entries
+    counts: std::sync::RwLock<[usize; 3]>, // prefixes added by: built-in, system, user layer
 }
 
 static OUI: std::sync::OnceLock<Arc<Oui>> = std::sync::OnceLock::new();
@@ -206,15 +206,16 @@ impl Oui {
         for (i, text) in layers.iter().enumerate() {
             if let Some(t) = text {
                 for (k, v) in parse_oui(t) {
-                    m.insert(k, v);
-                    c[i] += 1;
+                    if m.insert(k, v).is_none() {
+                        c[i] += 1; // only prefixes this layer adds on top of the earlier ones
+                    }
                 }
             }
         }
         *self.map.write().unwrap() = m;
         *self.counts.write().unwrap() = c;
     }
-    /// (total vendors, built-in entries, system entries, imported entries)
+    /// (total vendors, [built-in, added by system file, added by user file])
     pub fn stats(&self) -> (usize, [usize; 3]) {
         (self.map.read().unwrap().len(), *self.counts.read().unwrap())
     }
