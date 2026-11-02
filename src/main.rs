@@ -2,6 +2,7 @@ mod data;
 mod bluez;
 mod fx;
 mod hci;
+mod net;
 mod nm;
 
 use data::{hash64, BtLink, Dev, Handle, Icon, Kind};

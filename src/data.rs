@@ -1,6 +1,7 @@
 //! Data collectors. Each runs in its own thread, shells out to a system tool,
 //! and publishes into `Shared`. The UI only ever reads the shared snapshot.
 use std::collections::{HashMap, HashSet};
+use crate::net;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -273,7 +274,7 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
                 });
             }
             None => set(&h, |s| {
-                s.errs.insert("wifi", "NetworkManager not reachable".into());
+                s.errs.insert("wifi", "Wi-Fi scanning needs NetworkManager (not detected)".into());
             }),
         }
         std::thread::sleep(Duration::from_secs(2));
@@ -521,48 +522,29 @@ fn classify(vendor: &str, host: &str, svcs: &[String], gw: bool) -> (Icon, &'sta
 fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
     let mut names: HashMap<String, String> = HashMap::new();
     loop {
-        let gw = run("ip", &["-4", "route", "show", "default"])
-            .and_then(|s| s.split_whitespace().skip_while(|w| *w != "via").nth(1).map(|x| x.to_string()))
-            .unwrap_or_default();
+        let gw = net::gateway().map(|g| g.to_string()).unwrap_or_default();
         let mut v = vec![];
-        let mut answered: HashSet<String> = HashSet::new();
-        // STALE only means "not talked to recently". Probe those devices (ping triggers an ARP check) so
-        // the neighbour table tells us if they are really still there.
-        if let Some(out) = run("ip", &["-4", "neigh", "show"]) {
-            let stale: Vec<String> = out
-                .lines()
-                .filter(|l| l.trim_end().ends_with("STALE") && !l.contains("docker") && !l.contains("br-") && !l.contains("tailscale"))
-                .filter_map(|l| l.split_whitespace().next().map(|x| x.to_string()))
+        // keep real LAN neighbours: not VPN/container interfaces, not multicast/broadcast/failed entries
+        let neigh: Vec<net::Neigh> = net::neighbours().into_iter().filter(|n| !net::is_virtual(&n.dev) && !matches!(n.state, "NOARP" | "FAILED" | "INCOMPLETE") && n.mac != "00:00:00:00:00:00").collect();
+        // STALE only means "not talked to recently": ask those devices directly. If the system forbids
+        // unprivileged ping (None), give them the benefit of the doubt.
+        let answered: HashSet<String> = std::thread::scope(|sc| {
+            let hs: Vec<_> = neigh
+                .iter()
+                .filter(|n| n.state == "STALE")
+                .map(|n| {
+                    let ip = n.ip;
+                    sc.spawn(move || (ip.to_string(), net::ping(ip, Duration::from_secs(1)).unwrap_or(true)))
+                })
                 .collect();
-            // a device that answers the probe is online, whatever the kernel's neighbour state says
-            answered = std::thread::scope(|sc| {
-                let hs: Vec<_> = stale
-                    .iter()
-                    .map(|ip| {
-                        sc.spawn(move || {
-                            let ok = std::process::Command::new("ping").args(["-c", "1", "-W", "1", "-n", ip]).output().map(|o| o.status.success()).unwrap_or(false);
-                            (ip.clone(), ok)
-                        })
-                    })
-                    .collect();
-                hs.into_iter().filter_map(|h| h.join().ok()).filter(|(_, ok)| *ok).map(|(ip, _)| ip).collect::<HashSet<String>>()
-            });
-        }
-        if let Some(out) = run("ip", &["-4", "neigh", "show"]) {
+            hs.into_iter().filter_map(|h| h.join().ok()).filter(|(_, ok)| *ok).map(|(ip, _)| ip).collect()
+        });
+        {
             let mm = mdns.lock().unwrap().clone();
-            for l in out.lines() {
-                let w: Vec<&str> = l.split_whitespace().collect();
-                if w.len() < 5 || w[3] != "lladdr" {
-                    continue;
-                }
-                let (ip, dev, mac, state) = (w[0], w[2], w[4].to_uppercase(), *w.last().unwrap());
-                if dev.starts_with("br-") || dev.starts_with("docker") || dev.starts_with("veth") || dev.starts_with("tailscale") || state == "FAILED" {
-                    continue;
-                }
-                let dns = names
-                    .entry(ip.to_string())
-                    .or_insert_with(|| run("getent", &["hosts", ip]).and_then(|s| s.split_whitespace().nth(1).map(|x| x.to_string())).unwrap_or_default())
-                    .clone();
+            for n in &neigh {
+                let (ip, dev, mac, state) = (n.ip.to_string(), n.dev.as_str(), n.mac.clone(), n.state);
+                let ip = ip.as_str();
+                let dns = names.entry(ip.to_string()).or_insert_with(|| net::reverse_name(n.ip).unwrap_or_default()).clone();
                 let (mhost, svcs) = mm.get(ip).cloned().unwrap_or_default();
                 let host = if !mhost.is_empty() { mhost } else { dns.clone() };
                 let vendor = oui.vendor(&mac);

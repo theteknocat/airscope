@@ -20,7 +20,7 @@ Native Linux GUI (Rust, egui/eframe 0.37, glow) visualising Wi-Fi / Bluetooth / 
 - Testing: screenshot with `spectacle -b -n -a -o <file>`; don't screenshot while Peter is using the screen (once captured his browser — deleted).
 
 ## Portability roadmap (goal: no external tools)
-Done: HCI link data (`hci.rs`), BlueZ D-Bus (`bluez.rs`), NetworkManager D-Bus (`nm.rs`; systems without NetworkManager would need an nl80211 fallback). Next: netlink neighbours + mDNS crate + native probe instead of `ip`/`avahi-browse`/`ping`; embed the OUI vendor DB; then package (AppImage, Flatpak for Bazzite).
+Done: HCI link data (`hci.rs`), BlueZ D-Bus (`bluez.rs`), NetworkManager D-Bus (`nm.rs`; NetworkManager is a stated requirement for Wi-Fi; no NM = clear message, other tabs still work; nl80211 fallback only if someone asks). Next: netlink neighbours + mDNS crate + native probe instead of `ip`/`avahi-browse`/`ping`; embed the OUI vendor DB; then package (AppImage, Flatpak for Bazzite).
 
 ## Not done yet
 Interference suspects (red halos), settings panel, LAN scan button, `.desktop` launcher, reset-positions option.
