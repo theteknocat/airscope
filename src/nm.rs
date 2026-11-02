@@ -134,6 +134,23 @@ mod tests {
         assert_eq!(security(1, 0, 0), "WEP");
     }
 
+    /// Requests a real scan and prints NetworkManager's LastScan before and after (ms since boot).
+    /// Run with: cargo test nm_rescan -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn nm_rescan() {
+        let c = connect().expect("system bus");
+        let last = |c: &Connection| -> i64 {
+            let all = managed(c).expect("nm");
+            all.values().filter_map(|i| i.get(WIRELESS)).filter_map(|p| get::<i64>(p, "LastScan")).max().unwrap_or(-1)
+        };
+        let before = last(&c);
+        request_scan(&c);
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let after = last(&c);
+        println!("LastScan before={} after={} advanced_by={} ms", before, after, after - before);
+    }
+
     /// Lists what NetworkManager reports. Compare with `nmcli dev wifi list --rescan no`.
     /// Run with: cargo test nm_dump -- --ignored --nocapture
     #[test]
