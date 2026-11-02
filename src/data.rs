@@ -57,6 +57,7 @@ pub struct Dev {
     pub freq: Option<u32>,
     pub details: Vec<(String, String)>,
     pub why: String,
+    pub trouble: f32, // 0 = healthy .. 1 = badly degraded link (shown as a red halo)
 }
 
 impl Dev {
@@ -77,6 +78,7 @@ impl Dev {
             freq: None,
             details: vec![],
             why: String::new(),
+            trouble: 0.0,
         }
     }
 }
@@ -476,6 +478,9 @@ fn link_info(c: &crate::hci::Conn, cache: &mut HashMap<String, (String, String)>
     BtLink { mac: c.mac.clone(), name: String::new(), lq: d.lq, rssi: d.rssi, tpl: d.tpl, afh: d.afh, lmp, mfr }
 }
 
+/// Link quality below this counts as a degraded link.
+const LINK_WARN: i32 = 230;
+
 /// Adds the live link data (quality, hopping map, versions) to a Bluetooth device.
 pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
         l.name = d.name.clone();
@@ -485,6 +490,11 @@ pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
         // so it is not a distance. Use it only to nudge the node outward for display.
         d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
         d.details.push(("Link quality".into(), l.lq.map(|q| format!("{} / 255", q)).unwrap_or("?".into())));
+    // Link quality is 255 on a healthy link and falls when packets are being lost or retried (interference, distance, obstacles).
+    if let Some(q) = l.lq.filter(|q| *q < LINK_WARN) {
+        d.trouble = ((LINK_WARN - q) as f32 / 130.0).clamp(0.25, 1.0);
+        d.details.push(("Link health".into(), format!("DEGRADED: quality {} of 255. Packets are being lost or retried, which is what interference looks like.", q)));
+    }
         d.details.push((
             "RSSI (relative)".into(),
             l.rssi.map(|r| format!("{} (0 = inside the ideal range; not a distance)", r)).unwrap_or("?".into()),

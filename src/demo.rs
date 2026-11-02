@@ -8,6 +8,11 @@ use crate::data::{attach_link, lan_dev, parse_bt, wifi_dev, BtLink, Handle, Oui}
 use crate::nm::Ap;
 use std::time::{Duration, Instant};
 
+/// `AIRSCOPE_DEMO=bad` also gives the keyboard a degraded link, to show the red interference halo.
+fn degraded() -> bool {
+    std::env::var("AIRSCOPE_DEMO").as_deref() == Ok("bad")
+}
+
 pub fn on() -> bool {
     std::env::var_os("AIRSCOPE_DEMO").is_some()
 }
@@ -61,7 +66,7 @@ pub fn start(h: &Handle, oui: &Oui) {
     .collect();
     let mut links = vec![
         BtLink { mac: "AC:80:0A:3D:62:C0".into(), name: String::new(), lq: Some(255), rssi: Some(0), tpl: Some(4), afh: Some(afh(&[0..=3, 21..=24, 46..=49, 73..=78])), lmp: "5.2 (0xb)".into(), mfr: "Sony (0x012d)".into() },
-        BtLink { mac: "E4:11:5B:72:08:4D".into(), name: String::new(), lq: Some(255), rssi: Some(-3), tpl: Some(0), afh: None, lmp: "3.0 (0x5)".into(), mfr: "Broadcom Corporation (15)".into() },
+        BtLink { mac: "E4:11:5B:72:08:4D".into(), name: String::new(), lq: Some(if degraded() { 168 } else { 255 }), rssi: Some(-3), tpl: Some(0), afh: None, lmp: "3.0 (0x5)".into(), mfr: "Broadcom Corporation (15)".into() },
     ];
     for l in links.iter_mut() {
         if let Some(d) = devs.iter_mut().find(|d| d.id == l.mac) {

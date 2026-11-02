@@ -102,6 +102,13 @@ fn node_rad(d: &Dev) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Red pulsing halo for a device whose link is degraded (stronger = worse).
+fn trouble_halo(p: &egui::Painter, pos: Pos2, rad: f32, sev: f32, t: f32) {
+    let pulse = (t * 4.0).sin() * 0.5 + 0.5;
+    glow(p, pos, rad + 16.0 + pulse * 6.0, RED, 0.35 + 0.4 * sev);
+    p.circle_stroke(pos, rad + 7.0 + pulse * 3.0, Stroke::new(1.5 + sev, alpha(RED, 0.5 + 0.4 * pulse)));
+}
+
 fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos: Pos2, t: f32, sw: f32, sel: bool, label: f32, interactive: bool, can_drag: bool, scale: f32, c: Pos2, big: f32, ev: &mut Ev) {
     let col = if n.dim { shade(kind_col(d.kind), 0.5) } else { kind_col(d.kind) };
     let diff = (sw - n.ang).rem_euclid(TAU);
@@ -138,6 +145,9 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
     } else {
         p
     };
+    if d.trouble > 0.0 {
+        trouble_halo(p, pos, rad, d.trouble, t);
+    }
     if d.connected {
         let pulse = (t * 2.6).sin() * 0.5 + 0.5;
         p.circle_stroke(pos, rad + 5.0 + pulse * 5.0, Stroke::new(1.5, add(col, 0.35 * (1.0 - pulse))));
@@ -405,7 +415,7 @@ impl App {
         }
         // legend
         let mut y = rect.bottom() - 110.0;
-        for (c, l) in [(AMBER, "Wi-Fi"), (BLUE, "Bluetooth"), (GREEN, "Network (LAN)"), (RED, "Interference")] {
+        for (c, l) in [(AMBER, "Wi-Fi"), (BLUE, "Bluetooth"), (GREEN, "Network (LAN)")] {
             dot(&p, pos2(rect.left() + 28.0, y), 5.0, c, 0.0);
             p.text(pos2(rect.left() + 46.0, y), Align2::LEFT_CENTER, l, FontId::proportional(13.0), DIM);
             y += 22.0;
@@ -1138,6 +1148,10 @@ impl App {
             *sc += (1.0 - *sc) * k;
             let sc = *sc;
             let r = 19.0 * (0.55 + 0.45 * sc);
+            let worst = g.members.iter().map(|&i| self.latched[nodes[i].i].trouble).fold(0.0f32, f32::max);
+            if worst > 0.0 {
+                trouble_halo(&p, g.center, r, worst, t);
+            }
             orb(&p, g.center, r, col, 0.2 + sweep_hot(c, g.center, sw) * 0.8 + if hovered { 0.7 } else { 0.0 });
             let nn = g.members.len().min(10);
             for kk in 0..nn {
