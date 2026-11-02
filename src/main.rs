@@ -149,11 +149,13 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
             arc(p, pos, rad + 10.0, a, a + 0.9, Stroke::new(2.0, Color32::WHITE));
         }
     }
-    let a = if sel || hovered { 1.0 } else if d.known && !n.dim { label } else { 0.0 };
+    // offline (dimmed) devices keep their label too, dimmed like the orb; hover brightens it
+    let a = if sel || hovered { 1.0 } else if d.known { label } else { 0.0 };
+    let dimf = if n.dim && !(sel || hovered) { 0.5 } else { 1.0 };
     if a > 0.01 {
         let tp = pos + vec2(0.0, rad + 13.0);
-        p.text(tp + vec2(1.0, 1.0), Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), Color32::from_black_alpha((200.0 * a) as u8));
-        p.text(tp, Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), alpha(TEXT, 0.9 * a));
+        p.text(tp + vec2(1.0, 1.0), Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), Color32::from_black_alpha((200.0 * a * dimf) as u8));
+        p.text(tp, Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), alpha(TEXT, 0.9 * a * dimf));
     }
 }
 
@@ -881,7 +883,7 @@ impl App {
             let mut placed: Vec<Rect> = (0..cnt).filter(|&i| vis1[i] || in_open[i]).map(|i| Rect::from_center_size(disp[i], Vec2::splat(2.0 * (node_rad(&self.latched[nodes[i].i]) * fscale[i] + 3.0)))).collect();
             placed.extend(groups.iter().enumerate().filter(|(gi, _)| iconshown[*gi]).map(|(_, g)| Rect::from_center_size(g.center, Vec2::splat(44.0))));
             placed.push(Rect::from_center_size(c, Vec2::splat(120.0)));
-            let mut order: Vec<usize> = (0..cnt).filter(|&i| !hidden[i] && !masked[i] && self.latched[nodes[i].i].known && !nodes[i].dim).collect();
+            let mut order: Vec<usize> = (0..cnt).filter(|&i| !hidden[i] && !masked[i] && self.latched[nodes[i].i].known).collect();
             order.sort_by(|&a, &b| {
                 let (da, db) = (&self.latched[nodes[a].i], &self.latched[nodes[b].i]);
                 db.connected.cmp(&da.connected).then(db.dbm.unwrap_or(-120.0).partial_cmp(&da.dbm.unwrap_or(-120.0)).unwrap())
