@@ -19,6 +19,8 @@ jobs:
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml version v$v"; exit 1; }
       - name: Run tests
         run: cargo test --locked
+      - name: Install appimagetool prerequisites
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq desktop-file-utils
       - name: Build AppImage
         run: NO_CONTAINER=1 packaging/build-appimage.sh
       - name: Checksum
