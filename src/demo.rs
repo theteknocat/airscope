@@ -8,7 +8,7 @@ use crate::data::{apply_events, attach_link, lan_dev, parse_bt, wifi_dev, BtLink
 use crate::nm::Ap;
 use std::time::{Duration, Instant, SystemTime};
 
-/// `AIRSCOPE_DEMO=bad` also gives the keyboard a degraded link, to show the red interference halo.
+/// `AIRSCOPE_DEMO=bad` also gives the keyboard a failing link (red) and the headphones early warnings (amber).
 fn degraded() -> bool {
     std::env::var("AIRSCOPE_DEMO").as_deref() == Ok("bad")
 }
@@ -56,7 +56,7 @@ pub fn start(h: &Handle, oui: &Oui) {
 
     const AUDIO: [&str; 4] = ["Audio Sink", "Advanced Audio Distribution", "A/V Remote Control", "Handsfree"];
     let mut devs: Vec<_> = [
-        bt("AC:80:0A:3D:62:C0", "Studio Headphones", "audio-headphones", 0x240404, "usb:v054Cp0CE6d0100", true, Some(80), &AUDIO),
+        bt("AC:80:0A:3D:62:C0", "Studio Headphones", "audio-headphones", 0x240404, "usb:v054Cp0CE6d0100", true, Some(if degraded() { 9 } else { 80 }), &AUDIO),
         bt("E4:11:5B:72:08:4D", "Desk Keyboard", "input-keyboard", 0x002540, "usb:v046DpB342d0100", true, Some(70), &["Human Interface Device", "Battery Service"]),
         bt("5C:BA:37:A1:4E:90", "Game Controller", "input-gaming", 0x002508, "usb:v054Cp09CCd0100", false, None, &["Human Interface Device"]),
         bt("08:EB:ED:19:C3:5A", "Pocket Speaker", "audio-speakers", 0x240414, "", false, None, &["Audio Sink", "Advanced Audio Distribution"]),
@@ -89,12 +89,21 @@ pub fn start(h: &Handle, oui: &Oui) {
     let mut kb_hist = History::new();
     if degraded() {
         for (i, q) in [255, 255, 250, 232, 190, 176, 168, 180, 168].iter().enumerate() {
-            kb_hist.push_back(Sample { at: Instant::now() - Duration::from_secs(280 - i as u64 * 30), lq: Some(*q), afh: None });
+            kb_hist.push_back(Sample { at: Instant::now() - Duration::from_secs(280 - i as u64 * 30), lq: Some(*q), afh: None, rssi: None });
+        }
+    }
+    // Demo warning: the headphones are on a low battery and have stopped using many channels.
+    let mut hp_hist = History::new();
+    if degraded() {
+        for (i, (n, r)) in [(26, -2), (26, -4), (24, -8), (20, -11), (14, -13), (14, -14), (14, -14)].iter().enumerate() {
+            hp_hist.push_back(Sample { at: Instant::now() - Duration::from_secs(240 - i as u64 * 30), lq: Some(255), afh: Some(*n), rssi: Some(*r) });
         }
     }
     for d in devs.iter_mut() {
         if d.id == "E4:11:5B:72:08:4D" {
             apply_events(d, &kb_events, &kb_hist, &wifi);
+        } else if d.id == "AC:80:0A:3D:62:C0" {
+            apply_events(d, &[], &hp_hist, &wifi);
         }
     }
 

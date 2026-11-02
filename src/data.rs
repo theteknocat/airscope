@@ -58,7 +58,10 @@ pub struct Dev {
     pub details: Vec<(String, String)>,
     pub why: String,
     pub lq: Option<i32>, // Bluetooth link quality 0..255 (stands in for signal strength on connected Bluetooth devices)
-    pub trouble: f32, // 0 = healthy .. 1 = badly degraded link (shown as a red halo)
+    pub trouble: f32, // 0 = healthy .. 1 = real problem (red): drops, quality falling, reconnect loops
+    pub caution: f32, // 0 .. 1 = early warning (amber): channels dropped, weak signal, low battery
+    pub battery: Option<i32>,
+    pub rssi: Option<i32>, // Bluetooth RSSI relative to the ideal receive range (0 = inside it)
     pub issue: Vec<(String, String)>, // what is wrong and the evidence, shown behind the ISSUE button in the info box
 }
 
@@ -82,6 +85,9 @@ impl Dev {
             why: String::new(),
             lq: None,
             trouble: 0.0,
+            caution: 0.0,
+            battery: None,
+            rssi: None,
             issue: vec![],
         }
     }
@@ -460,6 +466,7 @@ pub fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
     if class != 0 {
         d.details.push(("Device class".into(), class_text(class)));
     }
+    d.battery = batt;
     if let Some(b) = batt {
         d.details.push(("Battery".into(), format!("{}%", b)));
     }
@@ -500,12 +507,17 @@ pub struct Sample {
     pub at: Instant,
     pub lq: Option<i32>,
     pub afh: Option<usize>,
+    pub rssi: Option<i32>,
 }
 
 pub type History = VecDeque<Sample>;
 
 const HISTORY_SECS: u64 = 1800;
 const TROUBLE_WINDOW_SECS: u64 = 900;
+const FLAP_WINDOW_SECS: u64 = 600; // this many reconnects within this window count as a reconnect loop
+const FLAP_COUNT: usize = 3;
+const AFH_DROP: usize = 10; // channels lost versus the device's own recent maximum
+const RSSI_WEAK: i32 = -10; // dB below the ideal receive range
 
 fn events_loop(ev: Events) {
     crate::hci::watch(|e| {
@@ -554,13 +566,17 @@ fn ev_code(e: &DevEvent) -> Option<u8> {
     }
 }
 
-/// Adds what is known about a device's problems to its info box and sets `trouble`: recent drops with the
-/// controller's reason, link history, and what the Wi-Fi around it looks like.
+/// Works out what is wrong with a device (if anything) from its drop events, link history and state:
+/// red `trouble` for real problems (lost links, quality falling, reconnect loops), amber `caution` for early
+/// warnings (channels dropped, weak signal, low battery). The explanation goes into `d.issue`.
 pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) {
     let now = SystemTime::now();
     let age = |e: &DevEvent| now.duration_since(e.at).map(|x| x.as_secs()).unwrap_or(0);
     let mut diagnosis: Option<(String, String)> = None;
-    let mut rows: Vec<(String, String)> = vec![];
+    let mut notes: Vec<(String, String)> = vec![]; // flagged findings
+    let mut rows: Vec<(String, String)> = vec![]; // supporting evidence
+
+    // red: link lost for a radio-type reason
     let bad: Vec<&DevEvent> = ev.iter().filter(|e| age(e) < TROUBLE_WINDOW_SECS && ev_code(e).map_or(false, |c| crate::hci::reason(c).2)).collect();
     if let Some(last) = bad.last() {
         let code = ev_code(last).unwrap_or(0);
@@ -570,13 +586,16 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
             text += &format!(" It has happened {} times in the last 15 minutes, so this is a pattern rather than a one-off.", bad.len());
         }
         if matches!(code, 0x08 | 0x22 | 0x3E | 0x3D) {
+            if let Some(b) = d.battery.filter(|b| *b <= 20) {
+                text += &format!(" The battery is at {}%, which is a likelier cause than radio interference.", b);
+            }
             text += &format!(" {}", wifi_context(wifi));
         }
         diagnosis = Some(("What it means".into(), text));
         let fresh = (1.0 - age(last) as f32 / TROUBLE_WINDOW_SECS as f32).max(0.25);
         d.trouble = d.trouble.max((0.5 + 0.25 * (bad.len() as f32 - 1.0)).min(1.0) * fresh);
     }
-    // link quality fell well below this device's own recent best
+    // red: link quality fell well below this device's own recent best
     let peak = hist.iter().filter_map(|s| s.lq).max();
     if let (Some(cur), Some(pk)) = (d.lq, peak) {
         if hist.len() >= 5 && (cur as f32) < pk as f32 * LINK_DROP {
@@ -584,6 +603,32 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
             d.issue.push(("Link health".into(), format!("DEGRADED: quality fell to {} of 255 from {} earlier. Packets are being lost or retried, which is what interference looks like.", cur, pk)));
         }
     }
+    // red: reconnecting over and over
+    let connects = ev.iter().filter(|e| matches!(e.kind, EvKind::Connected) && age(e) < FLAP_WINDOW_SECS).count();
+    if connects >= FLAP_COUNT {
+        d.trouble = d.trouble.max(0.7);
+        notes.push(("Reconnecting".into(), format!("Connected {} times in the last 10 minutes. A healthy device stays connected; repeated reconnects mean the link keeps failing and recovering, so it is unreliable even if it seems to work.", connects)));
+    }
+    // amber: the controller stopped using channels it used earlier (it found noise there)
+    let chans: Vec<usize> = hist.iter().filter_map(|s| s.afh).collect();
+    if let (Some(&cur), Some(&hi)) = (chans.last(), chans.iter().max()) {
+        if chans.len() >= 3 && hi >= cur + AFH_DROP {
+            d.caution = d.caution.max(0.5);
+            notes.push(("Channel map".into(), format!("Now using {} of 79 channels, down from {}. The device found noise on the channels it stopped using and is hopping around it.", cur, hi)));
+        }
+    }
+    // amber: signal weak (RSSI is relative to the ideal range: 0 is fine, negative is too weak)
+    let rs: Vec<i32> = hist.iter().rev().take(5).filter_map(|s| s.rssi).collect();
+    if rs.len() >= 5 && rs.iter().sum::<i32>() / (rs.len() as i32) <= RSSI_WEAK {
+        d.caution = d.caution.max(0.5);
+        notes.push(("Weak signal".into(), format!("Signal is {} dB below the ideal receive range. Moving the device closer, or clearing what is between it and the Bluetooth antenna, usually helps.", -(rs.iter().sum::<i32>() / rs.len() as i32))));
+    }
+    // amber: low battery
+    if let Some(b) = d.battery.filter(|b| *b <= 15) {
+        d.caution = d.caution.max(0.5);
+        notes.push(("Battery".into(), format!("Battery at {}%. A weak battery commonly causes dropouts and slow reconnects.", b)));
+    }
+
     for e in ev.iter().rev().take(4) {
         let text = match e.kind {
             EvKind::Connected => "Connected".to_string(),
@@ -598,15 +643,10 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
         let span = hist.back().zip(hist.front()).map(|(b, f)| b.at.duration_since(f.at).as_secs()).unwrap_or(0);
         rows.push(("Link history".into(), format!("last {} min: quality lowest {}, average {} (of 255)", (span / 60).max(1), min, avg)));
     }
-    let chans: Vec<usize> = hist.iter().filter_map(|s| s.afh).collect();
-    if let (Some(lo), Some(hi)) = (chans.iter().min(), chans.iter().max()) {
-        if chans.len() >= 3 && hi - lo >= 6 {
-            rows.push(("Channel map".into(), format!("channels in use ranged {} to {} of 79: the controller is steering around noise it finds", lo, hi)));
-        }
-    }
-    // only worth showing when something is actually wrong: health row, diagnosis, then the evidence
-    if d.trouble > 0.0 {
+    // only worth showing when something is flagged: health row, diagnosis, other findings, then the evidence
+    if d.trouble > 0.0 || d.caution > 0.0 {
         d.issue.extend(diagnosis);
+        d.issue.extend(notes);
         d.issue.extend(rows);
     } else {
         d.issue.clear();
@@ -632,6 +672,7 @@ pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
         // so it is not a distance. Use it only to nudge the node outward for display.
         d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
         d.lq = l.lq;
+        d.rssi = l.rssi;
         d.details.push((
             "RSSI (relative)".into(),
             l.rssi.map(|r| format!("{} (0 = inside the ideal range; not a distance)", r)).unwrap_or("?".into()),
@@ -679,7 +720,7 @@ fn bt_loop(h: Handle, oui: Arc<Oui>, events: Events) {
                         attach_link(d, &mut l);
                     }
                     let hs = hist.entry(l.mac.clone()).or_default();
-                    hs.push_back(Sample { at: Instant::now(), lq: l.lq, afh: l.afh.as_ref().map(|m| m.iter().filter(|x| **x).count()) });
+                    hs.push_back(Sample { at: Instant::now(), lq: l.lq, afh: l.afh.as_ref().map(|m| m.iter().filter(|x| **x).count()), rssi: l.rssi });
                     links.push(l);
                 }
             }
@@ -919,7 +960,7 @@ mod tests {
 
     #[test]
     fn link_trouble_is_relative() {
-        let hist = |qs: &[i32]| -> History { qs.iter().map(|q| Sample { at: Instant::now(), lq: Some(*q), afh: None }).collect() };
+        let hist = |qs: &[i32]| -> History { qs.iter().map(|q| Sample { at: Instant::now(), lq: Some(*q), afh: None, rssi: None }).collect() };
         let run = |qs: &[i32]| {
             let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
             d.lq = qs.last().copied();
@@ -929,6 +970,30 @@ mod tests {
         assert_eq!(run(&[132; 10]), 0.0, "a steady low reading is normal for that device");
         assert!(run(&[255, 255, 250, 240, 200, 150]) > 0.0, "a fall from its own best is a problem");
         assert_eq!(run(&[255, 250]), 0.0, "too little history to judge");
+    }
+
+    #[test]
+    fn warnings_and_loops() {
+        let now = SystemTime::now();
+        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        let flap: Vec<DevEvent> = (0..3).map(|i| DevEvent { at: now - Duration::from_secs(60 * i), kind: EvKind::Connected }).collect();
+        apply_events(&mut d, &flap, &History::new(), &[]);
+        assert!(d.trouble > 0.0 && d.caution == 0.0, "three reconnects in ten minutes is a problem");
+
+        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        d.battery = Some(10);
+        apply_events(&mut d, &[], &History::new(), &[]);
+        assert!(d.trouble == 0.0 && d.caution > 0.0, "low battery is only a warning");
+
+        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        let h: History = [26, 26, 14].iter().map(|n| Sample { at: Instant::now(), lq: None, afh: Some(*n), rssi: None }).collect();
+        apply_events(&mut d, &[], &h, &[]);
+        assert!(d.trouble == 0.0 && d.caution > 0.0, "losing 12 channels is a warning");
+
+        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        let h: History = (0..5).map(|_| Sample { at: Instant::now(), lq: None, afh: None, rssi: Some(-14) }).collect();
+        apply_events(&mut d, &[], &h, &[]);
+        assert!(d.caution > 0.0, "a sustained weak signal is a warning");
     }
 
     #[test]

@@ -102,11 +102,11 @@ fn node_rad(d: &Dev) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Red pulsing halo for a device whose link is degraded (stronger = worse).
-fn trouble_halo(p: &egui::Painter, pos: Pos2, rad: f32, sev: f32, t: f32) {
+/// Pulsing halo for a device with a problem: red for a real problem, amber for an early warning.
+fn trouble_halo(p: &egui::Painter, pos: Pos2, rad: f32, sev: f32, t: f32, col: Color32) {
     let pulse = (t * 4.0).sin() * 0.5 + 0.5;
-    glow(p, pos, rad + 16.0 + pulse * 6.0, RED, 0.35 + 0.4 * sev);
-    p.circle_stroke(pos, rad + 7.0 + pulse * 3.0, Stroke::new(1.5 + sev, alpha(RED, 0.5 + 0.4 * pulse)));
+    glow(p, pos, rad + 16.0 + pulse * 6.0, col, 0.35 + 0.4 * sev);
+    p.circle_stroke(pos, rad + 7.0 + pulse * 3.0, Stroke::new(1.5 + sev, alpha(col, 0.5 + 0.4 * pulse)));
 }
 
 fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos: Pos2, t: f32, sw: f32, sel: bool, label: f32, interactive: bool, can_drag: bool, scale: f32, c: Pos2, big: f32, ev: &mut Ev) {
@@ -146,7 +146,9 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
         p
     };
     if d.trouble > 0.0 {
-        trouble_halo(p, pos, rad, d.trouble, t);
+        trouble_halo(p, pos, rad, d.trouble, t, RED);
+    } else if d.caution > 0.0 {
+        trouble_halo(p, pos, rad, d.caution, t, AMBER);
     }
     if d.connected {
         let pulse = (t * 2.6).sin() * 0.5 + 0.5;
@@ -1153,8 +1155,11 @@ impl App {
             let sc = *sc;
             let r = 19.0 * (0.55 + 0.45 * sc);
             let worst = g.members.iter().map(|&i| self.latched[nodes[i].i].trouble).fold(0.0f32, f32::max);
+            let warn = g.members.iter().map(|&i| self.latched[nodes[i].i].caution).fold(0.0f32, f32::max);
             if worst > 0.0 {
-                trouble_halo(&p, g.center, r, worst, t);
+                trouble_halo(&p, g.center, r, worst, t, RED);
+            } else if warn > 0.0 {
+                trouble_halo(&p, g.center, r, warn, t, AMBER);
             }
             orb(&p, g.center, r, col, 0.2 + sweep_hot(c, g.center, sw) * 0.8 + if hovered { 0.7 } else { 0.0 });
             let nn = g.members.len().min(10);
@@ -1796,7 +1801,7 @@ impl App {
                     let r = r.translate(vec2(14.0, 0.0));
                     let col = kind_col(d.kind);
                     let p = ui.painter();
-                    panel(p, r, 12.0, if resp.hovered() { Color32::WHITE } else if d.trouble > 0.0 { RED } else { col });
+                    panel(p, r, 12.0, if resp.hovered() { Color32::WHITE } else if d.trouble > 0.0 { RED } else if d.caution > 0.0 { AMBER } else { col });
                     if d.known {
                         orb(p, pos2(r.left() + 34.0, r.center().y), 15.0, col, 0.0);
                         icon(p, d.icon, pos2(r.left() + 34.0, r.center().y), 7.5, shade(col, 0.12));
@@ -1812,14 +1817,15 @@ impl App {
                     } else if d.connected {
                         p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
                     }
-                    if d.trouble > 0.0 {
+                    if d.trouble > 0.0 || d.caution > 0.0 {
+                        let (acc, word) = if d.trouble > 0.0 { (RED, "ISSUE") } else { (AMBER, "WARNING") };
                         // clear problem marker; click the row for what the app found out
                         let right = r.right() - if d.connected && d.dbm.is_none() { 118.0 } else { 20.0 };
                         let chip = Rect::from_min_max(pos2(right - 74.0, r.center().y - 11.0), pos2(right, r.center().y + 11.0));
-                        p.rect_filled(chip, 11.0, alpha(RED, 0.18));
-                        p.rect_stroke(chip, 11.0, Stroke::new(1.2, alpha(RED, 0.8)), StrokeKind::Inside);
-                        dot(p, pos2(chip.left() + 11.0, chip.center().y), 3.5, RED, 0.3);
-                        p.text(pos2(chip.left() + 21.0, chip.center().y), Align2::LEFT_CENTER, "ISSUE", FontId::monospace(11.5), RED);
+                        p.rect_filled(chip, 11.0, alpha(acc, 0.18));
+                        p.rect_stroke(chip, 11.0, Stroke::new(1.2, alpha(acc, 0.8)), StrokeKind::Inside);
+                        dot(p, pos2(chip.left() + 11.0, chip.center().y), 3.5, acc, 0.3);
+                        p.text(pos2(chip.left() + 21.0, chip.center().y), Align2::LEFT_CENTER, word, FontId::monospace(11.5), acc);
                     }
                     ui.add_space(8.0);
                     if resp.clicked() {
@@ -2013,6 +2019,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
 
     // inner box with the problem details (only measured when the device has an issue)
     let has_issue = !d.issue.is_empty();
+    let (acc, word) = if d.trouble > 0.0 { (RED, "ISSUE") } else { (AMBER, "WARNING") };
     let open_id = egui::Id::new(("issue_open", uid));
     let mut issue_open: bool = has_issue && ctx.data(|dt| dt.get_temp(open_id)).unwrap_or(std::env::var_os("AIRSCOPE_ISSUE").is_some()); // env: debug aid
     let ikw = 96.0;
@@ -2020,7 +2027,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
     let irows: Vec<_> = d
         .issue
         .iter()
-        .map(|(k, v)| (lp.layout_no_wrap(k.to_uppercase(), FontId::monospace(10.5), alpha(RED, 0.9)), lp.layout(v.clone(), FontId::proportional(13.0), TEXT, iw - 52.0 - ikw)))
+        .map(|(k, v)| (lp.layout_no_wrap(k.to_uppercase(), FontId::monospace(10.5), alpha(acc, 0.9)), lp.layout(v.clone(), FontId::proportional(13.0), TEXT, iw - 52.0 - ikw)))
         .collect();
     let irows_h: f32 = irows.iter().map(|(_, g)| g.size().y.max(14.0) + 8.0).sum();
     let ih_full = 44.0 + irows_h + 14.0;
@@ -2067,10 +2074,10 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         if has_issue {
             let resp = hit(ui, chip, ui.id().with("issue_chip"), Sense::click());
             let pulse = (ui.input(|i| i.time) as f32 * 4.0).sin() * 0.5 + 0.5;
-            p.rect_filled(chip, 12.0, alpha(RED, if issue_open { 0.45 } else if resp.hovered() { 0.32 } else { 0.18 }));
-            p.rect_stroke(chip, 12.0, Stroke::new(1.3, alpha(RED, 0.65 + 0.3 * pulse)), StrokeKind::Inside);
-            dot(&p, pos2(chip.left() + 13.0, chip.center().y), 3.5, RED, 0.3 + 0.4 * pulse);
-            p.text(pos2(chip.left() + 24.0, chip.center().y), Align2::LEFT_CENTER, "ISSUE", FontId::monospace(12.5), Color32::WHITE);
+            p.rect_filled(chip, 12.0, alpha(acc, if issue_open { 0.45 } else if resp.hovered() { 0.32 } else { 0.18 }));
+            p.rect_stroke(chip, 12.0, Stroke::new(1.3, alpha(acc, 0.65 + 0.3 * pulse)), StrokeKind::Inside);
+            dot(&p, pos2(chip.left() + 13.0, chip.center().y), 3.5, acc, 0.3 + 0.4 * pulse);
+            p.text(pos2(chip.left() + 24.0, chip.center().y), Align2::LEFT_CENTER, word, FontId::monospace(12.5), Color32::WHITE);
             chip_clicked = resp.clicked();
         }
         // signal: dBm for Wi-Fi, link quality for connected Bluetooth, nothing when there is no reading
@@ -2127,17 +2134,17 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
                 let (_, _) = ui.allocate_exact_size(ir.size(), Sense::click());
                 let p = ui.painter_at(ir.expand(40.0));
                 p.rect_filled(ir.expand(2.0), 16.0, alpha(BG, 0.5));
-                panel(&p, ir, 14.0, RED);
-                lcd(&p, pos2(ir.left() + 22.0, ir.top() + 24.0), Align2::LEFT_CENTER, "WHAT'S HAPPENING", 13.0, RED);
+                panel(&p, ir, 14.0, acc);
+                lcd(&p, pos2(ir.left() + 22.0, ir.top() + 24.0), Align2::LEFT_CENTER, "WHAT'S HAPPENING", 13.0, acc);
                 let body = p.with_clip_rect(Rect::from_min_max(pos2(ir.left(), ir.top() + 42.0), pos2(ir.right(), ir.bottom() - 6.0)));
                 let mut yy = ir.top() + 50.0 - iscroll;
                 for (k, v) in irows {
                     let rh = v.size().y.max(14.0);
-                    body.galley(pos2(ir.left() + 22.0, yy + 2.0), k, RED);
+                    body.galley(pos2(ir.left() + 22.0, yy + 2.0), k, acc);
                     body.galley(pos2(ir.left() + 22.0 + ikw, yy), v, TEXT);
                     yy += rh + 8.0;
                 }
-                scrollbar(&p, Rect::from_min_max(pos2(ir.right() - 13.0, ir.top() + 46.0), pos2(ir.right() - 8.0, ir.bottom() - 10.0)), iscroll, imax, ih - 56.0, ih_full - 56.0, RED);
+                scrollbar(&p, Rect::from_min_max(pos2(ir.right() - 13.0, ir.top() + 46.0), pos2(ir.right() - 8.0, ir.bottom() - 10.0)), iscroll, imax, ih - 56.0, ih_full - 56.0, acc);
             });
         }
     }
