@@ -335,40 +335,12 @@ fn modalias_vendor(m: &str) -> Option<&'static str> {
     None
 }
 
-fn parse_bt(mac: &str, info: &str, oui: &Oui) -> Dev {
-    let mut d = Dev::new(&mac.to_uppercase(), Kind::Bt);
-    let (mut alias, mut name, mut icon, mut class, mut modalias) = (String::new(), String::new(), String::new(), 0u32, String::new());
-    let (mut paired, mut trusted, mut conn, mut batt) = (false, false, false, None::<i32>);
-    let mut uuids = vec![];
-    for l in info.lines() {
-        let l = l.trim();
-        if let Some(v) = l.strip_prefix("Name: ") {
-            name = v.into();
-        } else if let Some(v) = l.strip_prefix("Alias: ") {
-            alias = v.into();
-        } else if let Some(v) = l.strip_prefix("Icon: ") {
-            icon = v.into();
-        } else if let Some(v) = l.strip_prefix("Class: ") {
-            class = u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).unwrap_or(0);
-        } else if let Some(v) = l.strip_prefix("Modalias: ") {
-            modalias = v.into();
-        } else if let Some(v) = l.strip_prefix("Paired: ") {
-            paired = v == "yes";
-        } else if let Some(v) = l.strip_prefix("Trusted: ") {
-            trusted = v == "yes";
-        } else if let Some(v) = l.strip_prefix("Connected: ") {
-            conn = v == "yes";
-        } else if l.starts_with("Battery Percentage:") {
-            batt = l.rsplit('(').next().and_then(|x| x.trim_end_matches(')').parse().ok());
-        } else if let Some(v) = l.strip_prefix("UUID: ") {
-            if let Some((n, _)) = v.split_once('(') {
-                let n = n.trim();
-                if !n.is_empty() && !n.starts_with("Vendor specific") {
-                    uuids.push(n.to_string());
-                }
-            }
-        }
-    }
+fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
+    let mac = b.mac.as_str();
+    let mut d = Dev::new(&b.mac, Kind::Bt);
+    let (alias, name, icon, class, modalias) = (b.alias.clone(), b.name.clone(), b.icon.clone(), b.class, b.modalias.clone());
+    let (paired, trusted, conn, batt) = (b.paired, b.trusted, b.connected, b.battery);
+    let mut uuids = b.services.clone();
     let title = if !alias.is_empty() { alias } else if !name.is_empty() { name } else { mac.to_string() };
     let lname = title.to_lowercase();
     d.icon = if icon.contains("keyboard") || lname.contains("keyboard") {
@@ -431,21 +403,19 @@ fn link_info(c: &crate::hci::Conn, cache: &mut HashMap<String, (String, String)>
 
 fn bt_loop(h: Handle, oui: Arc<Oui>) {
     let mut cache: HashMap<String, (String, String)> = HashMap::new();
+    let mut bus = None;
     loop {
         let mut devs = vec![];
         let mut links = vec![];
-        let listing = run("bluetoothctl", &["devices"]);
+        if bus.is_none() {
+            bus = crate::bluez::connect();
+        }
+        let listing = bus.as_ref().and_then(|c| crate::bluez::devices(c));
+        if listing.is_none() {
+            bus = None; // reconnect next time (BlueZ may have restarted)
+        }
         if let Some(list) = &listing {
-            for line in list.lines() {
-                let mut it = line.splitn(3, ' ');
-                if it.next() != Some("Device") {
-                    continue;
-                }
-                if let Some(mac) = it.next() {
-                    let info = run("bluetoothctl", &["info", mac]).unwrap_or_default();
-                    devs.push(parse_bt(mac, &info, &oui));
-                }
-            }
+            devs.extend(list.iter().map(|b| parse_bt(b, &oui)));
         }
         {
             for conn in crate::hci::connections() {
@@ -489,7 +459,7 @@ fn bt_loop(h: Handle, oui: Arc<Oui>) {
             s.links = links;
             s.bt_at = Some(Instant::now());
             if listing.is_none() {
-                s.errs.insert("bt", "bluetoothctl failed".into());
+                s.errs.insert("bt", "BlueZ not reachable".into());
             } else {
                 s.errs.remove("bt");
             }
