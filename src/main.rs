@@ -2021,7 +2021,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         .map(|(k, v)| (lp.layout_no_wrap(k.to_uppercase(), FontId::monospace(10.5), alpha(RED, 0.9)), lp.layout(v.clone(), FontId::proportional(13.0), TEXT, iw - 52.0 - ikw)))
         .collect();
     let irows_h: f32 = irows.iter().map(|(_, g)| g.size().y.max(14.0) + 8.0).sum();
-    let ih_full = 54.0 + irows_h + 14.0;
+    let ih_full = 44.0 + irows_h + 14.0;
     let ih = ih_full.min(r.height() - 84.0 - 12.0).max(120.0);
     let ir = Rect::from_min_size(r.min + vec2(10.0, 84.0), vec2(iw, ih));
     let chip = Rect::from_min_max(pos2(r.right() - 22.0 - 92.0, r.top() + 42.0), pos2(r.right() - 22.0, r.top() + 66.0));
@@ -2128,16 +2128,15 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
                 p.rect_filled(ir.expand(2.0), 16.0, alpha(BG, 0.5));
                 panel(&p, ir, 14.0, RED);
                 lcd(&p, pos2(ir.left() + 22.0, ir.top() + 24.0), Align2::LEFT_CENTER, "WHAT'S HAPPENING", 13.0, RED);
-                p.text(pos2(ir.left() + 22.0, ir.top() + 42.0), Align2::LEFT_CENTER, "Click ISSUE again or anywhere outside to close.", FontId::proportional(11.0), DIM);
-                let body = p.with_clip_rect(Rect::from_min_max(pos2(ir.left(), ir.top() + 52.0), pos2(ir.right(), ir.bottom() - 6.0)));
-                let mut yy = ir.top() + 60.0 - iscroll;
+                let body = p.with_clip_rect(Rect::from_min_max(pos2(ir.left(), ir.top() + 42.0), pos2(ir.right(), ir.bottom() - 6.0)));
+                let mut yy = ir.top() + 50.0 - iscroll;
                 for (k, v) in irows {
                     let rh = v.size().y.max(14.0);
                     body.galley(pos2(ir.left() + 22.0, yy + 2.0), k, RED);
                     body.galley(pos2(ir.left() + 22.0 + ikw, yy), v, TEXT);
                     yy += rh + 8.0;
                 }
-                scrollbar(&p, Rect::from_min_max(pos2(ir.right() - 13.0, ir.top() + 56.0), pos2(ir.right() - 8.0, ir.bottom() - 10.0)), iscroll, imax, ih - 66.0, ih_full - 66.0, RED);
+                scrollbar(&p, Rect::from_min_max(pos2(ir.right() - 13.0, ir.top() + 46.0), pos2(ir.right() - 8.0, ir.bottom() - 10.0)), iscroll, imax, ih - 56.0, ih_full - 56.0, RED);
             });
         }
     }
