@@ -1,6 +1,7 @@
 //! Visual toolkit: glow, bevel, shadow, LED bars, LCD text, orbs, icons.
 //! Everything is drawn with egui's painter; "glow" is additive (premultiplied alpha 0).
 use crate::data::Icon;
+use eframe::egui::epaint::PathStroke;
 use eframe::egui::{pos2, vec2, Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 use std::f32::consts::{PI, TAU};
 
@@ -70,9 +71,47 @@ pub fn shadow(p: &Painter, rect: Rect, rad: f32, off: Vec2, spread: f32, k: f32)
     }
 }
 
-/// Raised glass panel: drop shadow, vertical gradient, top highlight, bevelled border.
+/// A smooth vertical gradient band across a rounded rectangle (one mesh, so no seams between strips), between
+/// y0 and y1, following the rounded corners. `f` gives the vertex colour at a given y.
+fn glass_band(p: &Painter, rect: Rect, rad: f32, y0: f32, y1: f32, f: impl Fn(f32) -> Color32) {
+    let rad = rad.min(rect.width().min(rect.height()) / 2.0).max(0.0);
+    let inset = |y: f32| -> f32 {
+        let d_top = (y - rect.top()).clamp(0.0, rad);
+        let d_bot = (rect.bottom() - y).clamp(0.0, rad);
+        let d = d_top.min(d_bot);
+        rad - (rad * rad - (rad - d) * (rad - d)).max(0.0).sqrt()
+    };
+    let mut ys: Vec<f32> = (0..=10).map(|i| y0 + (y1 - y0) * i as f32 / 10.0).collect();
+    for k in 0..=6 {
+        let d = rad * (1.0 - (k as f32 / 6.0 * std::f32::consts::FRAC_PI_2).cos());
+        for y in [rect.top() + d, rect.bottom() - d] {
+            if y > y0 && y < y1 {
+                ys.push(y);
+            }
+        }
+    }
+    ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    ys.dedup_by(|a, b| (*a - *b).abs() < 0.05);
+    let mut m = Mesh::default();
+    for &y in &ys {
+        let (l, r) = (rect.left() + inset(y), rect.right() - inset(y));
+        let c = f(y);
+        m.colored_vertex(pos2(l, y), c);
+        m.colored_vertex(pos2(r, y), c);
+    }
+    for i in 0..ys.len().saturating_sub(1) as u32 {
+        let a = i * 2;
+        m.add_triangle(a, a + 1, a + 2);
+        m.add_triangle(a + 1, a + 3, a + 2);
+    }
+    p.add(Shape::mesh(m));
+}
+
+/// Raised glass panel: drop shadow, vertical gradient, soft specular sheen over the top, shaded bottom, and a rim
+/// that is bright along the top-left and fades to the accent colour towards the bottom-right.
 pub fn panel(p: &Painter, rect: Rect, rad: f32, accent: Color32) {
     shadow(p, rect, rad, vec2(0.0, 6.0), 18.0, 1.0);
+    // body
     const N: usize = 24;
     for i in 0..N {
         let t0 = i as f32 / N as f32;
@@ -83,17 +122,34 @@ pub fn panel(p: &Painter, rect: Rect, rad: f32, accent: Color32) {
         );
         p.with_clip_rect(strip).rect_filled(rect, rad, mix(PANEL_TOP, PANEL_BOT, t0));
     }
-    // inner light along the top edge, inner dark along the bottom
-    p.line_segment(
-        [pos2(rect.left() + rad, rect.top() + 1.5), pos2(rect.right() - rad, rect.top() + 1.5)],
-        Stroke::new(1.0, add(Color32::WHITE, 0.16)),
-    );
-    p.line_segment(
-        [pos2(rect.left() + rad, rect.bottom() - 1.5), pos2(rect.right() - rad, rect.bottom() - 1.5)],
-        Stroke::new(1.0, Color32::from_black_alpha(110)),
-    );
-    p.rect_stroke(rect, rad, Stroke::new(1.0, alpha(accent, 0.55)), StrokeKind::Inside);
-    p.rect_stroke(rect.shrink(1.5), (rad - 1.5).max(0.0), Stroke::new(1.0, add(accent, 0.06)), StrokeKind::Inside);
+    let inner = rect.shrink(1.0);
+    let irad = (rad - 1.0).max(0.0);
+    // glossy sheen: light fading out over the top of the glass (follows the rounded corners)
+    let sh = (rect.height() * 0.5).min(64.0);
+    glass_band(p, inner, irad, inner.top(), inner.top() + sh, |y| add(Color32::WHITE, 0.085 * (1.0 - (y - inner.top()) / sh).max(0.0).powf(1.7)));
+    // shade gathering along the bottom edge
+    let bh = (rect.height() * 0.3).min(40.0);
+    glass_band(p, inner, irad, inner.bottom() - bh, inner.bottom(), |y| {
+        let t = ((y - (inner.bottom() - bh)) / bh).clamp(0.0, 1.0);
+        Color32::from_black_alpha((70.0 * t * t) as u8)
+    });
+    // inner highlight just inside the rim: bright at the top, gone by a third of the way down
+    let h = rect.height().max(1.0);
+    let top = rect.top();
+    p.add(Shape::closed_line(
+        rounded_outline(rect.shrink(1.6), (rad - 1.6).max(0.0), 5),
+        PathStroke::new_uv(1.0, move |_, q| add(Color32::WHITE, 0.30 * (1.0 - ((q.y - top) / (h * 0.35)).clamp(0.0, 1.0)))),
+    ));
+    // rim: lit top-left edge, accent-coloured and dimmer towards the bottom-right
+    let (lit, dim) = (alpha(mix(accent, Color32::WHITE, 0.6), 0.9), alpha(accent, 0.38));
+    let (l, w) = (rect.left(), rect.width().max(1.0));
+    p.add(Shape::closed_line(
+        rounded_outline(rect.shrink(0.5), (rad - 0.5).max(0.0), 5),
+        PathStroke::new_uv(1.2, move |_, q| {
+            let t = (((q.x - l) / w) * 0.35 + ((q.y - top) / h) * 0.65).clamp(0.0, 1.0);
+            mix(lit, dim, t.sqrt())
+        }),
+    ));
 }
 
 pub fn led_bar(p: &Painter, rect: Rect, frac: f32, col: Color32, segs: usize) {
@@ -157,13 +213,20 @@ pub fn sphere(p: &Painter, c: Pos2, r: f32, col: Color32, segs: usize) {
         let a = i as f32 / segs as f32 * TAU;
         m.colored_vertex(c + vec2(a.cos(), a.sin()) * r, rim); // ring B (rim)
     }
+    for i in 0..segs {
+        let a = i as f32 / segs as f32 * TAU;
+        m.colored_vertex(c + vec2(a.cos(), a.sin()) * (r + 1.0), Color32::TRANSPARENT); // ring C: 1 px feather, hides the jagged edge
+    }
     let s = segs as u32;
     for i in 0..s {
         let (a0, a1) = (1 + i, 1 + (i + 1) % s);
         let (b0, b1) = (1 + s + i, 1 + s + (i + 1) % s);
+        let (c0, c1) = (1 + 2 * s + i, 1 + 2 * s + (i + 1) % s);
         m.add_triangle(0, a0, a1);
         m.add_triangle(a0, b0, b1);
         m.add_triangle(a0, b1, a1);
+        m.add_triangle(b0, c0, c1);
+        m.add_triangle(b0, c1, b1);
     }
     p.add(Shape::mesh(m));
 }
@@ -184,15 +247,39 @@ fn blob(p: &Painter, c: Pos2, r: f32, a: f32) {
     p.add(Shape::mesh(m));
 }
 
+/// Soft bevel just inside a sphere's edge: light spilling in from the top-left, shade gathering at the bottom-right.
+/// Both fade out towards the middle, so there is no hard line.
+fn bevel_ring(p: &Painter, c: Pos2, r: f32, w: f32) {
+    const SEGS: usize = 40;
+    let light = vec2(-0.6, -0.8);
+    let mut m = Mesh::default();
+    for i in 0..SEGS {
+        let a = i as f32 / SEGS as f32 * TAU;
+        m.colored_vertex(c + vec2(a.cos(), a.sin()) * (r - w), Color32::TRANSPARENT);
+    }
+    for i in 0..SEGS {
+        let a = i as f32 / SEGS as f32 * TAU;
+        let n = vec2(a.cos(), a.sin());
+        let d = n.x * light.x + n.y * light.y;
+        let col = if d > 0.0 { add(Color32::WHITE, 0.42 * d.powf(1.4)) } else { Color32::from_black_alpha((120.0 * (-d).powf(1.4)) as u8) };
+        m.colored_vertex(c + n * r, col);
+    }
+    let n = SEGS as u32;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        m.add_triangle(i, n + i, j);
+        m.add_triangle(j, n + i, n + j);
+    }
+    p.add(Shape::mesh(m));
+}
+
 /// Shiny bevelled sphere with halo. `hot` (0..1) boosts the glow (sweep pings, selection).
 pub fn orb(p: &Painter, c: Pos2, r: f32, col: Color32, hot: f32) {
     glow(p, c, r, col, 0.55 + hot * 1.1);
-    p.circle_filled(c + vec2(0.0, 2.5), r + 1.5, Color32::from_black_alpha(110));
     sphere(p, c, r, col, 48);
     // anti-aliased rim (the mesh edge itself is not smoothed) and bevel
     p.circle_stroke(c, r - 0.5, Stroke::new(1.2, shade(col, 0.22)));
-    arc(p, c, r - 0.8, PI * 0.95, PI * 1.85, Stroke::new(1.6, add(Color32::WHITE, 0.5)));
-    arc(p, c, r - 0.8, -PI * 0.05, PI * 0.85, Stroke::new(1.6, Color32::from_black_alpha(130)));
+    bevel_ring(p, c, r - 0.5, (r * 0.24).clamp(2.5, 5.0));
     blob(p, c + vec2(-0.34, -0.42) * r, r * 0.34, 0.85);
 }
 
@@ -314,22 +401,24 @@ pub fn nav_icon(p: &Painter, which: u8, c: Pos2, s: f32, col: Color32) {
 }
 
 /// Subtle glow around a rectangle: an additive gradient from `k` at the edge to nothing `g` px out.
+/// Points around a rounded rectangle (clockwise from the top-right arc), `arc` segments per corner.
+pub fn rounded_outline(rr: Rect, rad: f32, arc: usize) -> Vec<Pos2> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let rad = rad.min(rr.width().min(rr.height()) / 2.0).max(0.0);
+    let corners = [(rr.right() - rad, rr.top() + rad, -FRAC_PI_2), (rr.right() - rad, rr.bottom() - rad, 0.0), (rr.left() + rad, rr.bottom() - rad, FRAC_PI_2), (rr.left() + rad, rr.top() + rad, PI)];
+    corners.iter().flat_map(|&(cx, cy, a0)| (0..=arc).map(move |i| {
+        let a = a0 + i as f32 / arc as f32 * FRAC_PI_2;
+        pos2(cx + rad * a.cos(), cy + rad * a.sin())
+    })).collect()
+}
+
 pub fn glow_rect(p: &Painter, r: Rect, g: f32, col: Color32, k: f32) {
     // Rings of rounded-rectangle outlines growing out from the shape, fading with the same quadratic falloff
     // as `glow`, so the halo follows the corners instead of forming a hard-edged rectangle.
-    use std::f32::consts::{FRAC_PI_2, PI};
     const RINGS: usize = 4;
     const ARC: usize = 4; // segments per corner
     let rad0 = 2.0f32.min(r.width().min(r.height()) / 2.0);
-    let outline = |e: f32| -> Vec<Pos2> {
-        let rr = r.expand(e);
-        let rad = (rad0 + e).min(rr.width().min(rr.height()) / 2.0);
-        let corners = [(rr.right() - rad, rr.top() + rad, -FRAC_PI_2), (rr.right() - rad, rr.bottom() - rad, 0.0), (rr.left() + rad, rr.bottom() - rad, FRAC_PI_2), (rr.left() + rad, rr.top() + rad, PI)];
-        corners.iter().flat_map(|&(cx, cy, a0)| (0..=ARC).map(move |i| {
-            let a = a0 + i as f32 / ARC as f32 * FRAC_PI_2;
-            pos2(cx + rad * a.cos(), cy + rad * a.sin())
-        })).collect()
-    };
+    let outline = |e: f32| rounded_outline(r.expand(e), rad0 + e, ARC);
     let n = 4 * (ARC + 1);
     let mut m = Mesh::default();
     for j in 0..=RINGS {

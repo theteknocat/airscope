@@ -2336,6 +2336,7 @@ impl eframe::App for App {
 fn main() -> eframe::Result {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1360.0, 860.0]).with_min_inner_size([960.0, 640.0]).with_title("Airscope").with_app_id("airscope"),
+        multisampling: 4, // smooths the edges of the custom meshes (orbs, bars, glows) that egui does not anti-alias itself
         ..Default::default()
     };
     eframe::run_native("Airscope", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
