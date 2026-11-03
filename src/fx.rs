@@ -307,21 +307,37 @@ pub fn nav_icon(p: &Painter, which: u8, c: Pos2, s: f32, col: Color32) {
 
 /// Subtle glow around a rectangle: an additive gradient from `k` at the edge to nothing `g` px out.
 pub fn glow_rect(p: &Painter, r: Rect, g: f32, col: Color32, k: f32) {
-    let inner = add(col, k);
-    let o = r.expand(g);
-    let ins = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()];
-    let outs = [o.left_top(), o.right_top(), o.right_bottom(), o.left_bottom()];
+    // Rings of rounded-rectangle outlines growing out from the shape, fading with the same quadratic falloff
+    // as `glow`, so the halo follows the corners instead of forming a hard-edged rectangle.
+    use std::f32::consts::{FRAC_PI_2, PI};
+    const RINGS: usize = 4;
+    const ARC: usize = 4; // segments per corner
+    let rad0 = 2.0f32.min(r.width().min(r.height()) / 2.0);
+    let outline = |e: f32| -> Vec<Pos2> {
+        let rr = r.expand(e);
+        let rad = (rad0 + e).min(rr.width().min(rr.height()) / 2.0);
+        let corners = [(rr.right() - rad, rr.top() + rad, -FRAC_PI_2), (rr.right() - rad, rr.bottom() - rad, 0.0), (rr.left() + rad, rr.bottom() - rad, FRAC_PI_2), (rr.left() + rad, rr.top() + rad, PI)];
+        corners.iter().flat_map(|&(cx, cy, a0)| (0..=ARC).map(move |i| {
+            let a = a0 + i as f32 / ARC as f32 * FRAC_PI_2;
+            pos2(cx + rad * a.cos(), cy + rad * a.sin())
+        })).collect()
+    };
+    let n = 4 * (ARC + 1);
     let mut m = Mesh::default();
-    for q in ins {
-        m.colored_vertex(q, inner);
+    for j in 0..=RINGS {
+        let u = j as f32 / RINGS as f32;
+        let c = add(col, k * (1.0 - u) * (1.0 - u));
+        for q in outline(g * u) {
+            m.colored_vertex(q, c);
+        }
     }
-    for q in outs {
-        m.colored_vertex(q, Color32::TRANSPARENT);
-    }
-    for i in 0..4u32 {
-        let j = (i + 1) % 4;
-        m.add_triangle(i, j, 4 + i);
-        m.add_triangle(j, 4 + j, 4 + i);
+    for j in 0..RINGS {
+        for i in 0..n {
+            let (a0, a1) = ((j * n + i) as u32, (j * n + (i + 1) % n) as u32);
+            let (b0, b1) = (a0 + n as u32, a1 + n as u32);
+            m.add_triangle(a0, b0, a1);
+            m.add_triangle(a1, b0, b1);
+        }
     }
     p.add(Shape::mesh(m));
 }
