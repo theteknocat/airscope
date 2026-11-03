@@ -115,11 +115,19 @@ pub fn led_bar(p: &Painter, rect: Rect, frac: f32, col: Color32, segs: usize) {
 
 /// Glowing monospace "LCD" readout.
 pub fn lcd(p: &Painter, pos: Pos2, anchor: Align2, text: &str, size: f32, col: Color32) {
-    let f = FontId::monospace(size);
-    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-        p.text(pos + vec2(dx, dy) * 1.6, anchor, text, f.clone(), add(col, 0.22));
+    // Halo: the same laid-out text drawn additively on four rings around its position, fading outwards, so the
+    // light spreads evenly in every direction (a cheap stand-in for a blur) instead of smearing along the axes.
+    let g = p.layout_no_wrap(text.to_string(), FontId::monospace(size), Color32::PLACEHOLDER);
+    let tl = anchor.anchor_size(pos, g.size()).min;
+    let reach = (size * 0.15).clamp(2.0, 5.5);
+    for (ring, (rf, k)) in [(0.28, 0.11), (0.52, 0.075), (0.76, 0.05), (1.0, 0.03)].into_iter().enumerate() {
+        let n = 8 + ring * 3;
+        for i in 0..n {
+            let a = (i as f32 + 0.5 * ring as f32) / n as f32 * TAU;
+            p.galley(tl + vec2(a.cos(), a.sin()) * reach * rf, g.clone(), add(col, k));
+        }
     }
-    p.text(pos, anchor, text, f, col);
+    p.galley(tl, g, col);
 }
 
 pub fn arc(p: &Painter, c: Pos2, r: f32, a0: f32, a1: f32, stroke: Stroke) {
