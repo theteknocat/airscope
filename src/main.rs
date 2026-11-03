@@ -1628,7 +1628,7 @@ impl App {
                 }];
                 lines.push(format!("Estimate: {} of its {} channels sit under busy Wi-Fi right now.", hot, n));
                 if let Some(lq) = l.lq {
-                    lines.push(format!("Link quality {}/255 · {}", lq, if l.mfr.is_empty() { l.mac.clone() } else { format!("{} · {}", l.mfr, l.mac) }));
+                    lines.push(format!("Link quality {}% · {}", data::lq_pct(lq), if l.mfr.is_empty() { l.mac.clone() } else { format!("{} · {}", l.mfr, l.mac) }));
                 }
                 tip_box = Some((q, if l.name.is_empty() { l.mac.clone() } else { l.name.clone() }, lines));
             }
@@ -2161,7 +2161,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
             p.text(pos2(x1, by + 4.5), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(13.0), TEXT);
         } else if let Some(q) = d.lq {
             let mut y = by;
-            meter(&p, x0, x1, y, "LINK", q as f32 / 255.0, if has("Link health") { RED } else { col }, &format!("{}/255", q));
+            meter(&p, x0, x1, y, "LINK", q as f32 / 255.0, if has("Link health") { RED } else { col }, &format!("{}%", data::lq_pct(q)));
             if let Some(rs) = d.rssi {
                 y += 18.0;
                 // RSSI is relative to the ideal receive range: 0 or above is fine, -20 or below is very weak

@@ -5,6 +5,11 @@ use crate::net;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+/// Link quality (0..255 from the controller) as a percentage.
+pub fn lq_pct(q: i32) -> i32 {
+    (q.clamp(0, 255) * 100 + 127) / 255
+}
+
 pub fn hash64(s: &str) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     for b in s.bytes() {
@@ -57,7 +62,7 @@ pub struct Dev {
     pub freq: Option<u32>,
     pub details: Vec<(String, String)>,
     pub why: String,
-    pub lq: Option<i32>, // Bluetooth link quality 0..255 (stands in for signal strength on connected Bluetooth devices)
+    pub lq: Option<i32>, // Bluetooth link quality as the controller reports it, 0..255; show with lq_pct (stands in for signal strength on connected Bluetooth devices)
     pub trouble: f32, // 0 = healthy .. 1 = real problem (red): drops, quality falling, reconnect loops
     pub caution: f32, // 0 .. 1 = early warning (amber): channels dropped, weak signal, low battery
     pub battery: Option<i32>,
@@ -602,7 +607,7 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
     if let (Some(cur), Some(pk)) = (d.lq, peak) {
         if hist.len() >= 5 && (cur as f32) < pk as f32 * LINK_DROP {
             d.trouble = d.trouble.max(((pk - cur) as f32 / (pk as f32 * 0.5)).clamp(0.25, 1.0));
-            d.issue.push(("Link health".into(), format!("DEGRADED: quality fell to {} of 255 from {} earlier. Packets are being lost or retried, which is what interference looks like.", cur, pk)));
+            d.issue.push(("Link health".into(), format!("DEGRADED: link quality fell to {}% (it was {}% earlier). Packets are being lost or retried, which is what interference looks like.", lq_pct(cur), lq_pct(pk))));
         }
     }
     // red: reconnecting over and over
@@ -643,7 +648,7 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
     if lqs.len() >= 3 {
         let (min, avg) = (*lqs.iter().min().unwrap(), lqs.iter().sum::<i32>() / lqs.len() as i32);
         let span = hist.back().zip(hist.front()).map(|(b, f)| b.at.duration_since(f.at).as_secs()).unwrap_or(0);
-        rows.push(("Link history".into(), format!("last {} min: quality lowest {}, average {} (of 255)", (span / 60).max(1), min, avg)));
+        rows.push(("Link history".into(), format!("last {} min: link quality lowest {}%, average {}%", (span / 60).max(1), lq_pct(min), lq_pct(avg))));
     }
     // only worth showing when something is flagged: health row, diagnosis, other findings, then the evidence
     if d.trouble > 0.0 || d.caution > 0.0 {
@@ -959,6 +964,11 @@ mod tests {
         assert_eq!(parse_oui(manuf), vec![(0, "Xerox Corporation".to_string())]);
         assert_eq!(parse_oui("AABBCC\tSome Vendor\n"), vec![(0xAABBCC, "Some Vendor".to_string())]);
         assert!(parse_oui(BUILT_IN_OUI).len() > 30000);
+    }
+
+    #[test]
+    fn lq_percent() {
+        assert_eq!((lq_pct(255), lq_pct(0), lq_pct(132), lq_pct(300)), (100, 0, 52, 100));
     }
 
     #[test]
