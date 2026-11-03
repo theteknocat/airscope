@@ -171,8 +171,13 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
     let dimf = if n.dim && !(sel || hovered) { 0.5 } else { 1.0 };
     if a > 0.01 {
         let tp = pos + vec2(0.0, rad + 13.0);
-        p.text(tp + vec2(1.0, 1.0), Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), Color32::from_black_alpha((200.0 * a * dimf) as u8));
-        p.text(tp, Align2::CENTER_CENTER, &d.name, FontId::proportional(11.5), alpha(TEXT, 0.9 * a * dimf));
+        if hovered {
+            hover_label(p, tp, &d.name, FontId::proportional(11.5));
+        } else {
+            let name = fit_middle(p, &d.name, FontId::proportional(11.5), LABEL_W);
+            p.text(tp + vec2(1.0, 1.0), Align2::CENTER_CENTER, &name, FontId::proportional(11.5), Color32::from_black_alpha((200.0 * a * dimf) as u8));
+            p.text(tp, Align2::CENTER_CENTER, &name, FontId::proportional(11.5), alpha(TEXT, 0.9 * a * dimf));
+        }
     }
 }
 
@@ -1093,7 +1098,7 @@ impl App {
                 db.connected.cmp(&da.connected).then(db.dbm.unwrap_or(-120.0).partial_cmp(&da.dbm.unwrap_or(-120.0)).unwrap())
             });
             for i in order {
-                let g = p.layout_no_wrap(self.latched[nodes[i].i].name.clone(), FontId::proportional(11.5), TEXT);
+                let g = p.layout_no_wrap(fit_middle(&p, &self.latched[nodes[i].i].name, FontId::proportional(11.5), LABEL_W), FontId::proportional(11.5), TEXT);
                 let r = Rect::from_center_size(disp[i] + vec2(0.0, 30.0), g.size() + vec2(8.0, 4.0));
                 if placed.iter().all(|q| !q.intersects(r)) {
                     placed.push(r);
@@ -1413,7 +1418,7 @@ impl App {
         let inner_w = view.width() - if max > 0.0 { 9.0 } else { 0.0 };
         let cell_w = inner_w / 2.0;
         let mut y = view.top() - scroll;
-        let (mut click, mut anchor) = (None, None);
+        let (mut click, mut anchor, mut hover) = (None, None, None::<(Pos2, String)>);
         for (g, members) in &groups {
             clip.text(pos2(view.left() + 8.0, y + 14.0), Align2::LEFT_CENTER, format!("{} ({})", g.to_uppercase(), members.len()), FontId::monospace(10.5), alpha(CYAN, 0.8));
             y += HEAD_H;
@@ -1441,6 +1446,9 @@ impl App {
                 }
                 let label = fit_middle(&clip, &d.name, FontId::proportional(11.0), cell_w - 8.0);
                 clip.text(pos2(r.center().x, r.top() + 56.0), Align2::CENTER_CENTER, label, FontId::proportional(11.0), alpha(TEXT, if d.online { 0.95 } else { 0.55 }));
+                if resp.hovered() {
+                    hover = Some((pos2(r.center().x, r.top() + 56.0), d.name.clone()));
+                }
                 if resp.clicked() {
                     click = Some(d.id.clone());
                 }
@@ -1449,6 +1457,10 @@ impl App {
                 }
             }
             y += members.len().div_ceil(2) as f32 * CELL_H;
+        }
+        if let Some((at, name)) = hover {
+            let top = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("tray_hover")));
+            hover_label(&top, at, &name, FontId::proportional(11.0));
         }
         if max > 0.0 {
             scrollbar(&p, Rect::from_min_max(pos2(view.right() - 5.0, view.top()), pos2(view.right(), view.bottom())), scroll, max, view.height(), content, CYAN);
@@ -2158,6 +2170,18 @@ fn meter(p: &egui::Painter, x0: f32, x1: f32, y: f32, label: &str, frac: f32, co
     p.text(pos2(x0, y + 4.5), Align2::LEFT_CENTER, label, FontId::monospace(10.5), alpha(CYAN, 0.8));
     led_bar(p, Rect::from_min_size(pos2(x0 + 64.0, y), vec2(x1 - x0 - 64.0 - 112.0, 9.0)), frac.clamp(0.0, 1.0), col, 20);
     p.text(pos2(x1, y + 4.5), Align2::RIGHT_CENTER, value, FontId::monospace(12.0), TEXT);
+}
+
+const LABEL_W: f32 = 104.0; // widest radar label before the middle is cut out
+
+/// Full name on a dark, semi-transparent, round-ended bar so it reads over anything. Kept inside the screen.
+fn hover_label(p: &egui::Painter, center: Pos2, text: &str, font: FontId) {
+    let g = p.layout_no_wrap(text.to_string(), font, TEXT);
+    let mut r = Rect::from_center_size(center, g.size() + vec2(20.0, 8.0));
+    let lim = p.ctx().content_rect().shrink(4.0);
+    r = r.translate(vec2((lim.left() - r.left()).max(0.0) + (lim.right() - r.right()).min(0.0), 0.0));
+    p.rect_filled(r, r.height() / 2.0, Color32::from_black_alpha(215));
+    p.galley(r.center() - g.size() / 2.0, g, TEXT);
 }
 
 /// `text` shortened to fit `max_w` by cutting out the middle ("Studio-Mac…Book-Air"), so both the start and the
