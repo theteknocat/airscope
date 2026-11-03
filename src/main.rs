@@ -272,6 +272,32 @@ fn dmap(r: f32, big: f32) -> f32 {
 }
 
 /// Default placement: (angle, metres, dimmed). Angle is a stable hash (no direction info from one receiver).
+/// Devices on the radar are the ones with a wireless signal: Wi-Fi access points and connected Bluetooth devices.
+/// Everything else (network devices, Bluetooth that is not connected) sits in the tray beside it.
+fn on_radar(d: &Dev) -> bool {
+    d.dbm.is_some() || (d.kind == Kind::Bt && d.connected)
+}
+
+/// Tray heading for a device: its kind of device, so a Bluetooth speaker and a network speaker sit together.
+fn tray_group(d: &Dev) -> &'static str {
+    match d.icon {
+        Icon::Router | Icon::Wifi => "Routers",
+        Icon::Keyboard => "Keyboards",
+        Icon::Headphones => "Headphones",
+        Icon::Phone => "Phones",
+        Icon::Gamepad => "Game controllers",
+        Icon::Mouse => "Mice",
+        Icon::Bluetooth => "Other Bluetooth",
+        Icon::Computer => "Computers",
+        Icon::Tv => "TVs",
+        Icon::Server => "Servers and storage",
+        Icon::Printer => "Printers",
+        Icon::Speaker => "Speakers",
+        Icon::Camera => "Cameras",
+        Icon::Unknown => "Unidentified",
+    }
+}
+
 fn layout_of(d: &Dev) -> (f32, f32, bool) {
     let a = (hash64(&d.cluster) % 3600) as f32 / 3600.0 * TAU + ((hash64(&d.id) % 1000) as f32 / 1000.0 - 0.5) * 0.9;
     let j = (hash64(&d.id) % 1000) as f32 / 1000.0;
@@ -683,7 +709,11 @@ impl App {
     }
 
     fn radar(&mut self, ui: &mut egui::Ui, t: f32) {
-        let rect = ui.max_rect();
+        let full = ui.max_rect();
+        ui.painter().rect_filled(full, 0.0, BG);
+        // the tray takes the right-hand side; the radar gets the rest
+        let tray_area = Rect::from_min_max(pos2(full.right() - 200.0, full.top() + 8.0), pos2(full.right() - 12.0, full.bottom() - 12.0));
+        let rect = Rect::from_min_max(full.min, pos2(full.right() - 212.0, full.bottom()));
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 0.0, BG);
 
@@ -754,13 +784,6 @@ impl App {
             p.text(pos2(c.x + r * 0.7071 + 4.0, c.y - r * 0.7071 - 2.0), Align2::LEFT_BOTTOM, lbl, FontId::monospace(10.0), alpha(CYAN, 0.6));
         }
         p.circle_stroke(c, ro, Stroke::new(1.5, alpha(CYAN, 0.3)));
-        p.text(
-            pos2(rect.center().x, rect.top() + 14.0),
-            Align2::CENTER_CENTER,
-            "OUTER BAND: network devices (no signal reading) and paired-but-not-connected Bluetooth",
-            FontId::monospace(10.0),
-            alpha(CYAN, 0.45),
-        );
         let mut m = egui::Mesh::default();
         let n = 36;
         for kk in 0..n {
@@ -782,6 +805,7 @@ impl App {
             .latched
             .iter()
             .enumerate()
+            .filter(|(_, d)| on_radar(d))
             .map(|(i, d)| {
                 let (mut a, mut dd, dim) = layout_of(d);
                 let over = self.over.get(&d.id).copied();
@@ -1338,7 +1362,7 @@ impl App {
         }
 
         // --- zoom HUD
-        let hud = Rect::from_min_size(pos2(rect.right() - 318.0, rect.bottom() - 48.0), vec2(300.0, 34.0));
+        let hud = Rect::from_min_size(pos2(rect.left() + 18.0, rect.bottom() - 48.0), vec2(300.0, 34.0));
         panel(&p, hud, 17.0, CYAN);
         lcd(&p, pos2(hud.left() + 18.0, hud.center().y), Align2::LEFT_CENTER, &format!("ZOOM {:.1}x", self.zoom), 12.0, CYAN);
         p.text(pos2(hud.left() + 116.0, hud.center().y), Align2::LEFT_CENTER, "scroll · drag · double-click", FontId::proportional(11.0), DIM);
@@ -1348,6 +1372,92 @@ impl App {
         p.text(rb.center(), Align2::CENTER_CENTER, "1:1", FontId::monospace(11.0), Color32::WHITE);
         if rr.clicked() {
             self.reset_view = true;
+        }
+        self.tray(ui, tray_area);
+    }
+
+    /// Side tray: devices that are not on the radar (not connected, or no wireless signal), grouped by kind of
+    /// device and sorted by name, two to a row with the name under the orb. Click one for its info box; they
+    /// cannot be dragged or reordered.
+    fn tray(&mut self, ui: &mut egui::Ui, area: Rect) {
+        const CELL_H: f32 = 72.0;
+        const HEAD_H: f32 = 28.0;
+        let p = ui.painter_at(area.expand(40.0));
+        panel(&p, area, 14.0, CYAN);
+        lcd(&p, pos2(area.left() + 16.0, area.top() + 24.0), Align2::LEFT_CENTER, "NOT CONNECTED/NO SIGNAL", 10.5, CYAN);
+        let mut items: Vec<(&'static str, String, usize)> = self.latched.iter().enumerate().filter(|(_, d)| !on_radar(d)).map(|(i, d)| (tray_group(d), d.name.to_lowercase(), i)).collect();
+        items.sort();
+        let view = Rect::from_min_max(pos2(area.left() + 8.0, area.top() + 44.0), pos2(area.right() - 8.0, area.bottom() - 10.0));
+        if items.is_empty() {
+            p.text(view.center_top() + vec2(0.0, 30.0), Align2::CENTER_CENTER, "Everything is on the radar", FontId::proportional(12.0), DIM);
+            return;
+        }
+        // groups in order: (heading, indexes into `items`)
+        let mut groups: Vec<(&'static str, Vec<usize>)> = vec![];
+        for (k, (g, _, _)) in items.iter().enumerate() {
+            match groups.last_mut() {
+                Some((lg, v)) if lg == g => v.push(k),
+                _ => groups.push((g, vec![k])),
+            }
+        }
+        let content: f32 = groups.iter().map(|(_, v)| HEAD_H + v.len().div_ceil(2) as f32 * CELL_H).sum();
+        let max = (content - view.height()).max(0.0);
+        let sid = egui::Id::new("tray_scroll");
+        let mut scroll: f32 = ui.ctx().data(|d| d.get_temp(sid)).unwrap_or(0.0);
+        if max > 0.0 && ui.input(|i| i.pointer.hover_pos()).map_or(false, |q| view.contains(q)) {
+            scroll -= ui.input(|i| i.smooth_scroll_delta.y);
+        }
+        scroll = scroll.clamp(0.0, max);
+        ui.ctx().data_mut(|d| d.insert_temp(sid, scroll));
+        let clip = ui.painter_at(view);
+        let inner_w = view.width() - if max > 0.0 { 9.0 } else { 0.0 };
+        let cell_w = inner_w / 2.0;
+        let mut y = view.top() - scroll;
+        let (mut click, mut anchor) = (None, None);
+        for (g, members) in &groups {
+            clip.text(pos2(view.left() + 8.0, y + 14.0), Align2::LEFT_CENTER, format!("{} ({})", g.to_uppercase(), members.len()), FontId::monospace(10.5), alpha(CYAN, 0.8));
+            y += HEAD_H;
+            for (n, k) in members.iter().enumerate() {
+                let r = Rect::from_min_size(pos2(view.left() + (n % 2) as f32 * cell_w, y + (n / 2) as f32 * CELL_H), vec2(cell_w, CELL_H - 2.0));
+                if r.bottom() < view.top() || r.top() > view.bottom() {
+                    continue;
+                }
+                let d = &self.latched[items[*k].2];
+                let resp = hit(ui, r.intersect(view), ui.scope_id().with(("tray", &d.id)), Sense::click());
+                let sel = self.sel.as_deref() == Some(d.id.as_str());
+                let col = if d.online { kind_col(d.kind) } else { shade(kind_col(d.kind), 0.55) };
+                if resp.hovered() || sel {
+                    clip.rect_filled(r.shrink(2.0), 8.0, alpha(col, if sel { 0.22 } else { 0.12 }));
+                    if sel {
+                        clip.rect_stroke(r.shrink(2.0), 8.0, Stroke::new(1.0, alpha(col, 0.7)), StrokeKind::Inside);
+                    }
+                }
+                let ic = pos2(r.center().x, r.top() + 24.0);
+                if d.known {
+                    orb(&clip, ic, 17.0, col, 0.0);
+                    icon(&clip, d.icon, ic, 8.5, shade(col, 0.12));
+                } else {
+                    dot(&clip, ic, 8.0, col, 0.0);
+                }
+                let label = fit_middle(&clip, &d.name, FontId::proportional(11.0), cell_w - 8.0);
+                clip.text(pos2(r.center().x, r.top() + 56.0), Align2::CENTER_CENTER, label, FontId::proportional(11.0), alpha(TEXT, if d.online { 0.95 } else { 0.55 }));
+                if resp.clicked() {
+                    click = Some(d.id.clone());
+                }
+                if sel {
+                    anchor = Some((d.id.clone(), pos2(r.left(), r.center().y)));
+                }
+            }
+            y += members.len().div_ceil(2) as f32 * CELL_H;
+        }
+        if max > 0.0 {
+            scrollbar(&p, Rect::from_min_max(pos2(view.right() - 5.0, view.top()), pos2(view.right(), view.bottom())), scroll, max, view.height(), content, CYAN);
+        }
+        if let Some(id) = click {
+            self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+        }
+        if let Some(a) = anchor {
+            self.radar_anchor = Some(a); // the shared info box opens beside the tray cell
         }
     }
 
@@ -2050,6 +2160,24 @@ fn meter(p: &egui::Painter, x0: f32, x1: f32, y: f32, label: &str, frac: f32, co
     p.text(pos2(x1, y + 4.5), Align2::RIGHT_CENTER, value, FontId::monospace(12.0), TEXT);
 }
 
+/// `text` shortened to fit `max_w` by cutting out the middle ("Studio-Mac…Book-Air"), so both the start and the
+/// end of a name stay readable.
+fn fit_middle(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String {
+    let width = |s: &str| p.layout_no_wrap(s.to_string(), font.clone(), Color32::WHITE).size().x;
+    if width(text) <= max_w {
+        return text.to_string();
+    }
+    let ch: Vec<char> = text.chars().collect();
+    for keep in (2..ch.len()).rev() {
+        let (head, tail) = ((keep + 1) / 2, keep / 2);
+        let s: String = ch[..head].iter().chain(std::iter::once(&'…')).chain(ch[ch.len() - tail..].iter()).collect();
+        if width(&s) <= max_w {
+            return s;
+        }
+    }
+    "…".to_string()
+}
+
 /// Slim scrollbar so a scrollable box looks scrollable.
 fn scrollbar(p: &egui::Painter, track: Rect, scroll: f32, max: f32, view: f32, content: f32, col: Color32) {
     if max <= 0.0 {
@@ -2195,7 +2323,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         body.galley(pos2(r.left() + 22.0, yy + 20.0), why, TEXT);
         scrollbar(&p, Rect::from_min_max(pos2(r.right() - 13.0, r.top() + top - 2.0), pos2(r.right() - 8.0, r.bottom() - 34.0)), scroll, max_scroll, h - top - 32.0, h_full - top - 32.0, col);
         let more = max_scroll > 0.0 && scroll < max_scroll - 1.0;
-        let foot = if more { "Scroll for more (mouse wheel)" } else { "Drag the node to where this device really is." };
+        let foot = if more { "Scroll for more (mouse wheel)" } else if on_radar(d) { "Drag the node to where this device really is." } else { "In the tray: no wireless signal to place it on the radar." };
         p.text(pos2(r.left() + 22.0, r.bottom() - 14.0), Align2::LEFT_CENTER, foot, FontId::proportional(11.0), if more { CYAN } else { DIM });
         // close
         let cr = Rect::from_center_size(pos2(r.right() - 24.0, r.top() + 24.0), Vec2::splat(24.0));
