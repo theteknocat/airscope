@@ -10,6 +10,17 @@ pub fn lq_pct(q: i32) -> i32 {
     (q.clamp(0, 255) * 100 + 127) / 255
 }
 
+/// One 0..1 strength for a Bluetooth device's list bar: the average of link quality and signal
+/// (RSSI is relative to the ideal range: 0 or above is full, -20 or below is empty). Channels don't count.
+pub fn bt_quality(lq: Option<i32>, rssi: Option<i32>) -> Option<f32> {
+    let l = lq.map(|q| q.clamp(0, 255) as f32 / 255.0);
+    let s = rssi.map(|r| (1.0 + r.min(0) as f32 / 20.0).clamp(0.0, 1.0));
+    match (l, s) {
+        (Some(l), Some(s)) => Some((l + s) / 2.0),
+        (x, None) | (None, x) => x,
+    }
+}
+
 pub fn hash64(s: &str) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     for b in s.bytes() {
@@ -964,6 +975,16 @@ mod tests {
         assert_eq!(parse_oui(manuf), vec![(0, "Xerox Corporation".to_string())]);
         assert_eq!(parse_oui("AABBCC\tSome Vendor\n"), vec![(0xAABBCC, "Some Vendor".to_string())]);
         assert!(parse_oui(BUILT_IN_OUI).len() > 30000);
+    }
+
+    #[test]
+    fn bt_quality_mix() {
+        assert_eq!(bt_quality(Some(255), Some(0)), Some(1.0));
+        assert_eq!(bt_quality(Some(0), Some(-20)), Some(0.0));
+        assert_eq!(bt_quality(Some(255), None), Some(1.0));
+        assert_eq!(bt_quality(None, None), None);
+        let k = bt_quality(Some(132), Some(-5)).unwrap();
+        assert!((k - 0.634).abs() < 0.01);
     }
 
     #[test]

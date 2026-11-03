@@ -103,7 +103,7 @@ pub fn led_bar(p: &Painter, rect: Rect, frac: f32, col: Color32, segs: usize) {
         let r = Rect::from_min_size(pos2(rect.left() + i as f32 * (w + gap), rect.top()), vec2(w, rect.height()));
         let lit = (i as f32 + 0.5) / segs as f32 <= frac;
         if lit {
-            p.rect_filled(r.expand(2.5), 3.0, add(col, 0.10));
+            glow_rect(p, r, 5.0, col, 0.28);
             p.rect_filled(r, 1.5, col);
             p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), r.height() * 0.4)), 1.5, add(Color32::WHITE, 0.22));
         } else {

@@ -1846,17 +1846,21 @@ impl App {
                     p.text(pos2(r.left() + 66.0, r.center().y - 9.0), Align2::LEFT_CENTER, &d.name, FontId::proportional(15.0), Color32::WHITE);
                     let kindname = d.details.first().map(|x| x.1.clone()).unwrap_or_default();
                     p.text(pos2(r.left() + 66.0, r.center().y + 10.0), Align2::LEFT_CENTER, format!("{} · {}", kindname, d.vendor), FontId::proportional(12.0), DIM);
-                    if let Some(dbm) = d.dbm {
-                        led_bar(p, Rect::from_min_size(pos2(r.right() - 190.0, r.center().y - 5.0), vec2(120.0, 10.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 12);
-                        p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(12.0), TEXT);
-                    } else if d.connected {
-                        p.text(pos2(r.right() - 20.0, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
+                    // right edge inwards: CONNECTED label, one strength bar (no units: the info box has them), problem chip
+                    let mut x = r.right() - 20.0;
+                    if d.connected && d.dbm.is_none() {
+                        p.text(pos2(x, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
+                        x -= 98.0;
+                    }
+                    let strength = d.dbm.map(|dbm| ((dbm + 100.0) / 55.0).clamp(0.0, 1.0)).or_else(|| data::bt_quality(d.lq, d.rssi));
+                    if let Some(f) = strength {
+                        led_bar(p, Rect::from_min_size(pos2(x - 130.0, r.center().y - 5.0), vec2(130.0, 10.0)), f, col, 13);
+                        x -= 146.0;
                     }
                     if d.trouble > 0.0 || d.caution > 0.0 {
                         let (acc, word) = if d.trouble > 0.0 { (RED, "ISSUE") } else { (AMBER, "WARNING") };
                         // clear problem marker; click the row for what the app found out
-                        let right = r.right() - if d.connected && d.dbm.is_none() { 118.0 } else { 20.0 };
-                        let chip = Rect::from_min_max(pos2(right - 74.0, r.center().y - 11.0), pos2(right, r.center().y + 11.0));
+                        let chip = Rect::from_min_max(pos2(x - 74.0, r.center().y - 11.0), pos2(x, r.center().y + 11.0));
                         p.rect_filled(chip, 11.0, alpha(acc, 0.18));
                         p.rect_stroke(chip, 11.0, Stroke::new(1.2, alpha(acc, 0.8)), StrokeKind::Inside);
                         dot(p, pos2(chip.left() + 11.0, chip.center().y), 3.5, acc, 0.3);
@@ -2243,6 +2247,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _f: &mut eframe::Frame) {
         self.sync();
+        let sel_before = self.sel.clone();
         ui.ctx().request_repaint();
         // the wheel belongs to an info box (or the vendor dialog) when the mouse is over one, not to what is behind it
         self.wheel = 0.0;
@@ -2300,6 +2305,12 @@ impl eframe::App for App {
             }
         }
         if close {
+            self.sel = None;
+        }
+        // a click anywhere outside the info boxes closes the open one (a click on a device already switched
+        // or toggled the selection above, which is why an unchanged selection means "a click on nothing")
+        let outside = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !self.popup_rects.iter().any(|r| r.contains(q))));
+        if outside && self.sel.is_some() && self.sel == sel_before {
             self.sel = None;
         }
         // tooltips fade too
