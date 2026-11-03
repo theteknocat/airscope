@@ -19,7 +19,7 @@ Native Linux GUI (Rust, egui/eframe 0.37, glow) visualising Wi-Fi / Bluetooth / 
 - Groups: union-find, GROUP_PX=38 on screen; stable keys via member overlap; click expands, drag moves all members; dragged node/group is excluded from merging until dropped.
 - Ids must be unique: a router's BSSID can equal its LAN MAC; `sync()` suffixes the later duplicate (`~lan`). Animation state maps are keyed by id — duplicates broke grouping once.
 - Info box (`popup`) and tooltips are shared across screens and fade (`pops`, `tip_want`).
-- Debug env switches: `AIRSCOPE_DEMO` (`=bad`: keyboard red, headphones amber), `AIRSCOPE_SHOT`, `AIRSCOPE_VENDOR`, `AIRSCOPE_ZOOM`, `AIRSCOPE_SCREEN=spectrum|devices`, `AIRSCOPE_SEL=<id>`, `AIRSCOPE_PIN_BIG`, `AIRSCOPE_AUTO`, `AIRSCOPE_SLOW`.
+- Window: 4x MSAA requested (`window_options`); `main` catches a failed start (eframe errors or panics when no MSAA config exists) and re-execs itself with `AIRSCOPE_FALLBACK=1` (no MSAA); `AIRSCOPE_MSAA=<n>` overrides the count (0 = off). Debug env switches: `AIRSCOPE_DEMO` (`=bad`: keyboard red, headphones amber), `AIRSCOPE_SHOT`, `AIRSCOPE_VENDOR`, `AIRSCOPE_ZOOM`, `AIRSCOPE_SCREEN=spectrum|devices`, `AIRSCOPE_SEL=<id>`, `AIRSCOPE_PIN_BIG`, `AIRSCOPE_AUTO`, `AIRSCOPE_SLOW`.
 - Testing: screenshot with `spectacle -b -n -a -o <file>`; don't screenshot while Peter is using the screen (once captured his browser — deleted).
 
 ## Portability roadmap (goal: no external tools)

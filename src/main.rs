@@ -2333,13 +2333,38 @@ impl eframe::App for App {
     }
 }
 
-fn main() -> eframe::Result {
-    let opts = eframe::NativeOptions {
+fn window_options(samples: u16) -> eframe::NativeOptions {
+    eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1360.0, 860.0]).with_min_inner_size([960.0, 640.0]).with_title("Airscope").with_app_id("airscope"),
-        multisampling: 4, // smooths the edges of the custom meshes (orbs, bars, glows) that egui does not anti-alias itself
+        multisampling: samples, // smooths the edges of the custom meshes (orbs, bars, glows) that egui does not anti-alias itself
         ..Default::default()
-    };
-    eframe::run_native("Airscope", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    }
+}
+
+fn main() -> eframe::Result {
+    // Multisampling is a hard requirement when the graphics configuration is picked: a machine that cannot provide
+    // it makes eframe return an error or panic instead of opening a window. So try it, and if that fails restart
+    // once without it (jagged edges, but it runs). AIRSCOPE_MSAA=<n> sets the sample count (0 = off, for testing).
+    let fallback = std::env::var_os("AIRSCOPE_FALLBACK").is_some();
+    let samples: u16 = if fallback { 0 } else { std::env::var("AIRSCOPE_MSAA").ok().and_then(|v| v.parse().ok()).unwrap_or(4) };
+    let run = |samples| eframe::run_native("Airscope", window_options(samples), Box::new(|cc| Ok(Box::new(App::new(cc)))));
+    if samples == 0 {
+        return run(0);
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(samples))) {
+        Ok(Ok(())) => Ok(()),
+        failed => {
+            eprintln!("airscope: could not start with {}x multisampling ({}); restarting without it", samples, match &failed { Ok(Err(e)) => e.to_string(), _ => "panic".to_string() });
+            use std::os::unix::process::CommandExt;
+            // a fresh process: the windowing library only allows one event loop per process
+            let err = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "airscope".into())).args(std::env::args_os().skip(1)).env("AIRSCOPE_FALLBACK", "1").exec();
+            eprintln!("airscope: could not restart: {}", err);
+            match failed {
+                Ok(r) => r,
+                Err(_) => run(0),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
