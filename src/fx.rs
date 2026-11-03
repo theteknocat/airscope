@@ -115,12 +115,12 @@ pub fn led_bar(p: &Painter, rect: Rect, frac: f32, col: Color32, segs: usize) {
 
 /// Glowing monospace "LCD" readout.
 pub fn lcd(p: &Painter, pos: Pos2, anchor: Align2, text: &str, size: f32, col: Color32) {
-    // Halo: the same laid-out text drawn additively on four rings around its position, fading outwards, so the
+    // Halo (kept well below the text colour so the letters stay crisp and clearly the brightest thing): the same laid-out text drawn additively on four rings around its position, fading outwards, so the
     // light spreads evenly in every direction (a cheap stand-in for a blur) instead of smearing along the axes.
     let g = p.layout_no_wrap(text.to_string(), FontId::monospace(size), Color32::PLACEHOLDER);
     let tl = anchor.anchor_size(pos, g.size()).min;
     let reach = (size * 0.15).clamp(2.0, 5.5);
-    for (ring, (rf, k)) in [(0.28, 0.11), (0.52, 0.075), (0.76, 0.05), (1.0, 0.03)].into_iter().enumerate() {
+    for (ring, (rf, k)) in [(0.28, 0.040), (0.52, 0.028), (0.76, 0.018), (1.0, 0.010)].into_iter().enumerate() {
         let n = 8 + ring * 3;
         for i in 0..n {
             let a = (i as f32 + 0.5 * ring as f32) / n as f32 * TAU;
