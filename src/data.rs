@@ -76,7 +76,7 @@ pub struct Dev {
     pub why: String,
     pub lq: Option<i32>, // Bluetooth link quality as the controller reports it, 0..255; show with lq_pct (stands in for signal strength on connected Bluetooth devices)
     pub trouble: f32, // 0 = healthy .. 1 = real problem (red): drops, quality falling, reconnect loops
-    pub caution: f32, // 0 .. 1 = early warning (amber): channels dropped, weak signal, low battery
+    pub caution: f32, // 0 .. 1 = early warning (amber): almost no channels left, weak signal, low battery
     pub battery: Option<i32>,
     pub chan_use: Option<usize>, // Bluetooth channels in use of 79 (None = not adaptive: hops over all of them)
     pub rssi: Option<i32>, // Bluetooth RSSI relative to the ideal receive range (0 = inside it)
@@ -535,7 +535,8 @@ const HISTORY_SECS: u64 = 1800;
 const TROUBLE_WINDOW_SECS: u64 = 900;
 const FLAP_WINDOW_SECS: u64 = 600; // this many reconnects within this window count as a reconnect loop
 const FLAP_COUNT: usize = 3;
-const AFH_DROP: usize = 10; // channels lost versus the device's own recent maximum
+const AFH_FLOOR: usize = 22; // the Bluetooth spec needs at least 20 channels; this close to it there is no room left to dodge noise
+const SHARED_DROP: Duration = Duration::from_secs(2); // drops this close together count as the same moment
 const RSSI_WEAK: i32 = -10; // dB below the ideal receive range
 
 fn events_loop(ev: Events) {
@@ -587,8 +588,10 @@ fn ev_code(e: &DevEvent) -> Option<u8> {
 
 /// Works out what is wrong with a device (if anything) from its drop events, link history and state:
 /// red `trouble` for real problems (lost links, quality falling, reconnect loops), amber `caution` for early
-/// warnings (channels dropped, weak signal, low battery). The explanation goes into `d.issue`.
-pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) {
+/// warnings (almost no channels left, low battery). Low link quality or a weak signal only count when a radio-type
+/// drop happened too: a device can work fine on a low reading. `peers` = (id, name, events) of all devices, to
+/// spot several devices dropping at once. The explanation goes into `d.issue`.
+pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev], peers: &[(String, String, Vec<DevEvent>)]) {
     let now = SystemTime::now();
     let age = |e: &DevEvent| now.duration_since(e.at).map(|x| x.as_secs()).unwrap_or(0);
     let mut diagnosis: Option<(String, String)> = None;
@@ -617,10 +620,28 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
     // red: link quality fell well below this device's own recent best
     let peak = hist.iter().filter_map(|s| s.lq).max();
     if let (Some(cur), Some(pk)) = (d.lq, peak) {
-        if hist.len() >= 5 && (cur as f32) < pk as f32 * LINK_DROP {
+        if !bad.is_empty() && hist.len() >= 5 && (cur as f32) < pk as f32 * LINK_DROP {
             d.trouble = d.trouble.max(((pk - cur) as f32 / (pk as f32 * 0.5)).clamp(0.25, 1.0));
             d.issue.push(("Link health".into(), format!("DEGRADED: link quality fell to {}% (it was {}% earlier). Packets are being lost or retried, which is what interference looks like.", lq_pct(cur), lq_pct(pk))));
         }
+    }
+    // several devices losing their links at the same moment: the cause is shared, not this device
+    let mut shared: Vec<(String, SystemTime)> = vec![];
+    for e in bad.iter().filter(|e| matches!(e.kind, EvKind::Disconnected(_))) {
+        for (id, name, pev) in peers.iter().filter(|(id, _, _)| *id != d.id) {
+            let hit = pev.iter().any(|q| {
+                matches!(q.kind, EvKind::Disconnected(c) if crate::hci::reason(c).2)
+                    && q.at.duration_since(e.at).or_else(|x| e.at.duration_since(q.at).map_err(|_| x)).map_or(false, |g| g <= SHARED_DROP)
+            });
+            if hit && !shared.iter().any(|(n, _)| n == name) {
+                shared.push((if name.is_empty() { id.clone() } else { name.clone() }, e.at));
+            }
+        }
+    }
+    if !shared.is_empty() {
+        let names: Vec<&str> = shared.iter().map(|(n, _)| n.as_str()).collect();
+        d.trouble = d.trouble.max(0.8);
+        notes.push(("Shared cause".into(), format!("{} lost the link within {} seconds of this device (around {}). When several devices drop at the same moment the cause is shared: the Bluetooth adapter, 2.4 GHz interference or the PC itself, not this device on its own.", names.join(", "), SHARED_DROP.as_secs(), clock(shared[0].1))));
     }
     // red: reconnecting over and over
     let connects = ev.iter().filter(|e| matches!(e.kind, EvKind::Connected) && age(e) < FLAP_WINDOW_SECS).count();
@@ -628,17 +649,17 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev]) 
         d.trouble = d.trouble.max(0.7);
         notes.push(("Reconnecting".into(), format!("Connected {} times in the last 10 minutes. A healthy device stays connected; repeated reconnects mean the link keeps failing and recovering, so it is unreliable even if it seems to work.", connects)));
     }
-    // amber: the controller stopped using channels it used earlier (it found noise there)
-    let chans: Vec<usize> = hist.iter().filter_map(|s| s.afh).collect();
-    if let (Some(&cur), Some(&hi)) = (chans.last(), chans.iter().max()) {
-        if chans.len() >= 3 && hi >= cur + AFH_DROP {
+    // amber: almost no channels left. Dropping some is normal adaptive hopping (the device dodging noise), so
+    // only the floor counts; a shrunken map with bad link quality is already caught by the link rules above.
+    if let Some(cur) = hist.iter().rev().take(3).filter_map(|s| s.afh).max().filter(|_| hist.iter().rev().take(3).filter(|s| s.afh.is_some()).count() >= 3) {
+        if cur <= AFH_FLOOR {
             d.caution = d.caution.max(0.5);
-            notes.push(("Channel map".into(), format!("Now using {} of 79 channels, down from {}. The device found noise on the channels it stopped using and is hopping around it.", cur, hi)));
+            notes.push(("Channel map".into(), format!("Only {} of 79 channels are usable (the minimum is 20). The device has little room left to hop around noise, so any more interference will hit the link directly.", cur)));
         }
     }
     // amber: signal weak (RSSI is relative to the ideal range: 0 is fine, negative is too weak)
     let rs: Vec<i32> = hist.iter().rev().take(5).filter_map(|s| s.rssi).collect();
-    if rs.len() >= 5 && rs.iter().sum::<i32>() / (rs.len() as i32) <= RSSI_WEAK {
+    if !bad.is_empty() && rs.len() >= 5 && rs.iter().sum::<i32>() / (rs.len() as i32) <= RSSI_WEAK {
         d.caution = d.caution.max(0.5);
         notes.push(("Weak signal".into(), format!("Signal is {} dB below the ideal receive range. Moving the device closer, or clearing what is between it and the Bluetooth antenna, usually helps.", -(rs.iter().sum::<i32>() / rs.len() as i32))));
     }
@@ -754,8 +775,9 @@ fn bt_loop(h: Handle, oui: Arc<Oui>, events: Events) {
         {
             let wifi = h.lock().unwrap().wifi.clone();
             let evs = events.lock().unwrap().clone();
+            let peers: Vec<(String, String, Vec<DevEvent>)> = devs.iter().map(|d| (d.id.clone(), d.name.clone(), evs.get(&d.id).cloned().unwrap_or_default())).collect();
             for d in devs.iter_mut() {
-                apply_events(d, evs.get(&d.id).map(|v| v.as_slice()).unwrap_or(&[]), hist.get(&d.id).unwrap_or(&History::new()), &wifi);
+                apply_events(d, evs.get(&d.id).map(|v| v.as_slice()).unwrap_or(&[]), hist.get(&d.id).unwrap_or(&History::new()), &wifi, &peers);
             }
         }
         set(&h, |s| {
@@ -997,15 +1019,31 @@ mod tests {
     #[test]
     fn link_trouble_is_relative() {
         let hist = |qs: &[i32]| -> History { qs.iter().map(|q| Sample { at: Instant::now(), lq: Some(*q), afh: None, rssi: None }).collect() };
-        let run = |qs: &[i32]| {
+        let drop = [DevEvent { at: SystemTime::now() - Duration::from_secs(10), kind: EvKind::Disconnected(0x08) }];
+        let run = |qs: &[i32], evs: &[DevEvent]| {
             let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
             d.lq = qs.last().copied();
-            apply_events(&mut d, &[], &hist(qs), &[]);
-            d.trouble
+            apply_events(&mut d, evs, &hist(qs), &[], &[]);
+            d.issue.iter().any(|(k, _)| k == "Link health")
         };
-        assert_eq!(run(&[132; 10]), 0.0, "a steady low reading is normal for that device");
-        assert!(run(&[255, 255, 250, 240, 200, 150]) > 0.0, "a fall from its own best is a problem");
-        assert_eq!(run(&[255, 250]), 0.0, "too little history to judge");
+        assert!(!run(&[132; 10], &drop), "a steady low reading is normal for that device");
+        assert!(!run(&[255, 255, 250, 240, 200, 150], &[]), "a fall in quality alone is not a problem");
+        assert!(run(&[255, 255, 250, 240, 200, 150], &drop), "a fall plus a radio drop is reported");
+        assert!(!run(&[255, 250], &drop), "too little history to judge");
+    }
+
+    #[test]
+    fn shared_drops() {
+        let at = SystemTime::now() - Duration::from_secs(30);
+        let mk = |s: u64| vec![DevEvent { at: at + Duration::from_secs(s), kind: EvKind::Disconnected(0x08) }];
+        let run = |gap: u64| {
+            let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+            let peers = vec![("11:22:33:44:55:66".to_string(), "Headphones".to_string(), mk(gap))];
+            apply_events(&mut d, &mk(0), &History::new(), &[], &peers);
+            d.issue.iter().any(|(k, v)| k == "Shared cause" && v.contains("Headphones"))
+        };
+        assert!(run(1), "two devices dropping together share a cause");
+        assert!(!run(20), "drops far apart do not");
     }
 
     #[test]
@@ -1013,23 +1051,31 @@ mod tests {
         let now = SystemTime::now();
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
         let flap: Vec<DevEvent> = (0..3).map(|i| DevEvent { at: now - Duration::from_secs(60 * i), kind: EvKind::Connected }).collect();
-        apply_events(&mut d, &flap, &History::new(), &[]);
+        apply_events(&mut d, &flap, &History::new(), &[], &[]);
         assert!(d.trouble > 0.0 && d.caution == 0.0, "three reconnects in ten minutes is a problem");
 
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
         d.battery = Some(10);
-        apply_events(&mut d, &[], &History::new(), &[]);
+        apply_events(&mut d, &[], &History::new(), &[], &[]);
         assert!(d.trouble == 0.0 && d.caution > 0.0, "low battery is only a warning");
 
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
-        let h: History = [26, 26, 14].iter().map(|n| Sample { at: Instant::now(), lq: None, afh: Some(*n), rssi: None }).collect();
-        apply_events(&mut d, &[], &h, &[]);
-        assert!(d.trouble == 0.0 && d.caution > 0.0, "losing 12 channels is a warning");
+        let h: History = [40, 40, 30].iter().map(|n| Sample { at: Instant::now(), lq: None, afh: Some(*n), rssi: None }).collect();
+        apply_events(&mut d, &[], &h, &[], &[]);
+        assert!(d.trouble == 0.0 && d.caution == 0.0, "adaptive hopping on its own is not a problem");
+
+        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        let h: History = [30, 22, 21, 20].iter().map(|n| Sample { at: Instant::now(), lq: None, afh: Some(*n), rssi: None }).collect();
+        apply_events(&mut d, &[], &h, &[], &[]);
+        assert!(d.trouble == 0.0 && d.caution > 0.0, "a map near the 20-channel minimum is a warning");
 
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
         let h: History = (0..5).map(|_| Sample { at: Instant::now(), lq: None, afh: None, rssi: Some(-14) }).collect();
-        apply_events(&mut d, &[], &h, &[]);
-        assert!(d.caution > 0.0, "a sustained weak signal is a warning");
+        apply_events(&mut d, &[], &h, &[], &[]);
+        assert!(d.trouble == 0.0 && d.caution == 0.0, "a weak signal alone is not a problem");
+        let drop = [DevEvent { at: now - Duration::from_secs(10), kind: EvKind::Disconnected(0x08) }];
+        apply_events(&mut d, &drop, &h, &[], &[]);
+        assert!(d.caution > 0.0, "a weak signal alongside a radio drop is reported");
     }
 
     #[test]

@@ -101,9 +101,9 @@ pub fn start(h: &Handle, oui: &Oui) {
     }
     for d in devs.iter_mut() {
         if d.id == "E4:11:5B:72:08:4D" {
-            apply_events(d, &kb_events, &kb_hist, &wifi);
+            apply_events(d, &kb_events, &kb_hist, &wifi, &[]);
         } else if d.id == "AC:80:0A:3D:62:C0" {
-            apply_events(d, &[], &hp_hist, &wifi);
+            apply_events(d, &[], &hp_hist, &wifi, &[]);
         }
     }
 
