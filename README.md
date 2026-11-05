@@ -99,6 +99,8 @@ screenshots above use (`scripts/demo-shots.sh` regenerates them in a headless co
 - Wi-Fi needs NetworkManager. Other managers (iwd or wpa_supplicant alone) are not supported yet.
 - Only 2.4 GHz is drawn on the spectrum; 5 and 6 GHz networks appear on the radar and in the list.
 - Tested on one machine (Bazzite / KDE Plasma, Wayland, an Intel AX200). Other hardware may behave differently.
+- Only tested with a single Bluetooth adapter. If you use more than one (for example a USB Bluetooth dongle alongside a built-in one), the link details may not cover the extra adapter. Please open an issue if you want that supported.
+- Wireless dongles with their own proprietary radios (Logitech Unifying, Steam Controller and similar) are not shown.
 
 ## Building a release
 
