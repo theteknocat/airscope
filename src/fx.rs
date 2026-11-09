@@ -486,6 +486,8 @@ pub enum Glyph {
     Save,
     Check,
     Cross,
+    Refresh,
+    List,
 }
 
 /// Draws `g` centred on `c`, about `2 * s` across.
@@ -515,6 +517,22 @@ pub fn glyph(p: &Painter, g: Glyph, c: Pos2, s: f32, col: Color32) {
             line(&[(0.0, -0.95), (0.0, 0.3)]);
             line(&[(-0.55, -0.25), (0.0, 0.35), (0.55, -0.25)]);
             line(&[(-0.95, 0.15), (-0.95, 0.9), (0.95, 0.9), (0.95, 0.15)]);
+        }
+        Glyph::Refresh => {
+            // an almost-closed circle with an arrowhead at its end
+            let (r, a0, a1) = (0.8f32, 40.0f32.to_radians(), 320.0f32.to_radians());
+            let pts: Vec<Pos2> = (0..=20).map(|i| { let a = a0 + (a1 - a0) * i as f32 / 20.0; pt(r * a.cos(), r * a.sin()) }).collect();
+            p.add(Shape::line(pts, st));
+            let e = vec2(r * a1.cos(), r * a1.sin());
+            let t = vec2(-a1.sin(), a1.cos()); // direction of travel at the end
+            let n = vec2(a1.cos(), a1.sin());
+            line(&[((e - t * 0.55 + n * 0.45).x, (e - t * 0.55 + n * 0.45).y), (e.x, e.y), ((e - t * 0.55 - n * 0.45).x, (e - t * 0.55 - n * 0.45).y)]);
+        }
+        Glyph::List => {
+            for y in [-0.65f32, 0.0, 0.65] {
+                p.circle_filled(pt(-0.85, y), 1.3, col);
+                line(&[(-0.4, y), (0.95, y)]);
+            }
         }
         Glyph::Check => line(&[(-0.85, 0.05), (-0.3, 0.65), (0.9, -0.65)]),
         Glyph::Cross => {
@@ -554,4 +572,12 @@ pub fn toggle_chip(ui: &mut Ui, label: &str, on: bool, col: Color32) -> bool {
     }
     p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.5), if on { Color32::WHITE } else { DIM });
     resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+}
+
+/// Draws `icon` and `label` as one block centred in `r` (for buttons that are drawn by hand).
+pub fn icon_label(p: &Painter, r: Rect, icon: Glyph, label: &str, size: f32) {
+    let g = p.layout_no_wrap(label.to_string(), FontId::proportional(size), Color32::WHITE);
+    let x0 = r.center().x - (g.size().x + 24.0) / 2.0;
+    glyph(p, icon, pos2(x0 + 8.0, r.center().y), 7.5, Color32::WHITE);
+    p.galley(pos2(x0 + 24.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
 }

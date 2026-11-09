@@ -641,27 +641,27 @@ impl App {
         let mut x = rect.right() - 20.0;
         // rescan button
         {
-            let r = Rect::from_min_size(pos2(x - 130.0, rect.center().y - 17.0), vec2(130.0, 34.0));
+            let r = Rect::from_min_size(pos2(x - 150.0, rect.center().y - 17.0), vec2(150.0, 34.0));
             let resp = hit(ui, r, ui.scope_id().with("rescan"), Sense::click());
             panel(&p, r, 9.0, if resp.hovered() { CYAN } else { BLUE });
-            p.text(r.center(), Align2::CENTER_CENTER, "Rescan Wi-Fi", FontId::proportional(14.0), Color32::WHITE);
+            icon_label(&p, r, Glyph::Refresh, "Rescan Wi-Fi", 14.0);
             if resp.clicked() {
                 self.h.lock().unwrap().rescan = true;
             }
             resp.on_hover_text("Active scan. It briefly disturbs Bluetooth on the shared Wi-Fi/BT chip, so it only runs when you ask.");
-            x -= 146.0;
+            x -= 166.0;
         }
         // vendor database button
         {
-            let r = Rect::from_min_size(pos2(x - 110.0, rect.center().y - 17.0), vec2(110.0, 34.0));
+            let r = Rect::from_min_size(pos2(x - 132.0, rect.center().y - 17.0), vec2(132.0, 34.0));
             let resp = hit(ui, r, ui.scope_id().with("vendors"), Sense::click());
             panel(&p, r, 9.0, if resp.hovered() { CYAN } else { alpha(BLUE, 0.6) });
-            p.text(r.center(), Align2::CENTER_CENTER, "Vendor list", FontId::proportional(14.0), Color32::WHITE);
+            icon_label(&p, r, Glyph::List, "Vendor list", 14.0);
             if resp.clicked() {
                 self.vendor_open = !self.vendor_open;
             }
             resp.on_hover_text("Update the list that turns MAC addresses into manufacturer names.");
-            x -= 126.0;
+            x -= 148.0;
         }
         for (c, txt) in chips.iter().rev() {
             let g = p.layout_no_wrap(txt.clone(), FontId::monospace(12.0), TEXT);
