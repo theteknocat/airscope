@@ -58,7 +58,8 @@ pub struct Snoop {
     pub acl_by_addr: HashMap<Addr, (u64, u64)>,
     pub first_us: Option<i64>,
     pub last_us: i64,
-    offset: usize,
+    pending: Vec<u8>,
+    started: bool,
     handles: HashMap<u16, (Addr, f64)>,
     last_acl: HashMap<u16, f64>,
     pending_exit: HashMap<u16, (f64, usize)>,
@@ -75,11 +76,15 @@ fn addr6(b: &[u8]) -> Addr {
 }
 
 impl Snoop {
-    /// Parses the records of `d` (the whole file) that have not been read yet. A half-written last record is left
-    /// for the next call.
-    pub fn feed(&mut self, d: &[u8]) -> Result<(), String> {
-        if self.offset == 0 {
+    /// Adds the next piece of the file (any size, in order). Whole records are parsed; a half-written one waits in
+    /// `pending` for the next piece, so a file that is still growing and a huge one read in chunks work the same way.
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), String> {
+        let mut d = std::mem::take(&mut self.pending);
+        d.extend_from_slice(chunk);
+        let mut o = 0;
+        if !self.started {
             if d.len() < 16 {
+                self.pending = d;
                 return Ok(());
             }
             if &d[..8] != b"btsnoop\0" {
@@ -88,22 +93,21 @@ impl Snoop {
             if be32(&d[12..16]) != 2001 {
                 return Err("This capture is not in btmon's monitor format, so it has no controller events.".into());
             }
-            self.offset = 16;
+            self.started = true;
+            o = 16;
         }
-        loop {
-            let o = self.offset;
-            if o + 24 > d.len() {
-                break;
-            }
+        while o + 24 <= d.len() {
             let incl = be32(&d[o + 4..]) as usize;
+            if o + 24 + incl > d.len() {
+                break; // last record still being written
+            }
             let flags = be32(&d[o + 8..]);
             let ts = i64::from_be_bytes([d[o + 16], d[o + 17], d[o + 18], d[o + 19], d[o + 20], d[o + 21], d[o + 22], d[o + 23]]);
-            if o + 24 + incl > d.len() {
-                break;
-            }
-            self.offset = o + 24 + incl;
             self.record((flags & 0xffff) as u16, ts, &d[o + 24..o + 24 + incl]);
+            o += 24 + incl;
         }
+        d.drain(..o);
+        self.pending = d;
         Ok(())
     }
 
@@ -259,12 +263,21 @@ impl Snoop {
                 }
             }
             let gaps: Vec<f64> = drops.windows(2).map(|w| w[1].t - w[0].t).collect();
+            let mut last_slow: Option<f64> = None;
+            let mut after_stall = 0;
+            for e in &mine {
+                if Self::slow_exit(e) {
+                    last_slow = Some(e.t);
+                } else if matches!(e.kind, Kind::Disconnected { .. }) && last_slow.map_or(false, |t| e.t - t <= STALL_WINDOW_S) {
+                    after_stall += 1;
+                }
+            }
             let (tx, rx) = self.acl_by_addr.get(&a).copied().unwrap_or((0, 0));
             out.push(DevStat {
                 addr: a,
                 connects: mine.iter().filter(|e| e.kind == Kind::Connected).count(),
                 drops: drops.len(),
-                after_stall: drops.iter().filter(|e| self.after_stall(e)).count(),
+                after_stall,
                 slow_exits: mine.iter().filter(|e| Self::slow_exit(e)).count(),
                 exits: mine.iter().filter(|e| matches!(e.kind, Kind::SniffExit { .. })).count(),
                 reasons,
@@ -325,15 +338,19 @@ pub fn dur(s: f64) -> String {
     if s < 100.0 { format!("{s:.1} s") } else if s < 6000.0 { format!("{:.1} min", s / 60.0) } else { format!("{:.1} h", s / 3600.0) }
 }
 
-/// One plain-text line describing an event, the same for the timeline, the raw view and the saved report.
-pub fn line(e: &Ev, who: &str) -> String {
-    let head = format!("+{:>8.3}s  {}  {}", e.t, clock(e.unix), who);
+/// Seconds since the first record, for the "since start" column.
+pub fn offset(e: &Ev) -> String {
+    format!("{:.3} s", e.t)
+}
+
+/// What happened, without the time and device (the timeline shows those in their own columns).
+pub fn message(e: &Ev) -> String {
     match &e.kind {
-        Kind::ConnRequest => format!("{head}  asks to connect"),
-        Kind::Connected => format!("{head}  connected"),
+        Kind::ConnRequest => "asks to connect".into(),
+        Kind::Connected => "connected".into(),
         Kind::Disconnected { reason, quiet, lived } => {
             let (name, _, _) = crate::hci::reason(*reason);
-            let mut s = format!("{head}  DROPPED: {name} (0x{reason:02x})");
+            let mut s = format!("DROPPED: {name} (0x{reason:02x})");
             if let Some(l) = lived {
                 s += &format!(", link had been up {}", dur(*l));
             }
@@ -342,11 +359,16 @@ pub fn line(e: &Ev, who: &str) -> String {
             }
             s
         }
-        Kind::SniffExit { wait: Some(w) } if *w <= SLOW_EXIT_S => format!("{head}  sniff exit answered in {:.2} s", w),
-        Kind::SniffExit { wait: Some(w) } => format!("{head}  SLOW sniff exit: controller took {:.1} s to answer", w),
-        Kind::SniffExit { wait: None } => format!("{head}  SNIFF EXIT UNANSWERED (link dropped, or no reply yet)"),
-        Kind::ModeFailed { status } => format!("{head}  mode change failed (status 0x{status:02x})"),
+        Kind::SniffExit { wait: Some(w) } if *w <= SLOW_EXIT_S => format!("sniff exit answered in {:.2} s", w),
+        Kind::SniffExit { wait: Some(w) } => format!("SLOW sniff exit: controller took {:.1} s to answer", w),
+        Kind::SniffExit { wait: None } => "SNIFF EXIT UNANSWERED (link dropped, or no reply yet)".into(),
+        Kind::ModeFailed { status } => format!("mode change failed (status 0x{status:02x})"),
     }
+}
+
+/// One plain-text line describing an event, used in the saved report.
+pub fn line(e: &Ev, who: &str) -> String {
+    format!("{}  {:>10}  {}  {}", clock(e.unix), offset(e), who, message(e))
 }
 
 #[cfg(test)]
@@ -400,7 +422,7 @@ mod tests {
         let mut s = Snoop::default();
         s.feed(&f[..f.len() - 3]).unwrap(); // last record half written
         assert_eq!(s.drops().count(), 0);
-        s.feed(&f).unwrap();
+        s.feed(&f[f.len() - 3..]).unwrap();
         assert_eq!(s.drops().count(), 1);
         assert!(Snoop::default().feed(b"not a capture file at all").is_err());
     }

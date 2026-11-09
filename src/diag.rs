@@ -8,6 +8,7 @@ use crate::picker::Pick;
 use crate::snoop::{self, dur, line, mac, Ev, Kind, Snoop};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke};
 use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
 use std::time::{Duration, Instant};
 
 /// Known Bluetooth devices by upper-case address: (name, icon).
@@ -17,7 +18,20 @@ pub struct Diag {
     path: String,
     snoop: Option<Snoop>,
     err: Option<String>,
-    size: u64,
+    /// Bytes of the file read so far / its length (they differ while a big file is still loading).
+    pos: u64,
+    total: u64,
+    /// Analysis kept between frames and redone only when new records arrive (`key` = records parsed).
+    stats: Vec<snoop::DevStat>,
+    bursts: Vec<(f64, f64, usize)>,
+    key: u64,
+    /// Timeline rows, newest first, as indices into the events (`tl_key` = events, problems-only, records).
+    tl: Vec<usize>,
+    tl_key: (usize, bool, u64),
+    /// Timeline layout: measured width of each event's message at the table font (grows as events are measured,
+    /// a few thousand per frame) and the line height.
+    ev_px: Vec<f32>,
+    line_h: f32,
     checked: Instant,
     tab: u8,
     addrs: bool,
@@ -29,7 +43,7 @@ pub struct Diag {
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, size: 0, checked: Instant::now(), tab: 0, addrs: false, problems_only: true, flash: None, pick: None };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None };
         if !d.path.is_empty() {
             d.load();
         }
@@ -44,37 +58,54 @@ impl Diag {
     fn load(&mut self) {
         self.err = None;
         self.snoop = None;
+        self.pos = 0;
+        self.total = 0;
+        self.key = u64::MAX;
+        self.ev_px.clear();
         let p = self.clean_path();
-        match std::fs::read(&p) {
-            Ok(d) => {
-                let mut s = Snoop::default();
-                match s.feed(&d) {
-                    Ok(()) => {
-                        self.size = d.len() as u64;
-                        self.snoop = Some(s);
-                    }
-                    Err(e) => self.err = Some(e),
-                }
+        match std::fs::metadata(&p) {
+            Ok(m) if m.is_file() => {
+                self.snoop = Some(Snoop::default());
+                self.total = m.len();
             }
+            Ok(_) => self.err = Some(format!("{p} is not a file")),
             Err(e) => self.err = Some(format!("Cannot read {p}: {e}")),
         }
         self.checked = Instant::now();
     }
 
-    /// A capture that is still being written grows: pick up the new records every couple of seconds.
-    fn refresh(&mut self) {
-        if self.snoop.is_none() || self.checked.elapsed() < Duration::from_secs(2) {
+    /// Reads the file in chunks, one per frame while there is more to read, so a huge capture loads without freezing
+    /// the window; once caught up it looks for new data every 2 s (the capture may still be running) and reads only
+    /// the new bytes.
+    fn pump(&mut self) {
+        const CHUNK: u64 = 4 << 20;
+        if self.snoop.is_none() {
+            return;
+        }
+        if self.pos >= self.total && self.checked.elapsed() < Duration::from_secs(2) {
             return;
         }
         self.checked = Instant::now();
         let p = self.clean_path();
         let Ok(m) = std::fs::metadata(&p) else { return };
-        if m.len() < self.size {
-            self.load();
-        } else if m.len() > self.size {
-            if let (Ok(d), Some(s)) = (std::fs::read(&p), self.snoop.as_mut()) {
-                self.size = d.len() as u64;
-                let _ = s.feed(&d);
+        if m.len() < self.pos {
+            self.load(); // replaced or truncated: start over
+            return;
+        }
+        self.total = m.len();
+        if self.pos >= self.total {
+            return;
+        }
+        let pos = self.pos;
+        let mut buf = vec![0u8; (self.total - pos).min(CHUNK) as usize];
+        if std::fs::File::open(&p).and_then(|mut f| f.seek(SeekFrom::Start(pos)).and_then(|_| f.read_exact(&mut buf))).is_err() {
+            return;
+        }
+        self.pos += buf.len() as u64;
+        if let Some(s) = self.snoop.as_mut() {
+            if let Err(e) = s.feed(&buf) {
+                self.err = Some(e);
+                self.snoop = None;
             }
         }
     }
@@ -182,7 +213,7 @@ impl Diag {
         let w = ui.available_width() - 6.0;
         let gap = 12.0;
         let drops = s.drops().count();
-        let bursts = s.bursts(120.0);
+        let bursts = &self.bursts;
         let tw = (w - gap * 3.0) / 4.0;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
@@ -192,9 +223,9 @@ impl Diag {
             tile(ui, tw, "DROP BURSTS", &bursts.len().to_string(), if bursts.is_empty() { GREEN } else { AMBER });
         });
         ui.add_space(14.0);
-        strip(ui, w, s, &bursts);
+        strip(ui, w, s, bursts);
         ui.add_space(14.0);
-        let stats = s.per_device();
+        let stats = &self.stats;
         let cols = if w >= 860.0 { 2 } else { 1 };
         let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
         let ch = stats.iter().map(card_h).fold(0.0, f32::max);
@@ -209,6 +240,71 @@ impl Diag {
             });
             ui.add_space(gap);
         }
+    }
+
+    /// The timeline as a table: Time, Since start, Device, Event. The event text wraps inside its own column. Rows have
+    /// different heights, so each row's height is estimated from its text length (generously, so rows never overlap)
+    /// and only the rows in view are drawn, which keeps a capture with a very long history fast.
+    fn timeline(&mut self, ui: &mut egui::Ui, s: &Snoop, names: &Names) {
+        let font = FontId::proportional(13.5);
+        if self.line_h == 0.0 {
+            self.line_h = ui.painter().layout_no_wrap("Ag".to_string(), font.clone(), Color32::WHITE).size().y;
+        }
+        for _ in 0..3000 {
+            let Some(e) = s.events.get(self.ev_px.len()) else { break };
+            let px = ui.painter().layout_no_wrap(snoop::message(e), font.clone(), Color32::WHITE).size().x;
+            self.ev_px.push(px);
+        }
+        let w = ui.available_width() - 8.0;
+        let (x_time, x_off, x_dev, x_msg) = (16.0, 196.0, 212.0, 436.0);
+        let dev_w = x_msg - x_dev - 14.0;
+        let msg_w = (w - x_msg - 14.0).max(160.0);
+        // header
+        let (hr, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
+        let p = ui.painter();
+        let hf = FontId::proportional(11.5);
+        p.text(pos2(hr.left() + x_time, hr.center().y), Align2::LEFT_CENTER, "TIME", hf.clone(), DIM);
+        p.text(pos2(hr.left() + x_off, hr.center().y), Align2::RIGHT_CENTER, "SINCE START", hf.clone(), DIM);
+        p.text(pos2(hr.left() + x_dev, hr.center().y), Align2::LEFT_CENTER, "DEVICE", hf.clone(), DIM);
+        p.text(pos2(hr.left() + x_msg, hr.center().y), Align2::LEFT_CENTER, "EVENT", hf, DIM);
+        p.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.25)));
+        // row heights: one line if the text fits its column, otherwise the wrapped line count with a little slack
+        let lines = |px: f32, col: f32| if px <= col - 2.0 { 1.0 } else { (px * 1.08 / col).ceil() };
+        let dev_px: Vec<(snoop::Addr, f32)> = self.stats.iter().map(|d| (d.addr, ui.painter().layout_no_wrap(self.who(&d.addr, names), font.clone(), Color32::WHITE).size().x)).collect();
+        let (ev_px, line_h) = (&self.ev_px, self.line_h);
+        let height = |i: usize| -> f32 {
+            let dp = dev_px.iter().find(|d| d.0 == s.events[i].addr).map_or(0.0, |d| d.1);
+            lines(ev_px.get(i).copied().unwrap_or(0.0), msg_w).max(lines(dp, dev_w)) * line_h + 18.0
+        };
+        let total: f32 = self.tl.iter().map(|&i| height(i)).sum();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, vp| {
+            let (rect, _) = ui.allocate_exact_size(vec2(w, total.max(1.0)), Sense::hover());
+            let p = ui.painter().clone();
+            let mut y = 0.0;
+            for &i in &self.tl {
+                let h = height(i);
+                if y > vp.max.y {
+                    break;
+                }
+                if y + h >= vp.min.y {
+                    let e = &s.events[i];
+                    let (top, col) = (rect.top() + y, Self::colour(e));
+                    if Self::problem(e) {
+                        p.rect_filled(Rect::from_min_size(pos2(rect.left() + 2.0, top + 5.0), vec2(3.0, h - 10.0)), 1.5, col);
+                    }
+                    let ty = top + 9.0;
+                    let mono = FontId::monospace(12.5);
+                    p.text(pos2(rect.left() + x_time, ty), Align2::LEFT_TOP, snoop::clock(e.unix), mono.clone(), DIM);
+                    p.text(pos2(rect.left() + x_off, ty), Align2::RIGHT_TOP, snoop::offset(e), mono, DIM);
+                    let g = p.layout(self.who(&e.addr, names), FontId::proportional(13.5), TEXT, dev_w);
+                    p.galley(pos2(rect.left() + x_dev, ty), g, TEXT);
+                    let g = p.layout(snoop::message(e), FontId::proportional(13.5), col, msg_w);
+                    p.galley(pos2(rect.left() + x_msg, ty), g, col);
+                    p.line_segment([pos2(rect.left(), top + h), pos2(rect.right(), top + h)], Stroke::new(1.0, alpha(Color32::WHITE, 0.07)));
+                }
+                y += h;
+            }
+        });
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, names: &Names) {
@@ -229,8 +325,20 @@ impl Diag {
                 Err(e) => self.err = Some(e),
             }
         }
-        self.refresh();
+        self.pump();
         let s = self.snoop.take();
+        if let Some(s) = &s {
+            if self.key != s.records {
+                self.stats = s.per_device();
+                self.bursts = s.bursts(120.0);
+                self.key = s.records;
+            }
+            let k = (s.events.len(), self.problems_only, s.records);
+            if self.tl_key != k {
+                self.tl = (0..s.events.len()).rev().filter(|&i| Self::problem(&s.events[i]) || !self.problems_only).collect();
+                self.tl_key = k;
+            }
+        }
         egui::Frame::NONE.inner_margin(18.0).show(ui, |ui| {
             // row 1: actions on the file (glass buttons)
             ui.horizontal(|ui| {
@@ -241,6 +349,9 @@ impl Diag {
                 }
                 let name = self.clean_path().rsplit('/').next().unwrap_or("").to_string();
                 ui.label(if name.is_empty() { RichText::new("No capture opened").color(DIM) } else { RichText::new(name).color(TEXT).size(15.0) });
+                if self.pos < self.total {
+                    ui.label(RichText::new(format!("loading {}%", self.pos * 100 / self.total)).color(DIM));
+                }
                 if let Some(s) = &s {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
@@ -308,16 +419,13 @@ impl Diag {
                 }
                 return;
             };
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.tab {
-                0 => {
-                    self.summary_view(ui, s, names);
-                }
-                _ => {
-                    for e in s.events.iter().filter(|e| Self::problem(e) || !self.problems_only) {
-                        ui.label(RichText::new(line(e, &self.who(&e.addr, names))).monospace().color(Self::colour(e)));
-                    }
-                }
-            });
+            if self.tab == 0 {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.summary_view(ui, s, names));
+            } else if self.tl.is_empty() {
+                ui.label(RichText::new(if self.problems_only { "No problems in this capture." } else { "No events in this capture." }).color(DIM));
+            } else {
+                self.timeline(ui, s, names);
+            }
         });
         self.snoop = s;
     }
