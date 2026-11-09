@@ -22,13 +22,14 @@ pub struct Diag {
     tab: u8,
     addrs: bool,
     problems_only: bool,
-    msg: Option<String>,
+    /// Brief confirmation shown on a button: (when, which button: 0 copy / 1 save, outcome text).
+    flash: Option<(Instant, u8, Result<String, String>)>,
     pick: Option<Pick>,
 }
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, size: 0, checked: Instant::now(), tab: 0, addrs: false, problems_only: true, msg: None, pick: None };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, size: 0, checked: Instant::now(), tab: 0, addrs: false, problems_only: true, flash: None, pick: None };
         if !d.path.is_empty() {
             d.load();
         }
@@ -42,7 +43,6 @@ impl Diag {
 
     fn load(&mut self) {
         self.err = None;
-        self.msg = None;
         self.snoop = None;
         let p = self.clean_path();
         match std::fs::read(&p) {
@@ -166,10 +166,11 @@ impl Diag {
         let first = s.first_us.map_or(0.0, |f| (f - 0x00dc_ddb3_0f2f_8000i64) as f64 / 1e6);
         let stem = self.clean_path().rsplit('/').next().unwrap_or("capture").trim_end_matches(".snoop").to_string();
         let file = dir.join(format!("{stem}-{}.md", snoop::date(first)));
-        self.msg = Some(match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, self.report(s, names))) {
-            Ok(()) => format!("Saved {}", file.display()),
-            Err(e) => format!("Could not save: {e}"),
-        });
+        let res = match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, self.report(s, names))) {
+            Ok(()) => Ok(format!("Saved to {}", file.display().to_string().replacen(&std::env::var("HOME").unwrap_or_default(), "~", 1))),
+            Err(e) => Err(format!("Could not save: {e}")),
+        };
+        self.flash = Some((Instant::now(), 1, res));
     }
 
     fn first_unix(s: &Snoop) -> f64 {
@@ -235,7 +236,7 @@ impl Diag {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 let picking = self.pick.is_some();
-                if action_button(ui, if picking { "Choosing..." } else { "Open" }, BLUE, !picking) {
+                if action_button(ui, if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).clicked() {
                     self.pick = Some(Pick::start("Open a Bluetooth capture file"));
                 }
                 let name = self.clean_path().rsplit('/').next().unwrap_or("").to_string();
@@ -243,12 +244,35 @@ impl Diag {
                 if let Some(s) = &s {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
-                        if action_button(ui, "Save report", BLUE, true) {
-                            self.save(s, names);
-                        }
-                        if action_button(ui, "Copy report", BLUE, true) {
-                            ui.ctx().copy_text(self.report(s, names));
-                            self.msg = Some("Report copied to the clipboard".into());
+                        // right to left: Save is added first, so it sits on the right
+                        for (idx, normal, done) in [(1u8, "Save report", "Saved"), (0u8, "Copy report", "Copied")] {
+                            let f = self.flash.as_ref().filter(|f| f.1 == idx && f.0.elapsed() < Duration::from_millis(2500));
+                            let el = f.map_or(0.0, |f| f.0.elapsed().as_secs_f32());
+                            // fade in over 0.15 s, hold, fade out over the last 0.5 s
+                            let fade = if f.is_none() { 0.0 } else if el < 0.15 { el / 0.15 } else if el < 2.0 { 1.0 } else { 1.0 - (el - 2.0) / 0.5 };
+                            let t = fade * fade * (3.0 - 2.0 * fade);
+                            let tint = if matches!(f, Some((_, _, Err(_)))) { RED } else { GREEN };
+                            let label = match f {
+                                Some((_, _, Err(_))) if el > 0.1 && el < 2.35 => "Failed",
+                                Some(_) if el > 0.1 && el < 2.35 => done,
+                                _ => normal,
+                            };
+                            let tip = f.map(|f| match &f.2 {
+                                Ok(t) | Err(t) => t.clone(),
+                            });
+                            let r = action_button(ui, label, mix(BLUE, tint, t), t, true, 128.0);
+                            let r = match tip {
+                                Some(t) => r.on_hover_text(t),
+                                None => r,
+                            };
+                            if r.clicked() {
+                                if idx == 1 {
+                                    self.save(s, names);
+                                } else {
+                                    ui.ctx().copy_text(self.report(s, names));
+                                    self.flash = Some((Instant::now(), 0, Ok("Report copied to the clipboard".into())));
+                                }
+                            }
                         }
                     });
                 }
@@ -273,9 +297,6 @@ impl Diag {
                     ui.label(RichText::new("SHOW").size(11.0).color(DIM));
                 });
             });
-            if let Some(m) = &self.msg {
-                ui.label(RichText::new(m).color(GREEN).size(12.5));
-            }
             ui.separator();
             if let Some(e) = &self.err {
                 ui.label(RichText::new(e).color(RED));
@@ -290,8 +311,6 @@ impl Diag {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.tab {
                 0 => {
                     self.summary_view(ui, s, names);
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Reporting only: this shows what the capture contains; it does not say what to change.").color(DIM));
                 }
                 _ => {
                     for e in s.events.iter().filter(|e| Self::problem(e) || !self.problems_only) {

@@ -419,11 +419,16 @@ pub fn rounded_outline(rr: Rect, rad: f32, arc: usize) -> Vec<Pos2> {
 }
 
 pub fn glow_rect(p: &Painter, r: Rect, g: f32, col: Color32, k: f32) {
+    glow_rect_r(p, r, 2.0, g, col, k);
+}
+
+/// `glow_rect` for a shape with rounded corners of radius `rad`, so the halo follows its outline.
+pub fn glow_rect_r(p: &Painter, r: Rect, rad: f32, g: f32, col: Color32, k: f32) {
     // Rings of rounded-rectangle outlines growing out from the shape, fading with the same quadratic falloff
     // as `glow`, so the halo follows the corners instead of forming a hard-edged rectangle.
     const RINGS: usize = 4;
     const ARC: usize = 4; // segments per corner
-    let rad0 = 2.0f32.min(r.width().min(r.height()) / 2.0);
+    let rad0 = rad.min(r.width().min(r.height()) / 2.0);
     let outline = |e: f32| rounded_outline(r.expand(e), rad0 + e, ARC);
     let n = 4 * (ARC + 1);
     let mut m = Mesh::default();
@@ -447,18 +452,22 @@ pub fn glow_rect(p: &Painter, r: Rect, g: f32, col: Color32, k: f32) {
 
 // ---------- toolbar widgets shared by the Devices and Diagnostics screens ----------
 
-/// Action button in the app's glass style; dimmed and inert when `on` is false.
-pub fn action_button(ui: &mut Ui, label: &str, accent: Color32, on: bool) -> bool {
+/// Action button in the app's glass style; dimmed and inert when `on` is false. `flash` (0..1) fades a state halo in and out (accent is then
+/// the state colour); `min_w` keeps the width steady when the label changes. Returns the response (use `.clicked()`).
+pub fn action_button(ui: &mut Ui, label: &str, accent: Color32, flash: f32, on: bool, min_w: f32) -> eframe::egui::Response {
     let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), if on { Color32::WHITE } else { DIM });
-    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, 36.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 40.0).max(min_w), 36.0), if on { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
     if on {
-        panel(p, r, 10.0, if resp.hovered() { CYAN } else { accent });
+        if flash > 0.0 {
+            glow_rect_r(p, r, 10.0, 12.0, accent, 0.5 * flash); // halo with the button's own corner radius
+        }
+        panel(p, r, 10.0, if resp.hovered() && flash == 0.0 { CYAN } else { accent });
     } else {
         p.rect_filled(r, 10.0, alpha(Color32::WHITE, 0.04));
     }
     p.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
-    on && resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+    if on { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
 }
 
 /// A view tab: plain text with a glowing underline on the current one.
