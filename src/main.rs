@@ -96,6 +96,13 @@ fn soft_halo(p: &egui::Painter, c: Pos2, r: f32, amt: f32) {
     p.circle_stroke(c, r, Stroke::new(1.0, alpha(CYAN, 0.22 * amt)));
 }
 
+const PC_R: f32 = 25.0; // radius of the PC orb at the centre, in screen px
+
+/// Nearest a device's centre may sit to the PC's centre: close is fine, but its edge never touches the PC orb.
+fn min_px(d: &Dev) -> f32 {
+    PC_R + 6.0 + node_rad(d)
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Visual radius of a device's dot/orb.
 fn node_rad(d: &Dev) -> f32 {
@@ -131,7 +138,7 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
             ev.dragging = Some(d.id.clone());
             if let Some(pp) = resp.interact_pointer_pos() {
                 let v = pp - c;
-                ev.over.push((d.id.clone(), (v.y.atan2(v.x), dmap(v.length(), big).clamp(0.6, DMAX))));
+                ev.over.push((d.id.clone(), (v.y.atan2(v.x), dmap(v.length().max(min_px(d)), big).clamp(0.6, DMAX))));
             }
         }
         if resp.drag_stopped() {
@@ -850,7 +857,7 @@ impl App {
                 } else {
                     *sd += (dd - *sd) * k_slow;
                 }
-                N { i, pos: c + vec2(a.cos(), a.sin()) * rmap(*sd, big), ang: a.rem_euclid(TAU), dist: *sd, dim }
+                N { i, pos: c + vec2(a.cos(), a.sin()) * rmap(*sd, big).max(min_px(d)), ang: a.rem_euclid(TAU), dist: *sd, dim }
             })
             .collect();
         nodes.sort_by(|a, b| b.dist.partial_cmp(&a.dist).unwrap());
@@ -934,6 +941,7 @@ impl App {
         let mut groups: Vec<G> = vec![];
         for (ri, mem) in raw.into_iter().enumerate() {
             let center0 = pos2(mem.iter().map(|&i| nodes[i].pos.x).sum::<f32>() / mem.len() as f32, mem.iter().map(|&i| nodes[i].pos.y).sum::<f32>() / mem.len() as f32);
+            let center0 = { let v = center0 - c; let need = PC_R + 6.0 + 22.0; if v.length() < need { c + if v.length() > 1.0 { v / v.length() } else { vec2(0.0, -1.0) } * need } else { center0 } }; // the group icon (radius 22) clears the PC orb too
             let key = key_of[ri].clone().unwrap();
             if let Some(r) = &reveal {
                 if mem.iter().any(|&i| &self.latched[nodes[i].i].id == r) {
@@ -1194,7 +1202,7 @@ impl App {
                     let dl = resp.drag_delta();
                     for &i in &g.members {
                         let v = nodes[i].pos + dl - c;
-                        ev.over.push((self.latched[nodes[i].i].id.clone(), (v.y.atan2(v.x), dmap(v.length(), big).clamp(0.6, DMAX))));
+                        ev.over.push((self.latched[nodes[i].i].id.clone(), (v.y.atan2(v.x), dmap(v.length().max(min_px(&self.latched[nodes[i].i])), big).clamp(0.6, DMAX))));
                     }
                     ev.gdrag = Some(g.members.iter().map(|&i| self.latched[nodes[i].i].id.clone()).collect());
                 }
@@ -1259,7 +1267,7 @@ impl App {
         }
 
         // --- this PC (never moves)
-        let pc_r = 25.0;
+        let pc_r = PC_R;
         let pulse = (t * 1.3).sin() * 0.5 + 0.5;
         p.circle_stroke(c, pc_r + 8.0 + pulse * 8.0, Stroke::new(1.5, add(CYAN, 0.3 * (1.0 - pulse))));
         orb(&p, c, pc_r, Color32::from_rgb(120, 220, 255), 0.35);
