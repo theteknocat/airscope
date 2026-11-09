@@ -1607,7 +1607,7 @@ impl App {
         let l = rect.left() + 24.0;
         p.text(pos2(l, rect.top() + 26.0), Align2::LEFT_CENTER, "2.4 GHz: Wi-Fi networks as hills on the frequencies they use, with Bluetooth's channels directly underneath", FontId::proportional(12.0), DIM);
 
-        let legend_w = 300.0;
+        let legend_w = (rect.width() * 0.22).clamp(150.0, 300.0); // legend shrinks first on narrow windows so the graph keeps its width
         let n_links = self.links.len().max(1) as f32;
         let has_bt = !self.links.is_empty();
         let tail = 26.0 + if has_bt { 34.0 + 26.0 + n_links * 26.0 + 22.0 } else { 26.0 } + 14.0; // content below the axis, plus bottom padding
@@ -1803,8 +1803,10 @@ impl App {
             }
             pl.circle_filled(pos2(r.left() + 10.0, r.center().y), 5.5, col);
             let nm = if n.mine { format!("{} · yours", n.name) } else if n.aps > 1 && n.hidden { format!("{} ×{}", n.name, n.aps) } else { n.name.clone() };
+            let info = pl.layout_no_wrap(format!("ch{} {:.0}", n.chan, n.dbm), FontId::monospace(10.5), DIM);
+            let nm = fit_middle(&pl, &nm, FontId::proportional(12.0), r.width() - 24.0 - 12.0 - info.size().x - 8.0); // full name shows in the hover box
             pl.text(pos2(r.left() + 24.0, r.center().y), Align2::LEFT_CENTER, nm, FontId::proportional(12.0), if n.hidden { DIM } else { TEXT });
-            pl.text(pos2(r.right() - 12.0, r.center().y), Align2::RIGHT_CENTER, format!("ch{} {:.0}", n.chan, n.dbm), FontId::monospace(10.5), DIM);
+            pl.galley(pos2(r.right() - 12.0 - info.size().x, r.center().y - info.size().y / 2.0), info, DIM);
         }
         if lmax > 0.0 {
             scrollbar(&p, Rect::from_min_max(pos2(lview.right() - 5.0, lview.top()), pos2(lview.right(), lview.bottom())), loff, lmax, lview.height(), lview.height() + lmax, CYAN);
