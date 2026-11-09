@@ -754,7 +754,7 @@ fn strip(ui: &mut egui::Ui, w: f32, s: &Snoop, bursts: &[(f64, f64, usize)], who
             }
             (if one_day { format!("{} link drops \u{00b7} {day}", g.2.len()) } else { format!("{} link drops", g.2.len()) }, lines)
         };
-        *tip.borrow_mut() = Some(crate::TipC { anchor: pos2(cx, a.top()), col, title, sub: lines, side: None });
+        *tip.borrow_mut() = Some(crate::TipC { anchor: pos2(cx, a.top()), col, title, sub: lines, hint: None, side: None });
     }
     // times under the gridlines (as many as fit without touching), the exact start and end at the edges; when the span
     // crosses midnight the start and the first label of each later day also carry the date

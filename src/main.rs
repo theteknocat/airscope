@@ -135,6 +135,7 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
             ev.hover = Some(ni);
         }
         if can_drag && resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             ev.dragging = Some(d.id.clone());
             if let Some(pp) = resp.interact_pointer_pos() {
                 let v = pp - c;
@@ -758,15 +759,29 @@ impl App {
         // --- view: zoom + pan. The background is registered first (and has no hand cursor).
         let base = (rect.width().min(rect.height()) * 0.5 - 28.0).max(120.0);
         let bg = ui.interact(rect, ui.scope_id().with("radar_bg"), Sense::click_and_drag());
+        // the radar's grab area: inside the outermost ring plus a margin (the rest of the screen is just background)
+        let (c_now, reach) = (rect.center() + self.pan, base * self.zoom + 28.0);
+        let in_reach = |q: Pos2| (q - c_now).length() <= reach;
+        let ok_id = egui::Id::new("radar_pan_ok");
+        if bg.drag_started() {
+            let ok = bg.interact_pointer_pos().map_or(false, in_reach);
+            ui.ctx().data_mut(|d| d.insert_temp(ok_id, ok));
+        }
+        let pan_ok = ui.ctx().data(|d| d.get_temp::<bool>(ok_id)).unwrap_or(false);
+        if bg.dragged() && pan_ok {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing); // closed hand only while dragging
+        } else if bg.hovered() && bg.hover_pos().map_or(false, in_reach) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab); // open hand over the radar (an orb under the pointer shows the pointing hand)
+        }
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let dt = ui.input(|i| i.stable_dt).min(0.05) * std::env::var("AIRSCOPE_SLOW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0); // debug aid
         let k = 1.0 - (-dt * 18.0).exp(); // ~150 ms ease for node transitions
         let k_slow = 1.0 - (-dt * 5.0).exp(); // ~0.5 s ease for signal-driven moves
-        if bg.dragged() {
+        if bg.dragged() && pan_ok {
             self.pan += bg.drag_delta();
             self.reset_view = false; // taking over cancels a running reset
         }
-        if bg.double_clicked() {
+        if bg.double_clicked() && bg.interact_pointer_pos().map_or(false, in_reach) {
             self.reset_view = true;
         }
         if self.reset_view {
@@ -1198,6 +1213,7 @@ impl App {
                 let resp = hit(ui, Rect::from_center_size(g.center, Vec2::splat(46.0)), ui.scope_id().with(("gi", &g.key)), Sense::click_and_drag());
                 hovered = resp.hovered();
                 if resp.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                     // move every member by the pointer movement (saved as their positions, like dragging one device)
                     let dl = resp.drag_delta();
                     for &i in &g.members {
@@ -1344,13 +1360,13 @@ impl App {
                 Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
                 None => d.vendor.clone(),
             };
-            let tc = TipC { anchor: disp[ni] + vec2(0.0, -10.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], side: None };
+            let tc = TipC { anchor: disp[ni] + vec2(0.0, -10.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], hint: Some("Click for details · Drag to move".into()), side: None };
             self.tip_want = Some(tc);
         } else if let Some(gi) = group_hover {
             let g = &groups[gi];
             let names: Vec<String> = g.members.iter().take(4).map(|&i| self.latched[nodes[i].i].name.clone()).collect();
             let more = if g.members.len() > 4 { format!(" +{}", g.members.len() - 4) } else { String::new() };
-            let tc = TipC { anchor: g.center + vec2(0.0, -20.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{} · click to expand", names.join(", "), more)], side: None };
+            let tc = TipC { anchor: g.center + vec2(0.0, -20.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{}", names.join(", "), more)], hint: Some("Click to expand · Drag to move".into()), side: None };
             self.tip_want = Some(tc);
         }
 
@@ -1836,9 +1852,9 @@ impl App {
             let title = format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() });
             self.tip_want = Some(if from_legend {
                 // beside the legend, level with the pointer, so the rows above and below stay readable
-                TipC { anchor: pos2(0.0, q.y), col: col_of(n), title, sub: subs, side: Some(lview.left() - 14.0) }
+                TipC { anchor: pos2(0.0, q.y), col: col_of(n), title, sub: subs, hint: None, side: Some(lview.left() - 14.0) }
             } else {
-                TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y), col: col_of(n), title, sub: subs, side: None }
+                TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y), col: col_of(n), title, sub: subs, hint: None, side: None }
             });
         }
 
@@ -1893,7 +1909,7 @@ impl App {
                 if ui.interact(slot, ui.id().with(("chan_dot", c, k)), Sense::hover()).hovered() {
                     p.circle_filled(cc, rad + 4.0, alpha(col_of(o), 0.16));
                     tile_h = nets.iter().position(|n| std::ptr::eq(n, *o));
-                    yn_tip = Some(TipC { anchor: hq, col: col_of(o), title: nm.clone(), sub: vec![format!("ch {} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" })], side: None });
+                    yn_tip = Some(TipC { anchor: hq, col: col_of(o), title: nm.clone(), sub: vec![format!("ch {} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" })], hint: None, side: None });
                 }
             }
             if others.len() > room {
@@ -1905,7 +1921,7 @@ impl App {
             self.tip_want = Some(t);
         }
         if let Some((q, title, lines)) = tip_box {
-            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, side: None });
+            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, hint: None, side: None });
         }
         if let Some((id, q)) = pick {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
@@ -2035,7 +2051,7 @@ impl App {
                 for &i in &items[g] {
                     let d = &devs[i];
                     let (r, resp) = ui.allocate_exact_size(vec2(w, 54.0), Sense::click());
-                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).hint("Click for details");
+                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                     let r = r.translate(vec2(14.0, 0.0));
                     let col = kind_col(d.kind);
                     let p = ui.painter();
@@ -2106,7 +2122,7 @@ impl Hint for egui::Response {
                 _ => (text.clone(), String::new()), // one sentence: all title, wrapped when long
             };
             let anchor = self.ctx.input(|i| i.pointer.hover_pos()).unwrap_or(self.rect.center_bottom());
-            let c = TipC { anchor, col: CYAN, title, sub: if rest.is_empty() { vec![] } else { vec![rest] }, side: None };
+            let c = TipC { anchor, col: CYAN, title, sub: if rest.is_empty() { vec![] } else { vec![rest] }, hint: None, side: None };
             self.ctx.data_mut(|d| d.insert_temp(egui::Id::new("hint_want"), Some(c)));
         }
         self
@@ -2115,6 +2131,7 @@ impl Hint for egui::Response {
 
 #[derive(Clone)]
 struct TipC {
+    hint: Option<String>, // how to interact, shown last under a divider (dim)
     anchor: Pos2,
     col: Color32,
     title: String,
@@ -2123,7 +2140,7 @@ struct TipC {
 }
 
 fn draw_tip(p: &egui::Painter, c: &TipC, bounds: Rect) {
-    tip(p, c.anchor, bounds, &c.title, &c.sub, c.col, c.side);
+    tip(p, c.anchor, bounds, &c.title, &c.sub, c.hint.as_deref(), c.col, c.side);
 }
 
 /// How strongly the radar sweep is lighting up a point (1 as it passes, fading over ~0.9 rad behind it).
@@ -2178,13 +2195,15 @@ struct Pop {
 }
 
 /// Multi-line hover box above `anchor`.
-fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[String], col: Color32, side: Option<f32>) {
+fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[String], hint: Option<&str>, col: Color32, side: Option<f32>) {
     let g0 = p.layout(title.to_string(), FontId::proportional(14.0), Color32::WHITE, 312.0);
     let gs: Vec<_> = lines.iter().map(|l| p.layout(l.clone(), FontId::proportional(12.0), TEXT, 312.0)).collect();
-    let w = (g0.size().x.max(gs.iter().map(|g| g.size().x).fold(0.0, f32::max)) + 28.0).clamp(60.0, 340.0); // fits its text, up to 340 px
+    let gh = hint.map(|h| p.layout(h.to_string(), FontId::proportional(11.5), DIM, 312.0));
+    let w = (g0.size().x.max(gs.iter().map(|g| g.size().x).fold(0.0, f32::max)).max(gh.as_ref().map_or(0.0, |g| g.size().x)) + 28.0).clamp(60.0, 340.0); // fits its text, up to 340 px
     // equal padding (12 px) above and below the text; the gaps between title and lines only when there are lines
     let th = if title.is_empty() { 0.0 } else { g0.size().y + if gs.is_empty() { 0.0 } else { 6.0 } };
-    let h = 12.0 + th + gs.iter().map(|g| g.size().y).sum::<f32>() + 5.0 * gs.len().saturating_sub(1) as f32 + 12.0;
+    let hint_h = gh.as_ref().map_or(0.0, |g| 9.0 + 1.0 + 9.0 + g.size().y); // gap, divider, gap, hint text
+    let h = 12.0 + th + gs.iter().map(|g| g.size().y).sum::<f32>() + 5.0 * gs.len().saturating_sub(1) as f32 + hint_h + 12.0;
     let (x, y) = match side {
         Some(rx) => ((rx - w).max(bounds.left() + 8.0), (anchor.y - h / 2.0).clamp(bounds.top() + 8.0, (bounds.bottom() - h - 8.0).max(bounds.top() + 8.0))),
         None => ((anchor.x - w / 2.0).clamp(bounds.left() + 8.0, bounds.right() - w - 8.0), if anchor.y - h - 14.0 < bounds.top() + 8.0 && anchor.y < bounds.top() + h + 30.0 { (anchor.y + 22.0).min(bounds.bottom() - h - 8.0) } else { (anchor.y - h - 14.0).max(bounds.top() + 8.0) }),
@@ -2197,10 +2216,16 @@ fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[Stri
         p.galley(pos2(r.left() + 14.0, yy), g0, Color32::WHITE);
         yy += hh + 6.0;
     }
-    for g in gs {
-        let gh = g.size().y;
+    let n = gs.len();
+    for (i, g) in gs.into_iter().enumerate() {
+        let lh = g.size().y;
         p.galley(pos2(r.left() + 14.0, yy), g, TEXT);
-        yy += gh + 5.0;
+        yy += lh + if i + 1 < n { 5.0 } else { 0.0 };
+    }
+    if let Some(g) = gh {
+        yy += 9.0;
+        p.line_segment([pos2(r.left() + 14.0, yy), pos2(r.right() - 14.0, yy)], Stroke::new(1.0, alpha(col, 0.25)));
+        p.galley(pos2(r.left() + 14.0, yy + 10.0), g, DIM);
     }
 }
 
