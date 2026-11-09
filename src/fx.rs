@@ -456,7 +456,7 @@ pub fn glow_rect_r(p: &Painter, r: Rect, rad: f32, g: f32, col: Color32, k: f32)
 /// the state colour); `min_w` keeps the width steady when the label changes. Returns the response (use `.clicked()`).
 pub fn action_button(ui: &mut Ui, icon: Option<Glyph>, label: &str, accent: Color32, flash: f32, on: bool, min_w: f32) -> eframe::egui::Response {
     let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), if on { Color32::WHITE } else { DIM });
-    let extra = if icon.is_some() { 26.0 } else { 0.0 };
+    let extra = if icon.is_some() && !label.is_empty() { 26.0 } else { 0.0 };
     let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 40.0 + extra).max(min_w), 36.0), if on { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
     if on {
@@ -470,7 +470,7 @@ pub fn action_button(ui: &mut Ui, icon: Option<Glyph>, label: &str, accent: Colo
     // icon and text are centred together as one block
     let x0 = r.center().x - (g.size().x + extra) / 2.0;
     if let Some(ic) = icon {
-        glyph(p, ic, pos2(x0 + 8.0, r.center().y), 7.5, if on { Color32::WHITE } else { DIM });
+        glyph(p, ic, if label.is_empty() { r.center() } else { pos2(x0 + 8.0, r.center().y) }, 7.5, if on { Color32::WHITE } else { DIM });
     }
     p.galley(pos2(x0 + extra, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
     if on { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
@@ -558,7 +558,7 @@ pub fn view_tab(ui: &mut Ui, label: &str, on: bool) -> bool {
 }
 
 /// A small on/off toggle for what the view shows: rounded outline with a lamp, nothing like the action buttons.
-pub fn toggle_chip(ui: &mut Ui, label: &str, on: bool, col: Color32) -> bool {
+pub fn toggle_chip(ui: &mut Ui, label: &str, on: bool, col: Color32, tip: &str) -> bool {
     let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(12.5), Color32::WHITE);
     let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 44.0, 28.0), Sense::click());
     let p = ui.painter();
@@ -571,7 +571,7 @@ pub fn toggle_chip(ui: &mut Ui, label: &str, on: bool, col: Color32) -> bool {
         p.circle_stroke(c, 4.0, Stroke::new(1.2, DIM));
     }
     p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.5), if on { Color32::WHITE } else { DIM });
-    resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+    resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip).clicked()
 }
 
 /// Draws `icon` and `label` as one block centred in `r` (for buttons that are drawn by hand).

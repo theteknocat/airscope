@@ -680,9 +680,7 @@ impl App {
             panel(&p, r, 15.0, *c);
             dot(&p, pos2(r.left() + 16.0, r.center().y), 3.5, *c, 0.2);
             p.galley(pos2(r.left() + 28.0, r.center().y - g.size().y / 2.0), g, TEXT);
-            if lvl < 2 {
-                hit(ui, r, ui.scope_id().with(("chip", i)), Sense::hover()).on_hover_text(tip.clone());
-            }
+            ui.interact(r, ui.scope_id().with(("chip", i)), Sense::hover()).on_hover_text(tip.clone()); // status only: no hand cursor
             x -= w + 10.0;
         }
         if !self.errs.is_empty() {
@@ -1404,14 +1402,14 @@ impl App {
         }
 
         // --- zoom HUD
-        let hud = Rect::from_min_size(pos2(rect.left() + 18.0, rect.bottom() - 48.0), vec2(300.0, 34.0));
+        let hud = Rect::from_min_size(pos2(rect.left() + 18.0, rect.bottom() - 48.0), vec2(170.0, 34.0));
         panel(&p, hud, 17.0, CYAN);
         lcd(&p, pos2(hud.left() + 18.0, hud.center().y), Align2::LEFT_CENTER, &format!("ZOOM {:.1}x", self.zoom), 12.0, CYAN);
-        p.text(pos2(hud.left() + 116.0, hud.center().y), Align2::LEFT_CENTER, "scroll · drag · double-click", FontId::proportional(11.0), DIM);
         let rb = Rect::from_center_size(pos2(hud.right() - 28.0, hud.center().y), vec2(42.0, 22.0));
         let rr = hit(ui, rb, ui.scope_id().with("reset_view"), Sense::click());
         p.rect_filled(rb, 9.0, alpha(CYAN, if rr.hovered() { 0.35 } else { 0.15 }));
-        p.text(rb.center(), Align2::CENTER_CENTER, "1:1", FontId::monospace(11.0), Color32::WHITE);
+        glyph(&p, Glyph::Refresh, rb.center(), 6.5, Color32::WHITE);
+        let rr = rr.on_hover_text("Reset zoom and position");
         if rr.clicked() {
             self.reset_view = true;
         }
@@ -1928,19 +1926,24 @@ impl App {
                 });
             });
             ui.add_space(10.0);
-            // filters: right of the tabs when there is room, on a row of their own when not
-            let narrow = ui.available_width() < 820.0;
+            // filters: right of the tabs
             let (show, hide) = (&mut self.show, &mut self.hide_unnamed);
             let mut chips = |ui: &mut egui::Ui, rev: bool| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                ui.label(egui::RichText::new("SHOW").size(11.0).color(DIM));
-                let mut all = vec![(0usize, "Wi-Fi", AMBER), (1, "Bluetooth", BLUE), (2, "Network", GREEN), (3, "Hide unnamed", MAGENTA)];
+                let mut all = vec![(0usize, "Wi-Fi", AMBER), (1, "Bluetooth", BLUE), (2, "LAN", GREEN), (3, "Hide unnamed", MAGENTA)];
                 if rev {
                     all.reverse();
                 }
                 for (k, lbl, col) in all {
                     let on = if k == 3 { *hide } else { show[k] };
-                    if toggle_chip(ui, lbl, on, col) {
+                    let what = match k { 0 => "Wi-Fi networks", 1 => "Bluetooth devices", 2 => "network (LAN) devices", _ => "devices without a name" };
+                    let tip = match (k == 3, on) {
+                        (false, true) => format!("Showing {what}. Click to hide them."),
+                        (false, false) => format!("Hiding {what}. Click to show them."),
+                        (true, true) => format!("Hiding {what}. Click to show them."),
+                        (true, false) => format!("Showing {what}. Click to hide them."),
+                    };
+                    if toggle_chip(ui, lbl, on, col, &tip) {
                         if k == 3 { *hide = !*hide } else { show[k] = !show[k] }
                     }
                 }
@@ -1952,14 +1955,8 @@ impl App {
                         self.scope = i as u8;
                     }
                 }
-                if !narrow {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chips(ui, true));
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chips(ui, true));
             });
-            if narrow {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| chips(ui, false));
-            }
             ui.separator();
         });
         // --- list

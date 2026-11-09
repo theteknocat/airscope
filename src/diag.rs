@@ -398,6 +398,31 @@ impl Diag {
         }
     }
 
+    /// Open capture's name, loading progress, LIVE lamp and the latest status message.
+    fn name_row(&mut self, ui: &mut egui::Ui) {
+        let name = self.shown_name();
+        let reserve = 20.0 + if self.pos < self.total { 90.0 } else { 0.0 } + if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) { 80.0 } else { 0.0 };
+        if name.is_empty() {
+            ui.label(RichText::new("No capture opened").color(DIM));
+        } else {
+            let font = egui::FontId::proportional(15.0);
+            let shown = crate::fit_middle(ui.painter(), &name, font, (ui.available_width() - reserve).max(60.0));
+            let r = ui.label(RichText::new(&shown).color(TEXT).size(15.0));
+            if shown != name {
+                r.on_hover_text(name);
+            }
+        }
+        if self.pos < self.total {
+            ui.label(RichText::new(format!("loading {}%", self.pos * 100 / self.total)).color(DIM));
+        }
+        if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) {
+            lamp(ui, GREEN, "LIVE", true);
+        }
+        if let Some((err, m)) = &self.rec_msg {
+            ui.add(egui::Label::new(RichText::new(m).size(12.5).color(if *err { RED } else { DIM })).truncate());
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, names: &Names) {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, BG);
@@ -476,11 +501,14 @@ impl Diag {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 // the left group gets what the Copy/Save buttons leave, and its texts are cut short instead of running into them
-                let left_w = (ui.available_width() - if s.is_some() { 330.0 } else { 0.0 }).max(200.0);
+                // Narrow window: the buttons shrink to icons (tooltips keep the names); the file name is cut in the middle if it still does not fit
+                let avail = ui.available_width();
+                let stacked = s.is_some() && avail < 930.0;
+                let left_w = (avail - if s.is_none() { 0.0 } else if stacked { 100.0 } else { 330.0 }).max(200.0);
                 ui.allocate_ui_with_layout(vec2(left_w, 34.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 if self.rec.is_some() {
-                    if action_button(ui, Some(Glyph::Stop), "Stop", RED, 0.6, true, 0.0).clicked() {
+                    if action_button(ui, Some(Glyph::Stop), if stacked { "" } else { "Stop" }, RED, 0.6, true, 0.0).on_hover_text("Stop the recording (asks for your password)").clicked() {
                         if let Some(r) = self.rec.as_mut() {
                             self.rec_msg = Some(match r.stop() {
                                 Ok(()) => (false, "Enter your password to end the capture.".to_string()),
@@ -492,7 +520,7 @@ impl Diag {
                         lamp(ui, RED, &format!("REC  {} left", hms(r.left().as_secs())), true);
                     }
                 } else {
-                    if action_button(ui, Some(Glyph::Record), "Record", RED, 0.0, true, 0.0).clicked() {
+                    if action_button(ui, Some(Glyph::Record), if stacked { "" } else { "Record" }, RED, 0.0, true, 0.0).on_hover_text("Record Bluetooth activity (asks for your password)").clicked() {
                         match Recording::start(Duration::from_secs(CAPS[self.cap_idx].1)) {
                             Ok(r) => {
                                 self.follow = Some(r.file.clone());
@@ -511,20 +539,10 @@ impl Diag {
                 }
                 ui.separator();
                 let picking = self.pick.is_some();
-                if action_button(ui, Some(Glyph::Open), if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).clicked() {
+                if action_button(ui, Some(Glyph::Open), if stacked { "" } else if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).on_hover_text("Open a capture file").clicked() {
                     self.pick = Some(Pick::start("Open a Bluetooth capture file"));
                 }
-                let name = self.shown_name();
-                ui.add(egui::Label::new(if name.is_empty() { RichText::new("No capture opened").color(DIM) } else { RichText::new(name).color(TEXT).size(15.0) }).truncate());
-                if self.pos < self.total {
-                    ui.label(RichText::new(format!("loading {}%", self.pos * 100 / self.total)).color(DIM));
-                }
-                if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) {
-                    lamp(ui, GREEN, "LIVE", true);
-                }
-                if let Some((err, m)) = &self.rec_msg {
-                    ui.add(egui::Label::new(RichText::new(m).size(12.5).color(if *err { RED } else { DIM })).truncate());
-                }
+                self.name_row(ui);
                 });
                 if let Some(s) = &s {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -547,9 +565,10 @@ impl Diag {
                             });
                             // the icon turns into a tick (or a cross) while the result shows
                             let ic = if label == normal { if idx == 1 { Glyph::Save } else { Glyph::Copy } } else if tint == RED { Glyph::Cross } else { Glyph::Check };
-                            let r = action_button(ui, Some(ic), label, mix(BLUE, tint, t), t, true, 150.0);
+                            let r = action_button(ui, Some(ic), if stacked { "" } else { label }, mix(BLUE, tint, t), t, true, if stacked { 0.0 } else { 150.0 });
                             let r = match tip {
                                 Some(t) => r.on_hover_text(t),
+                                None if stacked => r.on_hover_text(normal),
                                 None => r,
                             };
                             if r.clicked() {
@@ -576,13 +595,12 @@ impl Diag {
                 if self.tab != 2 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        if self.tab > 0 && toggle_chip(ui, "Problems only", self.problems_only, AMBER) {
+                        if self.tab > 0 && toggle_chip(ui, "Problems only", self.problems_only, AMBER, if self.problems_only { "Showing only drops and slow answers. Click to show every event." } else { "Showing every event. Click to show only drops and slow answers." }) {
                             self.problems_only = !self.problems_only;
                         }
-                        if toggle_chip(ui, "Device addresses", self.addrs, CYAN) {
+                        if toggle_chip(ui, "Device addresses", self.addrs, CYAN, if self.addrs { "Showing full device addresses. Click to hide them." } else { "Addresses are hidden. Click to show the full device addresses." }) {
                             self.addrs = !self.addrs;
                         }
-                        ui.label(RichText::new("SHOW").size(11.0).color(DIM));
                     });
                 }
             });
