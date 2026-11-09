@@ -1555,7 +1555,7 @@ impl App {
     /// `crowd(i)` = estimated Wi-Fi crowding (0..1) on Bluetooth channel i: busier channels are drawn dimmer.
     /// Returns (y after the rows, hovered row, clicked row). Every row has the same full-width hit area.
     #[allow(clippy::too_many_arguments)]
-    fn bt_rows(&self, ui: &egui::Ui, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, end_x: f32, mut y: f32, row_x: (f32, f32), crowd: &dyn Fn(usize) -> f32) -> (f32, Option<usize>, Option<usize>) {
+    fn bt_rows(&self, ui: &egui::Ui, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, mut y: f32, row_x: (f32, f32), crowd: &dyn Fn(usize) -> f32) -> (f32, Option<usize>, Option<usize>) {
         let (mut hov, mut clk) = (None, None);
         for (li, l) in self.links.iter().enumerate() {
             let row = Rect::from_min_max(pos2(row_x.0, y - 3.0), pos2(row_x.1, y + 21.0));
@@ -1665,7 +1665,8 @@ impl App {
                 labels.push((i, r, shown, tries >= 6));
             }
         }
-        let mut hover: Option<usize> = None;
+        let tile_id = egui::Id::new("spectrum_tile_hover");
+        let mut hover: Option<usize> = ui.ctx().data(|d| d.get_temp::<Option<usize>>(tile_id)).flatten(); // a dot in a tile (seen last frame) lights its hill like the list does
         let lx = gx1 + 44.0;
         let card = Rect::from_min_max(pos2(lx - 12.0, frame.top()), pos2(rect.right() - 18.0, frame.bottom()));
         panel(&p, card, 14.0, CYAN);
@@ -1781,7 +1782,7 @@ impl App {
         let mid = (gx0 + gx1) / 2.0;
         lcd(&p, pos2(mid, yc + 8.0), Align2::CENTER_CENTER, &title, 12.0, BLUE);
         if has_bt {
-            let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, (l + 12.0, gx1 + 12.0), &crowd);
+            let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, yc + 26.0, (l + 12.0, gx1 + 12.0), &crowd);
             if let (Some(i), Some(q)) = (bt_click, ptr) {
                 pick = Some((self.links[i].mac.clone(), q));
             }
@@ -1848,7 +1849,9 @@ impl App {
         let pr = Rect::from_min_max(pos2(l, cy), pos2(rect.right() - 24.0, (cy + 112.0).min(rect.bottom() - 8.0)));
         panel(&p, pr, 12.0, GREEN);
         lcd(&p, pos2(pr.left() + 14.0, pr.top() + 16.0), Align2::LEFT_CENTER, "YOUR NETWORK", 11.5, GREEN);
-        ui.interact(Rect::from_min_size(pr.min, vec2(240.0, pr.height())), ui.id().with("yournet"), Sense::hover()).on_hover_text("Channels 1, 6 and 11 are the only Wi-Fi channels that don't overlap each other, so they are the ones worth choosing between.");
+        let mut yn_tip: Option<TipC> = None;
+        let mut tile_h: Option<usize> = None;
+        let hq = ui.input(|i| i.pointer.hover_pos()).unwrap_or(pr.center());
         let mine = nets.iter().find(|n| n.mine && !n.name.contains("Guest")).or_else(|| nets.iter().find(|n| n.mine));
         match mine {
             None => {
@@ -1874,8 +1877,7 @@ impl App {
             led_bar(&p, Rect::from_min_size(pos2(tr.left() + 12.0, tr.top() + 38.0), vec2(tr.width() - 24.0, 9.0)), load, col, 14);
             // one dot per other network heard on or overlapping this channel (solid = same channel, ring = partly)
             let f = chan_f(c);
-            let mine_here = mine.filter(|mn| (mn.f - f).abs() < 22.0); // your network is a bigger dot in every tile it is on or overlaps
-            let mut others: Vec<&Net> = nets.iter().filter(|o| (!o.mine && o.dbm > -85.0 && (o.f - f).abs() < 22.0) || mine_here.map_or(false, |mn| std::ptr::eq(mn, *o))).collect();
+            let mut others: Vec<&Net> = nets.iter().filter(|o| (o.mine || o.dbm > -85.0) && (o.f - f).abs() < 22.0).collect(); // all of your networks (main, guest) are bigger dots in every tile they touch
             others.sort_by(|a, b| b.mine.cmp(&a.mine).then(b.dbm.partial_cmp(&a.dbm).unwrap_or(std::cmp::Ordering::Equal))); // yours first
             let room = (((tr.width() - 24.0) / 17.0) as usize).max(1);
             for (k, o) in others.iter().take(room).enumerate() {
@@ -1888,18 +1890,21 @@ impl App {
                     p.circle_filled(cc, rad - 0.5, alpha(col_of(o), if o.mine { 0.7 } else { 0.4 })); // dimmer: only partly overlapping
                 }
                 let nm = if o.name.is_empty() { "(unnamed)".to_string() } else if o.mine { format!("{} (yours)", o.name) } else { o.name.clone() };
-                ui.interact(Rect::from_center_size(cc, vec2(15.0, 18.0)), ui.id().with(("chan_dot", c, k)), Sense::hover()).on_hover_text(format!("{nm} · ch{} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" }));
+                // hit area: the whole 17 px slot, 30 px tall (the dot itself stays small); a faint halo shows which dot is meant
+                let slot = Rect::from_center_size(cc, vec2(17.0, 30.0)).intersect(tr);
+                if ui.interact(slot, ui.id().with(("chan_dot", c, k)), Sense::hover()).hovered() {
+                    p.circle_filled(cc, rad + 4.0, alpha(col_of(o), 0.16));
+                    tile_h = nets.iter().position(|n| std::ptr::eq(n, *o));
+                    yn_tip = Some(TipC { anchor: hq, col: col_of(o), title: nm.clone(), sub: vec![format!("ch {} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" })], boxed: true, side: None });
+                }
             }
             if others.len() > room {
                 p.text(pos2(tr.right() - 12.0, tr.bottom() - 20.0), Align2::RIGHT_CENTER, format!("+{}", others.len() - room), FontId::proportional(11.0), DIM);
             }
-            let same = others.iter().filter(|o| (o.f - f).abs() < 1.0).count();
-            ui.interact(tr, ui.id().with(("chan_tile", c)), Sense::hover()).on_hover_text(format!(
-                "Channel {c}: {same} other network{} on it, {} partly overlapping{}",
-                if same == 1 { "" } else { "s" },
-                others.len() - same,
-                if mine_here.is_some() { ". Your network is here." } else { "" }
-            ));
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(tile_id, tile_h));
+        if let Some(t) = yn_tip {
+            self.tip_want = Some(t);
         }
         if let Some((q, title, lines)) = tip_box {
             self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, boxed: true, side: None });
