@@ -554,17 +554,18 @@ pub fn glyph(p: &Painter, g: Glyph, c: Pos2, s: f32, col: Color32) {
 /// A view tab: plain text with a glowing underline on the current one.
 pub fn view_tab(ui: &mut Ui, label: &str, on: bool, badge: usize) -> bool {
     let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(16.0), Color32::WHITE);
-    let extra = if badge > 0 { 24.0 } else { 0.0 };
+    // count badge: a circle for one digit, growing into a pill as the number gets longer
+    let bg = (badge > 0).then(|| ui.painter().layout_no_wrap(badge.to_string(), FontId::monospace(11.0), Color32::from_rgb(8, 16, 30)));
+    let bw = bg.as_ref().map_or(0.0, |b| (b.size().x + 12.0).max(18.0));
+    let extra = if bg.is_some() { bw + 6.0 } else { 0.0 };
     let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 32.0 + extra, 34.0), Sense::click());
     let p = ui.painter();
     let col = if on { Color32::WHITE } else if resp.hovered() { TEXT } else { DIM };
     p.text(pos2(r.left() + 16.0 + g.size().x / 2.0, r.center().y - 2.0), Align2::CENTER_CENTER, label, FontId::proportional(16.0), col);
-    if badge > 0 {
-        // a small solid cyan circle with the count, like the group counts on the radar
-        let c = pos2(r.left() + 16.0 + g.size().x + 14.0, r.center().y - 2.0);
-        p.circle_filled(c, 9.0, CYAN); // flat, no glow
-        let txt = if badge > 99 { "99+".to_string() } else { badge.to_string() };
-        p.text(c, Align2::CENTER_CENTER, txt, FontId::monospace(if badge > 99 { 9.0 } else { 11.0 }), Color32::from_rgb(8, 16, 30));
+    if let Some(b) = bg {
+        let c = pos2(r.left() + 16.0 + g.size().x + 6.0 + bw / 2.0, r.center().y - 2.0);
+        p.rect_filled(Rect::from_center_size(c, vec2(bw, 18.0)), 9.0, CYAN); // flat, no glow
+        p.galley(c - b.size() / 2.0, b, Color32::PLACEHOLDER);
     }
     if on {
         let u = Rect::from_min_size(pos2(r.left() + 10.0, r.bottom() - 4.0), vec2(r.width() - 20.0, 3.0));

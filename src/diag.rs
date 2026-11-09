@@ -14,6 +14,18 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// How far a scroll area reaches into the page's right margin, so its floating scrollbar sits beside the content, not over it.
+const SCROLL_MARGIN: f32 = 18.0;
+
+/// Runs `f` (a scroll area) in a child region that extends `SCROLL_MARGIN` past the right edge of the page content.
+fn scroll_in_margin<R>(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui) -> R) {
+    let r = ui.available_rect_before_wrap();
+    let wide = Rect::from_min_max(r.min, pos2(r.right() + SCROLL_MARGIN, r.bottom()));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(wide), |ui| {
+        f(ui);
+    });
+}
+
 /// Capture lengths offered when recording: label, seconds.
 const CAPS: [(&str, u64); 4] = [("15 minutes", 900), ("1 hour", 3600), ("4 hours", 14400), ("12 hours", 43200)];
 
@@ -268,7 +280,7 @@ impl Diag {
 
     /// Visual summary: headline tiles, a strip showing when the drops happened, then one card per device.
     fn summary_view(&self, ui: &mut egui::Ui, s: &Snoop, names: &Names) {
-        let w = ui.available_width() - 6.0;
+        let w = ui.available_width() - SCROLL_MARGIN; // the scroll area reaches into the right margin; content stops at the edge
         let gap = 12.0;
         let drops = s.drops().count();
         let bursts = &self.bursts;
@@ -313,7 +325,7 @@ impl Diag {
             let px = ui.painter().layout_no_wrap(snoop::message(e), font.clone(), Color32::WHITE).size().x;
             self.ev_px.push(px);
         }
-        let w = ui.available_width() - 8.0;
+        let w = ui.available_width();
         let (x_time, x_off, x_dev, x_msg) = (16.0, 196.0, 212.0, 436.0);
         let dev_w = x_msg - x_dev - 14.0;
         let msg_w = (w - x_msg - 14.0).max(160.0);
@@ -335,7 +347,7 @@ impl Diag {
             lines(ev_px.get(i).copied().unwrap_or(0.0), msg_w).max(lines(dp, dev_w)) * line_h + 18.0
         };
         let total: f32 = self.tl.iter().map(|&i| height(i)).sum();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, vp| {
+        scroll_in_margin(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, vp| {
             let (rect, _) = ui.allocate_exact_size(vec2(w, total.max(1.0)), Sense::hover());
             let p = ui.painter().clone();
             let mut y = 0.0;
@@ -362,7 +374,7 @@ impl Diag {
                 }
                 y += h;
             }
-        });
+        }));
     }
 
     /// The saved sessions, newest first: when each was started, how long, how big, how many drops, with Open and Copy path.
@@ -392,7 +404,7 @@ impl Diag {
         }
         if self.sessions.is_empty() {
             // nothing saved: ghost cards in the real layout, a title saying why, and the pointer at Record/Open
-            let w = ui.available_width() - 8.0;
+            let w = ui.available_width();
             ui.add_space(14.0);
             let (tr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
             lcd(ui.painter(), tr.center(), Align2::CENTER_CENTER, "NO SAVED CAPTURES YET", 13.0, alpha(TEXT, 0.8));
@@ -416,11 +428,11 @@ impl Diag {
             }
             return;
         }
-        let w = ui.available_width() - 8.0;
+        let w = ui.available_width();
         let mut open: Option<PathBuf> = None;
         let mut copy: Option<PathBuf> = None;
         let mut del: Option<PathBuf> = None;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        scroll_in_margin(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for sess in &self.sessions {
                 let (r, _) = ui.allocate_exact_size(vec2(w, 84.0), Sense::hover());
                 let recording = self.rec.as_ref().map_or(false, |x| x.file == sess.capture);
@@ -465,7 +477,7 @@ impl Diag {
                 ui.advance_cursor_after_rect(r); // the button area above is a child Ui that moved the cursor to its own bottom
                 ui.add_space(10.0);
             }
-        });
+        }));
         if let Some(c) = open {
             self.path = c.display().to_string();
             self.tab = 0;
@@ -537,7 +549,7 @@ impl Diag {
     /// middle holding the two ways to begin, drawn large, and a link to the Library.
     fn empty_view(&mut self, ui: &mut egui::Ui) {
         let top = ui.cursor().top();
-        let w = ui.available_width() - 6.0;
+        let w = ui.available_width();
         let gap = 12.0;
         let tw = (w - gap * 3.0) / 4.0;
         let ghost = alpha(DIM, 0.45);
@@ -847,7 +859,7 @@ impl Diag {
                 return;
             };
             if self.tab == 0 {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.summary_view(ui, s, names));
+                scroll_in_margin(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.summary_view(ui, s, names)));
             } else if self.tl.is_empty() {
                 ui.label(RichText::new(if self.problems_only { "No problems in this capture." } else { "No events in this capture." }).color(DIM));
             } else {
@@ -952,7 +964,7 @@ fn strip(ui: &mut egui::Ui, w: f32, s: &Snoop, bursts: &[(f64, f64, usize)], who
             }
             (if one_day { format!("{} link drops \u{00b7} {day}", g.2.len()) } else { format!("{} link drops", g.2.len()) }, lines)
         };
-        *tip.borrow_mut() = Some(crate::TipC { anchor: pos2(cx, a.top()), col, title, sub: lines, hint: None, side: None });
+        *tip.borrow_mut() = Some(crate::TipC { anchor: pos2(cx, a.top()), col, title, sub: lines, key: None, hint: None, side: None });
     }
     // times under the gridlines (as many as fit without touching), the exact start and end at the edges; when the span
     // crosses midnight the start and the first label of each later day also carry the date

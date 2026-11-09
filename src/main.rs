@@ -751,8 +751,8 @@ impl App {
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, BG);
         // the tray takes the right-hand side; the radar gets the rest
-        let tray_area = Rect::from_min_max(pos2(full.right() - 200.0, full.top() + 8.0), pos2(full.right() - 12.0, full.bottom() - 12.0));
-        let rect = Rect::from_min_max(full.min, pos2(full.right() - 212.0, full.bottom()));
+        let tray_area = Rect::from_min_max(pos2(full.right() - 206.0, full.top() + 18.0), pos2(full.right() - 18.0, full.bottom() - 18.0));
+        let rect = Rect::from_min_max(full.min, pos2(full.right() - 218.0, full.bottom()));
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 0.0, BG);
 
@@ -1360,13 +1360,13 @@ impl App {
                 Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
                 None => d.vendor.clone(),
             };
-            let tc = TipC { anchor: disp[ni] + vec2(0.0, -10.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], hint: Some("Click for details · Drag to move".into()), side: None };
+            let tc = TipC { anchor: disp[ni] + vec2(0.0, -10.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], key: None, hint: Some("Click for details · Drag to move".into()), side: None };
             self.tip_want = Some(tc);
         } else if let Some(gi) = group_hover {
             let g = &groups[gi];
             let names: Vec<String> = g.members.iter().take(4).map(|&i| self.latched[nodes[i].i].name.clone()).collect();
             let more = if g.members.len() > 4 { format!(" +{}", g.members.len() - 4) } else { String::new() };
-            let tc = TipC { anchor: g.center + vec2(0.0, -20.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{}", names.join(", "), more)], hint: Some("Click to expand · Drag to move".into()), side: None };
+            let tc = TipC { anchor: g.center + vec2(0.0, -20.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{}", names.join(", "), more)], key: None, hint: Some("Click to expand · Drag to move".into()), side: None };
             self.tip_want = Some(tc);
         }
 
@@ -1417,7 +1417,7 @@ impl App {
         }
 
         // --- zoom HUD
-        let hud = Rect::from_min_size(pos2(rect.left() + 18.0, rect.bottom() - 48.0), vec2(170.0, 34.0));
+        let hud = Rect::from_min_size(pos2(rect.left() + 18.0, rect.bottom() - 52.0), vec2(170.0, 34.0));
         panel(&p, hud, 17.0, CYAN);
         lcd(&p, pos2(hud.left() + 18.0, hud.center().y), Align2::LEFT_CENTER, &format!("ZOOM {:.1}x", self.zoom), 12.0, CYAN);
         let rb = Rect::from_center_size(pos2(hud.right() - 28.0, hud.center().y), vec2(42.0, 22.0));
@@ -1617,7 +1617,7 @@ impl App {
             let i = names.iter().position(|x| *x == n.name).unwrap_or(0) % PAL.len();
             Color32::from_rgb(PAL[i].0, PAL[i].1, PAL[i].2)
         };
-        let l = rect.left() + 24.0;
+        let l = rect.left() + 18.0;
 
         let legend_w = (rect.width() * 0.22).clamp(150.0, 300.0); // legend shrinks first on narrow windows so the graph keeps its width
         let n_links = self.links.len().max(1) as f32;
@@ -1629,10 +1629,10 @@ impl App {
         let gw = gx1 - gx0;
         let base = rect.top() + 74.0 + gh;
         let fx = |f: f32| gx0 + (f - 2399.0) / 87.0 * gw;
-        let frame = Rect::from_min_max(pos2(l, rect.top() + 14.0), pos2(gx1 + 24.0, base + tail));
+        let frame = Rect::from_min_max(pos2(l, rect.top() + 18.0), pos2(gx1 + 24.0, base + tail));
         panel(&p, frame, 14.0, CYAN);
         let n24 = nets.iter().filter(|n| !n.hidden || n.aps > 0).map(|n| n.aps.max(1) as usize).sum::<usize>();
-        lcd(&p, pos2((gx0 + gx1) / 2.0, rect.top() + 36.0), Align2::CENTER_CENTER, &format!("2.4 GHZ WI-FI NETWORKS WITHIN RANGE: {}", n24), 12.0, AMBER);
+        lcd(&p, pos2(frame.center().x, rect.top() + 36.0), Align2::CENTER_CENTER, &format!("2.4 GHZ WI-FI NETWORKS WITHIN RANGE: {}", n24), 12.0, AMBER);
         // gridlines + axes
         for (dbm, lbl) in [(-80.0, "-80"), (-60.0, "-60"), (-40.0, "-40"), (-20.0, "-20")] {
             let y = base - data::signal_frac(dbm) * (gh - 20.0);
@@ -1793,7 +1793,7 @@ impl App {
             yc += 34.0;
         }
         let title = if has_bt { format!("CONNECTED BLUETOOTH DEVICES: {}", self.links.len()) } else { "NO BLUETOOTH DEVICES".to_string() };
-        let mid = (gx0 + gx1) / 2.0;
+        let mid = frame.center().x; // centred on the whole card, like the graph title
         lcd(&p, pos2(mid, yc + 8.0), Align2::CENTER_CENTER, &title, 12.0, BLUE);
         if has_bt {
             let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, yc + 26.0, (l + 12.0, gx1 + 12.0), &crowd);
@@ -1852,17 +1852,19 @@ impl App {
             let title = format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() });
             self.tip_want = Some(if from_legend {
                 // beside the legend, level with the pointer, so the rows above and below stay readable
-                TipC { anchor: pos2(0.0, q.y), col: col_of(n), title, sub: subs, hint: None, side: Some(lview.left() - 14.0) }
+                TipC { anchor: pos2(0.0, q.y), col: col_of(n), title, sub: subs, key: None, hint: None, side: Some(lview.left() - 14.0) }
             } else {
-                TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y), col: col_of(n), title, sub: subs, hint: None, side: None }
+                TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y), col: col_of(n), title, sub: subs, key: None, hint: None, side: None }
             });
         }
 
         // your network, drawn: where it sits and how busy each clean channel is (no explanation text)
         let cy = frame.bottom() + 12.0;
-        let pr = Rect::from_min_max(pos2(l, cy), pos2(rect.right() - 24.0, (cy + 112.0).min(rect.bottom() - 8.0)));
+        let pr = Rect::from_min_max(pos2(l, cy), pos2(rect.right() - 18.0, (cy + 112.0).min(rect.bottom() - 18.0)));
         panel(&p, pr, 12.0, GREEN);
-        lcd(&p, pos2(pr.left() + 14.0, pr.top() + 16.0), Align2::LEFT_CENTER, "YOUR NETWORK", 11.5, GREEN);
+        // left column lines up with the channel tiles: title at their top edge, "CH N" on their bottom edge, the name midway
+        let (tile_top, tile_bot) = (pr.top() + 12.0, pr.bottom() - 12.0);
+        lcd(&p, pos2(pr.left() + 14.0, tile_top), Align2::LEFT_TOP, "YOUR NETWORK", 11.5, GREEN);
         let mut yn_tip: Option<TipC> = None;
         let mut tile_h: Option<usize> = None;
         let hq = ui.input(|i| i.pointer.hover_pos()).unwrap_or(pr.center());
@@ -1872,9 +1874,12 @@ impl App {
                 p.text(pos2(pr.left() + 14.0, pr.top() + 48.0), Align2::LEFT_CENTER, "not on 2.4 GHz", FontId::proportional(13.0), DIM);
             }
             Some(mn) => {
-                let nm = fit_middle(&p, &mn.name, FontId::proportional(15.0), 220.0);
-                p.text(pos2(pr.left() + 14.0, pr.top() + 46.0), Align2::LEFT_CENTER, nm, FontId::proportional(15.0), Color32::WHITE);
-                lcd(&p, pos2(pr.left() + 14.0, pr.top() + 78.0), Align2::LEFT_CENTER, &format!("CH {}", mn.chan), 26.0, AMBER);
+                let nm = fit_middle(&p, &mn.name, FontId::proportional(15.0), 220.0); // never wraps: cut in the middle when long
+                // visible letter edges, not the text boxes: caps are about 0.75 em tall, and the box has about 0.2 em below the baseline
+                let title_bottom = tile_top + 11.5 * 0.8;
+                let ch_top = tile_bot - 26.0 * 0.72;
+                p.text(pos2(pr.left() + 14.0, (title_bottom + ch_top) / 2.0), Align2::LEFT_CENTER, nm, FontId::proportional(15.0), Color32::WHITE);
+                lcd(&p, pos2(pr.left() + 14.0, tile_bot + 26.0 * 0.2), Align2::LEFT_BOTTOM, &format!("CH {}", mn.chan), 26.0, AMBER);
             }
         }
         let chans: [u32; 3] = [1, 6, 11]; // the only 2.4 GHz channels that don't overlap each other; any other channel overlaps at least one of them
@@ -1909,7 +1914,7 @@ impl App {
                 if ui.interact(slot, ui.id().with(("chan_dot", c, k)), Sense::hover()).hovered() {
                     p.circle_filled(cc, rad + 4.0, alpha(col_of(o), 0.16));
                     tile_h = nets.iter().position(|n| std::ptr::eq(n, *o));
-                    yn_tip = Some(TipC { anchor: hq, col: col_of(o), title: nm.clone(), sub: vec![format!("ch {} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" })], hint: None, side: None });
+                    yn_tip = Some(TipC { anchor: hq, col: col_of(o), title: nm.clone(), sub: vec![format!("ch {} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" })], key: None, hint: None, side: None });
                 }
             }
             if others.len() > room {
@@ -1921,7 +1926,7 @@ impl App {
             self.tip_want = Some(t);
         }
         if let Some((q, title, lines)) = tip_box {
-            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, hint: None, side: None });
+            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, key: None, hint: None, side: None });
         }
         if let Some((id, q)) = pick {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
@@ -1976,7 +1981,7 @@ impl App {
             }
         }
         // --- toolbar: search on top; below it the tabs (Yours / Nearby) and the filters, the same layout as Diagnostics
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin::same(18)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.q).hint_text("Search name, vendor, MAC…").desired_width(320.0).margin(vec2(12.0, 10.0)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2008,8 +2013,8 @@ impl App {
             };
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                for (i, l) in [format!("Yours  ·  {yours}"), format!("Nearby (not yours)  ·  {nearby}")].iter().enumerate() {
-                    if view_tab(ui, l, self.scope == i as u8, 0) {
+                for (i, (l, n)) in [("Yours", yours), ("Others", nearby)].iter().enumerate() {
+                    if view_tab(ui, l, self.scope == i as u8, *n) {
                         self.scope = i as u8;
                     }
                 }
@@ -2022,80 +2027,80 @@ impl App {
         let mut toggle = None;
         let collapsed = self.collapsed.clone();
         let devs = &self.devs;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let w = ui.available_width() - 34.0;
-            for (g, (_section, title, col)) in groups.iter().enumerate() {
-                if items[g].is_empty() {
-                    continue;
-                }
-                let open = !collapsed.contains(&g);
-                let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
-                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                let r = r.translate(vec2(14.0, 0.0));
-                let pp = ui.painter();
-                pp.rect_filled(r, 8.0, alpha(*col, if resp.hovered() { 0.16 } else { 0.08 }));
-                {
-                    let c0 = pos2(r.left() + 18.0, r.center().y);
-                    let pts = if open { vec![c0 + vec2(-5.0, -3.0), c0 + vec2(5.0, -3.0), c0 + vec2(0.0, 4.0)] } else { vec![c0 + vec2(-3.0, -5.0), c0 + vec2(-3.0, 5.0), c0 + vec2(4.0, 0.0)] };
-                    pp.add(egui::Shape::convex_polygon(pts, *col, Stroke::NONE));
-                }
-                pp.text(pos2(r.left() + 34.0, r.center().y), Align2::LEFT_CENTER, *title, FontId::proportional(13.5), Color32::WHITE);
-                pp.text(pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, items[g].len().to_string(), FontId::monospace(12.0), *col);
-                if resp.clicked() {
-                    toggle = Some(g);
-                }
-                ui.add_space(6.0);
-                if !open {
-                    continue;
-                }
-                for &i in &items[g] {
-                    let d = &devs[i];
-                    let (r, resp) = ui.allocate_exact_size(vec2(w, 54.0), Sense::click());
+        {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| egui::Frame::NONE.inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
+                let w = ui.available_width();
+                for (g, (_section, title, col)) in groups.iter().enumerate() {
+                    if items[g].is_empty() {
+                        continue;
+                    }
+                    let open = !collapsed.contains(&g);
+                    let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
                     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let r = r.translate(vec2(14.0, 0.0));
-                    let col = kind_col(d.kind);
-                    let p = ui.painter();
-                    panel(p, r, 12.0, if resp.hovered() { CYAN } else if d.trouble > 0.0 { RED } else if d.caution > 0.0 { AMBER } else { col });
-                    if d.known {
-                        orb(p, pos2(r.left() + 34.0, r.center().y), 15.0, col, 0.0);
-                        icon(p, d.icon, pos2(r.left() + 34.0, r.center().y), 7.5, shade(col, 0.12));
-                    } else {
-                        dot(p, pos2(r.left() + 34.0, r.center().y), 6.0, col, 0.0);
+                    let pp = ui.painter();
+                    pp.rect_filled(r, 8.0, alpha(*col, if resp.hovered() { 0.16 } else { 0.08 }));
+                    {
+                        let c0 = pos2(r.left() + 18.0, r.center().y);
+                        let pts = if open { vec![c0 + vec2(-5.0, -3.0), c0 + vec2(5.0, -3.0), c0 + vec2(0.0, 4.0)] } else { vec![c0 + vec2(-3.0, -5.0), c0 + vec2(-3.0, 5.0), c0 + vec2(4.0, 0.0)] };
+                        pp.add(egui::Shape::convex_polygon(pts, *col, Stroke::NONE));
                     }
-                    p.text(pos2(r.left() + 66.0, r.center().y - 9.0), Align2::LEFT_CENTER, &d.name, FontId::proportional(15.0), Color32::WHITE);
-                    let kindname = d.details.first().map(|x| x.1.clone()).unwrap_or_default();
-                    p.text(pos2(r.left() + 66.0, r.center().y + 10.0), Align2::LEFT_CENTER, format!("{} · {}", kindname, d.vendor), FontId::proportional(12.0), DIM);
-                    // right edge inwards: CONNECTED label, one strength bar (no units: the info box has them), problem chip
-                    let mut x = r.right() - 20.0;
-                    if d.connected && d.dbm.is_none() {
-                        p.text(pos2(x, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
-                        x -= 98.0;
-                    }
-                    let strength = d.dbm.map(data::signal_frac).or_else(|| data::bt_quality(d.lq, d.rssi));
-                    if let Some(f) = strength {
-                        led_bar(p, Rect::from_min_size(pos2(x - 130.0, r.center().y - 5.0), vec2(130.0, 10.0)), f, col, 13);
-                        x -= 146.0;
-                    }
-                    if d.trouble > 0.0 || d.caution > 0.0 {
-                        let (acc, word) = if d.trouble > 0.0 { (RED, "ISSUE") } else { (AMBER, "WARNING") };
-                        // clear problem marker; click the row for what the app found out
-                        let chip = Rect::from_min_max(pos2(x - 74.0, r.center().y - 11.0), pos2(x, r.center().y + 11.0));
-                        p.rect_filled(chip, 11.0, alpha(acc, 0.18));
-                        p.rect_stroke(chip, 11.0, Stroke::new(1.2, alpha(acc, 0.8)), StrokeKind::Inside);
-                        dot(p, pos2(chip.left() + 11.0, chip.center().y), 3.5, acc, 0.3);
-                        p.text(pos2(chip.left() + 21.0, chip.center().y), Align2::LEFT_CENTER, word, FontId::monospace(11.5), acc);
-                    }
-                    ui.add_space(8.0);
+                    pp.text(pos2(r.left() + 34.0, r.center().y), Align2::LEFT_CENTER, *title, FontId::proportional(13.5), Color32::WHITE);
+                    pp.text(pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, items[g].len().to_string(), FontId::monospace(12.0), *col);
                     if resp.clicked() {
-                        pick = Some((d.id.clone(), resp.interact_pointer_pos().unwrap_or(r.center())));
+                        toggle = Some(g);
+                    }
+                    ui.add_space(6.0);
+                    if !open {
+                        continue;
+                    }
+                    for &i in &items[g] {
+                        let d = &devs[i];
+                        let (r, resp) = ui.allocate_exact_size(vec2(w, 54.0), Sense::click());
+                        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                            let col = kind_col(d.kind);
+                        let p = ui.painter();
+                        panel(p, r, 12.0, if resp.hovered() { CYAN } else if d.trouble > 0.0 { RED } else if d.caution > 0.0 { AMBER } else { col });
+                        if d.known {
+                            orb(p, pos2(r.left() + 34.0, r.center().y), 15.0, col, 0.0);
+                            icon(p, d.icon, pos2(r.left() + 34.0, r.center().y), 7.5, shade(col, 0.12));
+                        } else {
+                            dot(p, pos2(r.left() + 34.0, r.center().y), 6.0, col, 0.0);
+                        }
+                        p.text(pos2(r.left() + 66.0, r.center().y - 9.0), Align2::LEFT_CENTER, &d.name, FontId::proportional(15.0), Color32::WHITE);
+                        let kindname = d.details.first().map(|x| x.1.clone()).unwrap_or_default();
+                        p.text(pos2(r.left() + 66.0, r.center().y + 10.0), Align2::LEFT_CENTER, format!("{} · {}", kindname, d.vendor), FontId::proportional(12.0), DIM);
+                        // right edge inwards: CONNECTED label, one strength bar (no units: the info box has them), problem chip
+                        let mut x = r.right() - 20.0;
+                        if d.connected && d.dbm.is_none() {
+                            p.text(pos2(x, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
+                            x -= 98.0;
+                        }
+                        let strength = d.dbm.map(data::signal_frac).or_else(|| data::bt_quality(d.lq, d.rssi));
+                        if let Some(f) = strength {
+                            led_bar(p, Rect::from_min_size(pos2(x - 130.0, r.center().y - 5.0), vec2(130.0, 10.0)), f, col, 13);
+                            x -= 146.0;
+                        }
+                        if d.trouble > 0.0 || d.caution > 0.0 {
+                            let (acc, word) = if d.trouble > 0.0 { (RED, "ISSUE") } else { (AMBER, "WARNING") };
+                            // clear problem marker; click the row for what the app found out
+                            let chip = Rect::from_min_max(pos2(x - 74.0, r.center().y - 11.0), pos2(x, r.center().y + 11.0));
+                            p.rect_filled(chip, 11.0, alpha(acc, 0.18));
+                            p.rect_stroke(chip, 11.0, Stroke::new(1.2, alpha(acc, 0.8)), StrokeKind::Inside);
+                            dot(p, pos2(chip.left() + 11.0, chip.center().y), 3.5, acc, 0.3);
+                            p.text(pos2(chip.left() + 21.0, chip.center().y), Align2::LEFT_CENTER, word, FontId::monospace(11.5), acc);
+                        }
+                        ui.add_space(8.0);
+                        if resp.clicked() {
+                            pick = Some((d.id.clone(), resp.interact_pointer_pos().unwrap_or(r.center())));
+                        }
                     }
                 }
-            }
-            if total == 0 {
-                ui.add_space(30.0);
-                ui.centered_and_justified(|ui| ui.label("No devices match these filters."));
-            }
-        });
+                if total == 0 {
+                    ui.add_space(30.0);
+                    ui.centered_and_justified(|ui| ui.label("No devices match these filters."));
+                }
+            }));
+        }
         if let Some(g) = toggle {
             if !self.collapsed.remove(&g) {
                 self.collapsed.insert(g);
@@ -2122,7 +2127,7 @@ impl Hint for egui::Response {
                 _ => (text.clone(), String::new()), // one sentence: all title, wrapped when long
             };
             let anchor = self.ctx.input(|i| i.pointer.hover_pos()).unwrap_or(self.rect.center_bottom());
-            let c = TipC { anchor, col: CYAN, title, sub: if rest.is_empty() { vec![] } else { vec![rest] }, hint: None, side: None };
+            let c = TipC { anchor, col: CYAN, title, sub: if rest.is_empty() { vec![] } else { vec![rest] }, key: Some(self.id), hint: None, side: None };
             self.ctx.data_mut(|d| d.insert_temp(egui::Id::new("hint_want"), Some(c)));
         }
         self
@@ -2131,6 +2136,7 @@ impl Hint for egui::Response {
 
 #[derive(Clone)]
 struct TipC {
+    key: Option<egui::Id>, // identity of the widget asking: a changed text with the same key updates in place, no fade restart
     hint: Option<String>, // how to interact, shown last under a divider (dim)
     anchor: Pos2,
     col: Color32,
@@ -2607,7 +2613,7 @@ impl eframe::App for App {
         }
         // tooltips fade too
         if let Some(w) = self.tip_want.take() {
-            if self.tip_last.as_ref().map_or(true, |l| l.title != w.title) {
+            if self.tip_last.as_ref().map_or(true, |l| match (l.key, w.key) { (Some(a), Some(b)) => a != b, _ => l.title != w.title }) {
                 self.tip_a = self.tip_a.min(0.2);
             }
             self.tip_last = Some(w);
