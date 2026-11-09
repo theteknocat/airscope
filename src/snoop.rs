@@ -328,12 +328,32 @@ pub fn clock(unix: f64) -> String {
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
-/// "YYYY-MM-DD" local date for a Unix time in seconds.
+const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/// "Nov 8, 2026": local date for a Unix time in seconds, as shown everywhere in the app.
 pub fn date(unix: f64) -> String {
     let secs = unix as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&secs, &mut tm) };
+    format!("{} {}, {}", MONTHS[(tm.tm_mon as usize).min(11)], tm.tm_mday, tm.tm_year + 1900)
+}
+
+/// "2026-11-08": the same date for file names (no spaces or commas).
+pub fn date_iso(unix: f64) -> String {
+    let secs = unix as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&secs, &mut tm) };
     format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
+}
+
+/// A library session folder name "2026-11-08_18-12-25" as "Nov 8, 2026  18:12:25"; other names come back unchanged.
+pub fn pretty_stamp(name: &str) -> String {
+    let p: Vec<&str> = name.split(|c| c == '-' || c == '_').collect();
+    let n: Vec<Option<usize>> = p.iter().map(|x| x.parse().ok()).collect();
+    match (p.len(), n.as_slice()) {
+        (6, [Some(y), Some(m), Some(d), Some(h), Some(mi), Some(se)]) if (1..=12).contains(m) => format!("{} {}, {}  {:02}:{:02}:{:02}", MONTHS[m - 1], d, y, h, mi, se),
+        _ => name.to_string(),
+    }
 }
 
 pub fn dur(s: f64) -> String {
@@ -376,6 +396,12 @@ pub fn line(e: &Ev, who: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dates_read_mmm_d_yyyy() {
+        assert_eq!(pretty_stamp("2026-11-08_18-12-25"), "Nov 8, 2026  18:12:25");
+        assert_eq!(pretty_stamp("bt11.snoop"), "bt11.snoop");
+    }
 
     fn rec(out: &mut Vec<u8>, op: u16, ts: i64, data: &[u8]) {
         out.extend((data.len() as u32).to_be_bytes());

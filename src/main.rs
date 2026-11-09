@@ -2466,6 +2466,11 @@ impl eframe::App for App {
                 self.diag.ui(ui, &names)
             }
         });
+        if matches!(self.screen, Screen::Diagnostics) {
+            if let Some(t) = self.diag.tip.take() {
+                self.tip_want = Some(t);
+            }
+        }
         self.vendor_window(ui.ctx());
         self.debug_shot(ui.ctx(), t);
         // info boxes are shared by every screen: opening one fades it in, switching fades the old one out

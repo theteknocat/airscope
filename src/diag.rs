@@ -42,6 +42,8 @@ pub struct Diag {
     addrs: bool,
     problems_only: bool,
     /// Brief confirmation shown on a button: (when, which button: 0 copy / 1 save, outcome text).
+    /// Hover box requested by the drops strip this frame; main.rs draws it with the shared tooltip style.
+    pub tip: std::cell::RefCell<Option<crate::TipC>>,
     flash: Option<(Instant, u8, Result<String, String>)>,
     pick: Option<Pick>,
     /// A capture being recorded through pkexec (None when idle), the length chosen, and the last status line (error?, text).
@@ -61,7 +63,7 @@ pub struct Diag {
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, tip: Default::default() };
         if !d.path.is_empty() {
             d.load();
         } else if let Some(r) = Recording::adopt() {
@@ -198,7 +200,7 @@ impl Diag {
     }
 
     fn report(&self, s: &Snoop, names: &Names) -> String {
-        let mut r = format!("# Bluetooth capture report\n\nFile: {}\n\n## Summary\n\n", self.shown_name());
+        let mut r = format!("# Bluetooth capture report\n\nFile: {}\n\n## Summary\n\n", snoop::pretty_stamp(&self.shown_name()));
         for (_, l) in self.summary(s, names) {
             r += &format!("{l}\n");
         }
@@ -223,7 +225,7 @@ impl Diag {
                 let Some(base) = base else { return };
                 let first = Self::first_unix(s);
                 let stem = self.shown_name().trim_end_matches(".snoop").to_string();
-                base.join("airscope/reports").join(format!("{stem}-{}.md", snoop::date(first)))
+                base.join("airscope/reports").join(format!("{stem}-{}.md", snoop::date_iso(first)))
             }
         };
         let res = match file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&file, self.report(s, names))) {
@@ -267,7 +269,7 @@ impl Diag {
             tile(ui, tw, "DROP BURSTS", &bursts.len().to_string(), if bursts.is_empty() { GREEN } else { AMBER });
         });
         ui.add_space(14.0);
-        strip(ui, w, s, bursts);
+        strip(ui, w, s, bursts, &|a| self.who(a, names), &self.tip);
         ui.add_space(14.0);
         let stats = &self.stats;
         let cols = if w >= 860.0 { 2 } else { 1 };
@@ -371,7 +373,7 @@ impl Diag {
                 let accent = if recording { RED } else if sess.summary.as_ref().map_or(false, |x| x.drops > 0) { AMBER } else { BLUE };
                 let p = ui.painter().clone();
                 panel(&p, r, 12.0, accent);
-                lcd(&p, pos2(r.left() + 20.0, r.top() + 28.0), Align2::LEFT_CENTER, &sess.name.replacen('_', "   ", 1), 19.0, if recording { RED } else { CYAN });
+                lcd(&p, pos2(r.left() + 20.0, r.top() + 28.0), Align2::LEFT_CENTER, &snoop::pretty_stamp(&sess.name), 19.0, if recording { RED } else { CYAN });
                 let sub = match &sess.summary {
                     Some(x) => format!("{}  ·  {}  ·  {} drops  ·  {} records{}", dur(x.duration), size_str(sess.size), x.drops, x.records, if sess.report { "  ·  report saved" } else { "" }),
                     None => format!("{}  ·  not analysed yet: open it to analyse", size_str(sess.size)),
@@ -404,7 +406,7 @@ impl Diag {
 
     /// Open capture's name, loading progress, LIVE lamp and the latest status message.
     fn name_row(&mut self, ui: &mut egui::Ui) {
-        let name = self.shown_name();
+        let name = snoop::pretty_stamp(&self.shown_name());
         let reserve = 20.0 + if self.pos < self.total { 90.0 } else { 0.0 } + if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) { 80.0 } else { 0.0 };
         if name.is_empty() {
             ui.label(RichText::new("No capture opened").color(DIM));
@@ -644,30 +646,132 @@ fn tile(ui: &mut egui::Ui, w: f32, label: &str, value: &str, col: Color32) {
 }
 
 /// When the drops happened across the capture: one tick per drop (red = radio-type reason, amber = other), bursts shaded.
-fn strip(ui: &mut egui::Ui, w: f32, s: &Snoop, bursts: &[(f64, f64, usize)]) {
-    let (r, _) = ui.allocate_exact_size(vec2(w, 96.0), Sense::hover());
+fn strip(ui: &mut egui::Ui, w: f32, s: &Snoop, bursts: &[(f64, f64, usize)], who: &dyn Fn(&snoop::Addr) -> String, tip: &std::cell::RefCell<Option<crate::TipC>>) {
+    let first = Diag::first_unix(s);
+    let total = s.duration().max(1.0);
+    let crosses = snoop::date(first) != snoop::date(first + total); // spans midnight: dates are shown under some times
+    let extra = if crosses { 14.0 } else { 0.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 96.0 + extra), Sense::hover());
     let p = ui.painter();
     panel(p, r, 12.0, BLUE);
     p.text(pos2(r.left() + 18.0, r.top() + 18.0), Align2::LEFT_CENTER, "DROPS OVER TIME", FontId::proportional(12.0), DIM);
-    p.text(pos2(r.right() - 18.0, r.top() + 18.0), Align2::RIGHT_CENTER, "red: radio-type drop   amber: other", FontId::proportional(11.5), DIM);
-    let a = Rect::from_min_max(pos2(r.left() + 18.0, r.top() + 34.0), pos2(r.right() - 18.0, r.bottom() - 26.0));
-    let total = s.duration().max(1.0);
+    // legend: a coloured dot and a short label, like the sidebar legend (right to left)
+    let mut lx = r.right() - 18.0;
+    for (col, label) in [(AMBER, "other"), (RED, "radio-type drop")] {
+        let g = p.layout_no_wrap(label.to_string(), FontId::proportional(11.5), DIM);
+        let wd = g.size().x;
+        p.galley(pos2(lx - wd, r.top() + 18.0 - g.size().y / 2.0), g, DIM);
+        dot(p, pos2(lx - wd - 12.0, r.top() + 18.0), 4.0, col, 0.0);
+        lx -= wd + 12.0 + 4.0 + 18.0;
+    }
+    let a = Rect::from_min_max(pos2(r.left() + 18.0, r.top() + 34.0), pos2(r.right() - 18.0, r.bottom() - 26.0 - extra));
     let x = |t: f64| a.left() + (t / total) as f32 * a.width();
     p.rect_filled(a, 4.0, alpha(Color32::WHITE, 0.04));
+    // faint vertical gridlines on round local times; the step is chosen from the whole span so there are 5-10 of them
+    let off = utc_offset(first);
+    let step = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0, 10800.0, 21600.0, 43200.0, 86400.0].into_iter().find(|st| total / st <= f64::from((a.width() / 90.0).clamp(4.0, 10.0))).unwrap_or(86400.0);
+    let mut grid: Vec<(f32, f64)> = vec![];
+    let mut k = ((first + off) / step).ceil();
+    while k * step - off <= first + total {
+        let u = k * step - off;
+        grid.push((a.left() + ((u - first) / total) as f32 * a.width(), u));
+        k += 1.0;
+    }
+    for (gx, _) in &grid {
+        p.line_segment([pos2(*gx, a.top()), pos2(*gx, a.bottom())], Stroke::new(1.0, alpha(Color32::WHITE, 0.07)));
+    }
     for (t0, t1, _) in bursts {
         p.rect_filled(Rect::from_min_max(pos2(x(*t0) - 3.0, a.top()), pos2((x(*t1) + 3.0).max(x(*t0) + 3.0), a.bottom())), 3.0, alpha(RED, 0.14));
     }
+    // Drops that fall within a few pixels of each other are drawn as one (wider) tick; hovering a tick lists what is in it.
+    let radio = |e: &snoop::Ev| matches!(e.kind, Kind::Disconnected { reason, .. } if crate::hci::reason(reason).2);
+    let mut groups: Vec<(f32, f32, Vec<&snoop::Ev>)> = vec![];
     for e in s.drops() {
-        let col = match e.kind {
-            Kind::Disconnected { reason, .. } if crate::hci::reason(reason).2 => RED,
-            _ => AMBER,
+        let px = x(e.t);
+        match groups.last_mut() {
+            Some(g) if px - g.1 <= 6.0 => {
+                g.1 = px;
+                g.2.push(e);
+            }
+            _ => groups.push((px, px, vec![e])),
+        }
+    }
+    let ptr = resp.hover_pos().filter(|q| a.expand2(vec2(8.0, 6.0)).contains(*q));
+    let hot = ptr.and_then(|q| groups.iter().position(|g| q.x >= g.0 - 5.0 && q.x <= g.1 + 5.0));
+    let hot = hot.or(std::env::var("AIRSCOPE_STRIP_HOVER").ok().and_then(|v| v.parse::<usize>().ok()).filter(|i| *i < groups.len())); // debug aid: pretend the pointer is on this tick
+    for (i, g) in groups.iter().enumerate() {
+        let col = if g.2.iter().any(|e| radio(e)) { RED } else { AMBER };
+        let cx = (g.0 + g.1) / 2.0;
+        let (y0, y1) = (a.top() + 4.0, a.bottom() - 4.0);
+        if hot == Some(i) {
+            p.line_segment([pos2(cx, y0), pos2(cx, y1)], Stroke::new(8.0, alpha(col, 0.25)));
+        }
+        let many = g.2.len() > 1;
+        p.line_segment([pos2(cx, y0), pos2(cx, y1)], Stroke::new(if many { 3.2 } else { 2.0 }, col));
+        if many {
+            p.circle_filled(pos2(cx, y0), 3.4, col);
+        }
+    }
+    if let Some(i) = hot {
+        let g = &groups[i];
+        let cx = (g.0 + g.1) / 2.0;
+        let col = if g.2.iter().any(|e| radio(e)) { RED } else { AMBER };
+        let full = |e: &snoop::Ev| format!("{} {}", snoop::date(e.unix), snoop::clock(e.unix));
+        let (title, lines) = if g.2.len() == 1 {
+            (who(&g.2[0].addr), vec![full(g.2[0])])
+        } else {
+            let day = snoop::date(g.2[0].unix);
+            let one_day = g.2.iter().all(|e| snoop::date(e.unix) == day);
+            let mut lines: Vec<String> = g.2.iter().take(10).map(|e| format!("{}  \u{00b7}  {}", if one_day { snoop::clock(e.unix) } else { full(e) }, who(&e.addr))).collect();
+            if g.2.len() > 10 {
+                lines.push(format!("and {} more", g.2.len() - 10));
+            }
+            (if one_day { format!("{} link drops \u{00b7} {day}", g.2.len()) } else { format!("{} link drops", g.2.len()) }, lines)
         };
-        p.line_segment([pos2(x(e.t), a.top() + 4.0), pos2(x(e.t), a.bottom() - 4.0)], Stroke::new(2.0, col));
+        *tip.borrow_mut() = Some(crate::TipC { anchor: pos2(cx, a.top()), col, title, sub: lines, boxed: true, side: None });
     }
-    let first = Diag::first_unix(s);
-    for (f, al) in [(0.0, Align2::LEFT_TOP), (0.5, Align2::CENTER_TOP), (1.0, Align2::RIGHT_TOP)] {
-        p.text(pos2(a.left() + a.width() * f as f32, a.bottom() + 6.0), al, snoop::clock(first + total * f), FontId::proportional(11.5), DIM);
+    // times under the gridlines (as many as fit without touching), the exact start and end at the edges; when the span
+    // crosses midnight the start and the first label of each later day also carry the date
+    let font = FontId::proportional(11.5);
+    let small = FontId::proportional(10.0);
+    let y = a.bottom() + 6.0;
+    let width_of = |t: &str| p.layout_no_wrap(t.to_string(), font.clone(), DIM).size().x;
+    let mut used: Vec<(f32, f32)> = vec![];
+    let mut put = |x: f32, align: Align2, text: String, date: Option<String>| {
+        let wdt = width_of(&text).max(date.as_ref().map_or(0.0, |d| p.layout_no_wrap(d.clone(), small.clone(), DIM).size().x));
+        let (l, rr) = match align {
+            Align2::LEFT_TOP => (x, x + wdt),
+            Align2::RIGHT_TOP => (x - wdt, x),
+            _ => (x - wdt / 2.0, x + wdt / 2.0),
+        };
+        if used.iter().any(|(ul, ur)| l < *ur + 10.0 && rr > *ul - 10.0) || l < r.left() + 4.0 || rr > r.right() - 4.0 {
+            return false;
+        }
+        used.push((l, rr));
+        p.text(pos2(x, y), align, text, font.clone(), DIM);
+        if let Some(dt) = date {
+            p.text(pos2(x, y + 14.0), align, dt, small.clone(), DIM);
+        }
+        true
+    };
+    put(a.left(), Align2::LEFT_TOP, snoop::clock(first), crosses.then(|| snoop::date(first)));
+    put(a.right(), Align2::RIGHT_TOP, snoop::clock(first + total), None);
+    let mut day = snoop::date(first);
+    for (gx, u) in &grid {
+        let dt = snoop::date(*u);
+        let new_day = dt != day;
+        day = dt.clone();
+        let text = if step < 60.0 { snoop::clock(*u) } else { snoop::clock(*u)[..5].to_string() };
+        put(*gx, Align2::CENTER_TOP, text, (crosses && new_day).then_some(dt));
     }
+}
+
+/// Seconds east of UTC for local time at `unix`.
+fn utc_offset(unix: f64) -> f64 {
+    let secs = unix as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    tm.tm_gmtoff as f64
 }
 
 fn card_h(d: &snoop::DevStat) -> f32 {
