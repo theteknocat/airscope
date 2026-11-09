@@ -59,11 +59,13 @@ pub struct Diag {
     summarised: bool,
     sessions: Vec<capture::Session>,
     sessions_at: Option<Instant>,
+    /// Library capture being analysed on a background thread, and whether it has finished.
+    bg: Option<(PathBuf, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
 }
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, tip: Default::default() };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, bg: None, tip: Default::default() };
         if !d.path.is_empty() {
             d.load();
         } else if let Some(r) = Recording::adopt() {
@@ -359,6 +361,25 @@ impl Diag {
             self.sessions = capture::list();
             self.sessions_at = Some(Instant::now());
         }
+        // finish the analysis of captures nobody has opened (e.g. one that ended while the app was closed), one at a time
+        if self.bg.as_ref().map_or(false, |(_, d)| d.load(std::sync::atomic::Ordering::Relaxed)) {
+            self.bg = None;
+            self.sessions_at = None;
+        }
+        if self.bg.is_none() {
+            let open = PathBuf::from(self.clean_path());
+            let live = |c: &PathBuf| self.rec.as_ref().map_or(false, |r| &r.file == c) || *c == open || std::fs::metadata(c).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(true, |e| e < Duration::from_secs(10));
+            if let Some(s) = self.sessions.iter().find(|s| capture::needs_analysis(s) && !live(&s.capture)) {
+                let (dir, cap) = (s.dir.clone(), s.capture.clone());
+                let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = done.clone();
+                self.bg = Some((cap.clone(), done));
+                std::thread::spawn(move || {
+                    capture::analyse(&dir, &cap);
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                });
+            }
+        }
         if self.sessions.is_empty() {
             ui.label(RichText::new("No saved captures yet. A recording made with the Record button is kept here, with its analysis.").color(DIM));
             return;
@@ -376,7 +397,8 @@ impl Diag {
                 lcd(&p, pos2(r.left() + 20.0, r.top() + 28.0), Align2::LEFT_CENTER, &snoop::pretty_stamp(&sess.name), 19.0, if recording { RED } else { CYAN });
                 let sub = match &sess.summary {
                     Some(x) => format!("{}  ·  {}  ·  {} drops  ·  {} records{}", dur(x.duration), size_str(sess.size), x.drops, x.records, if sess.report { "  ·  report saved" } else { "" }),
-                    None => format!("{}  ·  not analysed yet: open it to analyse", size_str(sess.size)),
+                    None if self.bg.as_ref().map_or(false, |(c, _)| *c == sess.capture) => format!("{}  ·  analysing…", size_str(sess.size)),
+                    None => format!("{}  ·  not analysed yet", size_str(sess.size)),
                 };
                 p.text(pos2(r.left() + 20.0, r.top() + 58.0), Align2::LEFT_CENTER, if recording { "recording now".to_string() } else { sub }, FontId::proportional(13.0), DIM);
                 let bar = Rect::from_min_size(pos2(r.right() - 300.0, r.top() + 24.0), vec2(280.0, 36.0));
@@ -633,7 +655,10 @@ impl Diag {
                 self.timeline(ui, s, names);
             }
         });
-        self.snoop = s;
+        // the Library's Open button calls load() while `s` is taken out: keep the freshly loaded capture, not the old one
+        if self.snoop.is_none() && self.err.is_none() {
+            self.snoop = s;
+        }
     }
 }
 

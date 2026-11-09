@@ -192,6 +192,35 @@ pub fn write_summary(dir: &Path, s: &Summary) {
     let _ = std::fs::write(dir.join("summary.tsv"), format!("{}\t{}\t{}\n", s.records, s.drops, s.duration));
 }
 
+/// True when the saved summary is missing or older than the capture file (it grew after the last analysis).
+pub fn needs_analysis(s: &Session) -> bool {
+    let mt = |p: PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (mt(s.dir.join("summary.tsv")), mt(s.capture.clone())) {
+        (Some(sum), Some(cap)) => sum < cap,
+        _ => true,
+    }
+}
+
+/// Reads a whole capture and saves its summary (run on a background thread for sessions nobody has opened).
+pub fn analyse(dir: &Path, capture: &Path) {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(capture) else { return };
+    let mut s = crate::snoop::Snoop::default();
+    let mut buf = vec![0u8; 4 << 20];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if s.feed(&buf[..n]).is_err() {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+    write_summary(dir, &Summary { records: s.records, drops: s.drops().count(), duration: s.duration() });
+}
+
 /// Saved sessions, newest first.
 pub fn list() -> Vec<Session> {
     captures_dir().map(|d| list_in(&d)).unwrap_or_default()
