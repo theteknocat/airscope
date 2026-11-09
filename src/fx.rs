@@ -390,6 +390,12 @@ pub fn nav_icon(p: &Painter, which: u8, c: Pos2, s: f32, col: Color32) {
                 p.rect_filled(Rect::from_min_max(c + vec2(x - 0.12 * s, s - h * s), c + vec2(x + 0.12 * s, s)), 1.0, col);
             }
         }
+        3 => {
+            let pts = [(-1.0, 0.1), (-0.5, 0.1), (-0.25, -0.9), (0.1, 0.9), (0.4, -0.1), (1.0, -0.1)];
+            for w in pts.windows(2) {
+                p.line_segment([c + vec2(w[0].0, w[0].1) * s, c + vec2(w[1].0, w[1].1) * s], st);
+            }
+        }
         _ => {
             for k in 0..3 {
                 let y = (-0.7 + k as f32 * 0.7) * s;

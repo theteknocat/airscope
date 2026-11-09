@@ -1,11 +1,13 @@
 mod data;
 mod demo;
 mod bluez;
+mod diag;
 mod fx;
 mod hci;
 mod net;
 mod nm;
 mod picker;
+mod snoop;
 
 use data::{hash64, BtLink, Dev, Handle, Icon, Kind};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -197,6 +199,7 @@ enum Screen {
     Radar,
     Spectrum,
     Devices,
+    Diagnostics,
 }
 
 struct App {
@@ -217,6 +220,7 @@ struct App {
     vendor_copied: Option<(usize, Instant)>, // which link was just opened
     vendor_pick: Option<picker::Pick>, // file dialog for the downloaded list, while open
     screen: Screen,
+    diag: diag::Diag,
     sel: Option<String>,
     over: HashMap<String, (f32, f32)>, // id -> (angle rad, metres)
     host: String,
@@ -351,7 +355,8 @@ impl App {
             vendor_msg: None,
             vendor_copied: None,
             vendor_pick: None,
-            screen: match std::env::var("AIRSCOPE_SCREEN").as_deref() { Ok("spectrum") => Screen::Spectrum, Ok("devices") => Screen::Devices, _ => Screen::Radar }, // debug aid
+            screen: match std::env::var("AIRSCOPE_SCREEN").as_deref() { Ok("spectrum") => Screen::Spectrum, Ok("devices") => Screen::Devices, Ok("diag") => Screen::Diagnostics, _ => Screen::Radar }, // debug aid
+            diag: diag::Diag::new(),
             sel: std::env::var("AIRSCOPE_SEL").ok(), // debug aid
             over,
             host: if host.is_empty() { "this PC".into() } else { host },
@@ -435,7 +440,7 @@ impl App {
         p.rect_filled(rect, 0.0, shade(BG, 1.5));
         p.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.18)));
         lcd(&p, pos2(rect.left() + 22.0, rect.top() + 38.0), Align2::LEFT_CENTER, "AIRSCOPE", 21.0, CYAN);
-        let items = [(Screen::Radar, "Radar", 0u8), (Screen::Spectrum, "Spectrum", 1), (Screen::Devices, "Devices", 2)];
+        let items = [(Screen::Radar, "Radar", 0u8), (Screen::Spectrum, "Spectrum", 1), (Screen::Devices, "Devices", 2), (Screen::Diagnostics, "Diagnostics", 3)];
         for (i, (s, label, ic)) in items.iter().enumerate() {
             let r = Rect::from_min_size(pos2(rect.left() + 14.0, rect.top() + 84.0 + i as f32 * 52.0), vec2(rect.width() - 28.0, 42.0));
             let resp = hit(ui, r, ui.scope_id().with(label), Sense::click());
@@ -619,6 +624,7 @@ impl App {
             Screen::Radar => "RADAR",
             Screen::Spectrum => "SPECTRUM",
             Screen::Devices => "DEVICES",
+            Screen::Diagnostics => "DIAGNOSTICS",
         };
         lcd(&p, pos2(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, title, 28.0, CYAN);
 
@@ -2429,6 +2435,10 @@ impl eframe::App for App {
             Screen::Radar => self.radar(ui, t),
             Screen::Spectrum => self.spectrum(ui, t),
             Screen::Devices => self.devices(ui),
+            Screen::Diagnostics => {
+                let names: diag::Names = self.devs.iter().filter(|d| d.kind == Kind::Bt).map(|d| (d.id.to_uppercase(), (d.name.clone(), d.icon))).collect();
+                self.diag.ui(ui, &names)
+            }
         });
         self.vendor_window(ui.ctx());
         self.debug_shot(ui.ctx(), t);
