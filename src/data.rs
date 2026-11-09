@@ -298,7 +298,7 @@ pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
         let freq = Some(ap.freq);
         let pct = ap.strength as f32;
         let sec = ap.security.clone();
-        let dbm = pct / 2.0 - 100.0;
+        let dbm = ap.dbm.unwrap_or(pct / 2.0 - 100.0); // NetworkManager's percentage tops out at -50 dBm; nl80211 gives the real value
         let dist = dist_from_dbm(dbm);
         let vendor = oui.vendor(&bssid);
         let hidden = ssid.is_empty();
@@ -382,8 +382,10 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
         }
         match aps {
             Some(aps) => {
+                let real = crate::nl80211::signals();
                 let mut v = vec![];
-                for ap in aps {
+                for mut ap in aps {
+                    ap.dbm = real.get(&ap.bssid).copied();
                     v.push(wifi_dev(&ap, &oui));
                 }
                 set(&h, |s| {

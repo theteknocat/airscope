@@ -6,6 +6,7 @@ mod diag;
 mod fx;
 mod hci;
 mod net;
+mod nl80211;
 mod nm;
 mod picker;
 mod snoop;

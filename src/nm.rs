@@ -18,6 +18,7 @@ pub struct Ap {
     pub freq: u32,    // MHz
     pub chan: u32,
     pub strength: u8, // percent, as nmcli's SIGNAL
+    pub dbm: Option<f32>, // true signal from nl80211, when it could be read
     pub rate_kbps: u32,
     pub security: String, // like nmcli: "WPA2", "WPA1 WPA2 802.1X", "WPA2 WPA3", ... ("" = open)
     pub in_use: bool,
@@ -90,6 +91,7 @@ pub fn access_points(conn: &Connection) -> Option<Vec<Ap>> {
             freq,
             chan: channel(freq),
             strength: get(p, "Strength").unwrap_or(0),
+            dbm: None,
             rate_kbps: get(p, "MaxBitrate").unwrap_or(0),
             security: security(get(p, "Flags").unwrap_or(0), get(p, "WpaFlags").unwrap_or(0), get(p, "RsnFlags").unwrap_or(0)),
             in_use: active.iter().any(|a| a == path.as_str()),

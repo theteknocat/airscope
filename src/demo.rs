@@ -22,7 +22,7 @@ fn ap(ssid: &str, bssid: &str, chan: u32, strength: u8, rate: u32, security: &st
         1..=13 => 2407 + chan * 5,
         _ => 5000 + chan * 5,
     };
-    Ap { ssid: ssid.into(), bssid: bssid.into(), freq, chan, strength, rate_kbps: rate * 1000, security: security.into(), in_use }
+    Ap { ssid: ssid.into(), bssid: bssid.into(), freq, chan, strength, dbm: None, rate_kbps: rate * 1000, security: security.into(), in_use }
 }
 
 #[allow(clippy::too_many_arguments)]
