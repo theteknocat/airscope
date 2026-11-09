@@ -354,6 +354,8 @@ pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
 
 fn wifi_loop(h: Handle, oui: Arc<Oui>) {
     let mut last_scan = Instant::now();
+    // The kernel only keeps a scan result for about 30 s, so remember the last real dBm of each access point.
+    let mut real_seen: std::collections::HashMap<String, (f32, Instant)> = std::collections::HashMap::new();
     let mut bus = None;
     loop {
         let (req, auto) = {
@@ -382,10 +384,13 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
         }
         match aps {
             Some(aps) => {
-                let real = crate::nl80211::signals();
+                for (k, d) in crate::nl80211::signals() {
+                    real_seen.insert(k, (d, Instant::now()));
+                }
+                real_seen.retain(|_, (_, t)| t.elapsed() < Duration::from_secs(1800));
                 let mut v = vec![];
                 for mut ap in aps {
-                    ap.dbm = real.get(&ap.bssid).copied();
+                    ap.dbm = real_seen.get(&ap.bssid).map(|(d, _)| *d);
                     v.push(wifi_dev(&ap, &oui));
                 }
                 set(&h, |s| {
