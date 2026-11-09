@@ -5,6 +5,7 @@ mod fx;
 mod hci;
 mod net;
 mod nm;
+mod picker;
 
 use data::{hash64, BtLink, Dev, Handle, Icon, Kind};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -214,6 +215,7 @@ struct App {
     vendor_path: String,
     vendor_msg: Option<(bool, String)>, // (ok, text) of the last import
     vendor_copied: Option<(usize, Instant)>, // which link was just opened
+    vendor_pick: Option<picker::Pick>, // file dialog for the downloaded list, while open
     screen: Screen,
     sel: Option<String>,
     over: HashMap<String, (f32, f32)>, // id -> (angle rad, metres)
@@ -348,6 +350,7 @@ impl App {
             vendor_path: String::new(),
             vendor_msg: None,
             vendor_copied: None,
+            vendor_pick: None,
             screen: match std::env::var("AIRSCOPE_SCREEN").as_deref() { Ok("spectrum") => Screen::Spectrum, Ok("devices") => Screen::Devices, _ => Screen::Radar }, // debug aid
             sel: std::env::var("AIRSCOPE_SEL").ok(), // debug aid
             over,
@@ -465,6 +468,17 @@ impl App {
             return;
         }
         let Some(oui) = data::oui() else { return };
+        if let Some(res) = self.vendor_pick.as_ref().and_then(|p| p.poll()) {
+            self.vendor_pick = None;
+            match res {
+                Ok(Some(path)) => {
+                    self.vendor_path = path.display().to_string();
+                    self.import_vendors(&oui);
+                }
+                Ok(None) => {}
+                Err(e) => self.vendor_msg = Some((false, e)),
+            }
+        }
         let dropped = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().display().to_string()).find(|s| !s.is_empty()));
         if let Some(path) = dropped {
             self.vendor_path = path;
@@ -546,11 +560,14 @@ impl App {
             // step 2
             y += 8.0;
             step(y, "2", "Give the downloaded file to Airscope");
-            p.text(pos2(l + 38.0, y + 26.0), Align2::LEFT_CENTER, "Drag it onto this window, or paste its location below.", FontId::proportional(12.5), DIM);
+            p.text(pos2(l + 38.0, y + 26.0), Align2::LEFT_CENTER, "Choose it with Open, or drag it onto this window.", FontId::proportional(12.5), DIM);
             let field = Rect::from_min_size(pos2(l + 38.0, y + 46.0), vec2(inner - 38.0 - 124.0, 32.0));
-            ui.put(field, egui::TextEdit::singleline(&mut self.vendor_path).hint_text("/home/you/Downloads/oui.txt").align(egui::Align2::LEFT_CENTER).min_size(field.size()));
-            if pill(ui, Rect::from_min_size(pos2(rr - 112.0, y + 46.0), vec2(112.0, 32.0)), "import", "Import", BLUE) {
-                self.import_vendors(&oui);
+            p.rect_filled(field, 8.0, alpha(BG, 0.55));
+            p.rect_stroke(field, 8.0, Stroke::new(1.0, alpha(CYAN, 0.30)), StrokeKind::Inside);
+            let shown = self.vendor_path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("No file chosen yet");
+            p.text(pos2(field.left() + 12.0, field.center().y), Align2::LEFT_CENTER, shown, FontId::proportional(13.5), if self.vendor_path.is_empty() { DIM } else { TEXT });
+            if pill(ui, Rect::from_min_size(pos2(rr - 112.0, y + 46.0), vec2(112.0, 32.0)), "open", if self.vendor_pick.is_some() { "Choosing..." } else { "Open" }, BLUE) && self.vendor_pick.is_none() {
+                self.vendor_pick = Some(picker::Pick::start("Choose the downloaded vendor list"));
             }
             // result and footer
             if let Some((ok, msg)) = &self.vendor_msg {
