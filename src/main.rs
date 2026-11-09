@@ -386,7 +386,7 @@ impl App {
             show: [true; 3],
             scope: 0,
             hide_unnamed: false,
-            collapsed: HashSet::from([0, 1, 2, 3, 4]), // every group starts closed
+            collapsed: if std::env::var("AIRSCOPE_EXPAND").is_ok() { HashSet::new() } else { HashSet::from([0, 1, 2, 3, 4]) }, // every group starts closed (AIRSCOPE_EXPAND opens them: debug aid for screenshots)
             anchor: pos2(700.0, 400.0),
             tip_want: None,
             tip_last: None,
