@@ -1,6 +1,7 @@
 //! Diagnostics screen: opens a Bluetooth capture file written by `btmon -w` (finished, or still growing) and reports
 //! what happened to each device: drops with their reason, sniff-exit requests the controller answered late, bursts.
 //! Reporting only: it never changes anything on the system.
+use crate::Hint;
 
 use crate::capture::{self, Outcome, Recording};
 use crate::data::Icon;
@@ -437,7 +438,7 @@ impl Diag {
             let shown = crate::fit_middle(ui.painter(), &name, font, (ui.available_width() - reserve).max(60.0));
             let r = ui.label(RichText::new(&shown).color(TEXT).size(15.0));
             if shown != name {
-                r.on_hover_text(name);
+                r.hint(name);
             }
         }
         if self.pos < self.total {
@@ -536,7 +537,7 @@ impl Diag {
                 ui.allocate_ui_with_layout(vec2(left_w, 34.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 if self.rec.is_some() {
-                    if action_button(ui, Some(Glyph::Stop), if stacked { "" } else { "Stop" }, RED, 0.6, true, 0.0).on_hover_text("Stop the recording (asks for your password)").clicked() {
+                    if action_button(ui, Some(Glyph::Stop), if stacked { "" } else { "Stop" }, RED, 0.6, true, 0.0).hint("Stop the recording (asks for your password)").clicked() {
                         if let Some(r) = self.rec.as_mut() {
                             self.rec_msg = Some(match r.stop() {
                                 Ok(()) => (false, "Enter your password to end the capture.".to_string()),
@@ -548,7 +549,7 @@ impl Diag {
                         lamp(ui, RED, &format!("REC  {} left", hms(r.left().as_secs())), true);
                     }
                 } else {
-                    if action_button(ui, Some(Glyph::Record), if stacked { "" } else { "Record" }, RED, 0.0, true, 0.0).on_hover_text("Record Bluetooth activity (asks for your password)").clicked() {
+                    if action_button(ui, Some(Glyph::Record), if stacked { "" } else { "Record" }, RED, 0.0, true, 0.0).hint("Record Bluetooth activity (asks for your password)").clicked() {
                         match Recording::start(Duration::from_secs(CAPS[self.cap_idx].1)) {
                             Ok(r) => {
                                 self.follow = Some(r.file.clone());
@@ -567,7 +568,7 @@ impl Diag {
                 }
                 ui.separator();
                 let picking = self.pick.is_some();
-                if action_button(ui, Some(Glyph::Open), if stacked { "" } else if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).on_hover_text("Open a capture file").clicked() {
+                if action_button(ui, Some(Glyph::Open), if stacked { "" } else if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).hint("Open a capture file").clicked() {
                     self.pick = Some(Pick::start("Open a Bluetooth capture file"));
                 }
                 self.name_row(ui);
@@ -595,8 +596,8 @@ impl Diag {
                             let ic = if label == normal { if idx == 1 { Glyph::Save } else { Glyph::Copy } } else if tint == RED { Glyph::Cross } else { Glyph::Check };
                             let r = action_button(ui, Some(ic), if stacked { "" } else { label }, mix(BLUE, tint, t), t, true, if stacked { 0.0 } else { 150.0 });
                             let r = match tip {
-                                Some(t) => r.on_hover_text(t),
-                                None if stacked => r.on_hover_text(normal),
+                                Some(t) => r.hint(t),
+                                None if stacked => r.hint(normal),
                                 None => r,
                             };
                             if r.clicked() {

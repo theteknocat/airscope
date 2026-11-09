@@ -1,5 +1,6 @@
 //! Visual toolkit: glow, bevel, shadow, LED bars, LCD text, orbs, icons.
 //! Everything is drawn with egui's painter; "glow" is additive (premultiplied alpha 0).
+use crate::Hint;
 use crate::data::Icon;
 use eframe::egui::epaint::PathStroke;
 use eframe::egui::{pos2, vec2, Align2, Color32, CursorIcon, FontId, Mesh, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
@@ -571,7 +572,7 @@ pub fn toggle_chip(ui: &mut Ui, label: &str, on: bool, col: Color32, tip: &str) 
         p.circle_stroke(c, 4.0, Stroke::new(1.2, DIM));
     }
     p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.5), if on { Color32::WHITE } else { DIM });
-    resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip).clicked()
+    resp.on_hover_cursor(CursorIcon::PointingHand).hint(tip).clicked()
 }
 
 /// Draws `icon` and `label` as one block centred in `r` (for buttons that are drawn by hand).

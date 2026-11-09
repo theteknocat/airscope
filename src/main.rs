@@ -659,7 +659,7 @@ impl App {
             if resp.clicked() {
                 self.h.lock().unwrap().rescan = true;
             }
-            resp.on_hover_text("Rescan Wi-Fi. Active scan. It briefly disturbs Bluetooth on the shared Wi-Fi/BT chip, so it only runs when you ask.");
+            resp.hint("Rescan Wi-Fi. Active scan. It briefly disturbs Bluetooth on the shared Wi-Fi/BT chip, so it only runs when you ask.");
             x -= rw + 16.0;
         }
         // vendor database button
@@ -671,7 +671,7 @@ impl App {
             if resp.clicked() {
                 self.vendor_open = !self.vendor_open;
             }
-            resp.on_hover_text("Vendor list. Update the list that turns MAC addresses into manufacturer names.");
+            resp.hint("Vendor list. Update the list that turns MAC addresses into manufacturer names.");
             x -= vw + 16.0;
         }
         for (i, (c, txt, tip)) in chips.iter().enumerate().rev() {
@@ -681,7 +681,7 @@ impl App {
             panel(&p, r, 15.0, *c);
             dot(&p, pos2(r.left() + 16.0, r.center().y), 3.5, *c, 0.2);
             p.galley(pos2(r.left() + 28.0, r.center().y - g.size().y / 2.0), g, TEXT);
-            ui.interact(r, ui.scope_id().with(("chip", i)), Sense::hover()).on_hover_text(tip.clone()); // status only: no hand cursor
+            ui.interact(r, ui.scope_id().with(("chip", i)), Sense::hover()).hint(tip.clone()); // status only: no hand cursor
             x -= w + 10.0;
         }
         if !self.errs.is_empty() {
@@ -1410,7 +1410,7 @@ impl App {
         let rr = hit(ui, rb, ui.scope_id().with("reset_view"), Sense::click());
         p.rect_filled(rb, 9.0, alpha(CYAN, if rr.hovered() { 0.35 } else { 0.15 }));
         glyph(&p, Glyph::Refresh, rb.center(), 6.5, Color32::WHITE);
-        let rr = rr.on_hover_text("Reset zoom and position");
+        let rr = rr.hint("Reset zoom and position");
         if rr.clicked() {
             self.reset_view = true;
         }
@@ -2037,11 +2037,11 @@ impl App {
                 for &i in &items[g] {
                     let d = &devs[i];
                     let (r, resp) = ui.allocate_exact_size(vec2(w, 54.0), Sense::click());
-                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).hint("Click for details");
                     let r = r.translate(vec2(14.0, 0.0));
                     let col = kind_col(d.kind);
                     let p = ui.painter();
-                    panel(p, r, 12.0, if resp.hovered() { Color32::WHITE } else if d.trouble > 0.0 { RED } else if d.caution > 0.0 { AMBER } else { col });
+                    panel(p, r, 12.0, if resp.hovered() { CYAN } else if d.trouble > 0.0 { RED } else if d.caution > 0.0 { AMBER } else { col });
                     if d.known {
                         orb(p, pos2(r.left() + 34.0, r.center().y), 15.0, col, 0.0);
                         icon(p, d.icon, pos2(r.left() + 34.0, r.center().y), 7.5, shade(col, 0.12));
@@ -2091,6 +2091,27 @@ impl App {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
             self.anchor = q;
         }
+    }
+}
+
+/// Hover text for any widget, drawn with the shared popup at the pointer (instead of egui's own tooltip).
+/// "Title. Details." splits into a title and a wrapped line; one long sentence goes in the wrapped line.
+pub trait Hint {
+    fn hint(self, text: impl Into<String>) -> egui::Response;
+}
+impl Hint for egui::Response {
+    fn hint(self, text: impl Into<String>) -> egui::Response {
+        if self.hovered() {
+            let text: String = text.into();
+            let (title, rest) = match text.split_once(". ") {
+                Some((a, b)) if a.chars().count() <= 36 => (a.to_string(), b.to_string()),
+                _ => (text.clone(), String::new()), // one sentence: all title, wrapped when long
+            };
+            let anchor = self.ctx.input(|i| i.pointer.hover_pos()).unwrap_or(self.rect.center_bottom());
+            let c = TipC { anchor, col: CYAN, title, sub: if rest.is_empty() { vec![] } else { vec![rest] }, boxed: true, side: None };
+            self.ctx.data_mut(|d| d.insert_temp(egui::Id::new("hint_want"), Some(c)));
+        }
+        self
     }
 }
 
@@ -2165,20 +2186,24 @@ struct Pop {
 
 /// Multi-line hover box above `anchor`.
 fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[String], col: Color32, side: Option<f32>) {
-    let w = 340.0;
-    let g0 = p.layout_no_wrap(title.to_string(), FontId::proportional(14.0), Color32::WHITE);
-    let gs: Vec<_> = lines.iter().map(|l| p.layout(l.clone(), FontId::proportional(12.0), TEXT, w - 28.0)).collect();
-    let h = 14.0 + g0.size().y + 6.0 + gs.iter().map(|g| g.size().y + 5.0).sum::<f32>() + 8.0;
+    let g0 = p.layout(title.to_string(), FontId::proportional(14.0), Color32::WHITE, 312.0);
+    let gs: Vec<_> = lines.iter().map(|l| p.layout(l.clone(), FontId::proportional(12.0), TEXT, 312.0)).collect();
+    let w = (g0.size().x.max(gs.iter().map(|g| g.size().x).fold(0.0, f32::max)) + 28.0).clamp(60.0, 340.0); // fits its text, up to 340 px
+    // equal padding (12 px) above and below the text; the gaps between title and lines only when there are lines
+    let th = if title.is_empty() { 0.0 } else { g0.size().y + if gs.is_empty() { 0.0 } else { 6.0 } };
+    let h = 12.0 + th + gs.iter().map(|g| g.size().y).sum::<f32>() + 5.0 * gs.len().saturating_sub(1) as f32 + 12.0;
     let (x, y) = match side {
         Some(rx) => ((rx - w).max(bounds.left() + 8.0), (anchor.y - h / 2.0).clamp(bounds.top() + 8.0, (bounds.bottom() - h - 8.0).max(bounds.top() + 8.0))),
-        None => ((anchor.x - w / 2.0).clamp(bounds.left() + 8.0, bounds.right() - w - 8.0), (anchor.y - h - 14.0).max(bounds.top() + 8.0)),
+        None => ((anchor.x - w / 2.0).clamp(bounds.left() + 8.0, bounds.right() - w - 8.0), if anchor.y - h - 14.0 < bounds.top() + 8.0 && anchor.y < bounds.top() + h + 30.0 { (anchor.y + 22.0).min(bounds.bottom() - h - 8.0) } else { (anchor.y - h - 14.0).max(bounds.top() + 8.0) }),
     };
     let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
     panel(p, r, 10.0, col);
     let mut yy = r.top() + 12.0;
-    let hh = g0.size().y;
-    p.galley(pos2(r.left() + 14.0, yy), g0, Color32::WHITE);
-    yy += hh + 6.0;
+    if !title.is_empty() {
+        let hh = g0.size().y;
+        p.galley(pos2(r.left() + 14.0, yy), g0, Color32::WHITE);
+        yy += hh + 6.0;
+    }
     for g in gs {
         let gh = g.size().y;
         p.galley(pos2(r.left() + 14.0, yy), g, TEXT);
@@ -2379,7 +2404,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         p.text(pos2(r.left() + 80.0, r.top() + 53.0), Align2::LEFT_CENTER, kindname, FontId::proportional(12.5), col);
         if has_issue {
             // just a glowing dot in a ring: red = issue, amber = warning (the tooltip says which)
-            let resp = hit(ui, chip, ui.id().with("issue_chip"), Sense::click()).on_hover_text(if d.trouble > 0.0 { "Issue found: click for details" } else { "Warning: click for details" });
+            let resp = hit(ui, chip, ui.id().with("issue_chip"), Sense::click()).hint(if d.trouble > 0.0 { "Issue found: click for details" } else { "Warning: click for details" });
             let pulse = (ui.input(|i| i.time) as f32 * 4.0).sin() * 0.5 + 0.5;
             let c = chip.center();
             glow(&p, c, 17.0 + pulse * 4.0, acc, 0.3 + 0.2 * pulse);
@@ -2556,6 +2581,11 @@ impl eframe::App for App {
         let outside = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !self.popup_rects.iter().any(|r| r.contains(q))));
         if outside && self.sel.is_some() && self.sel == sel_before {
             self.sel = None;
+        }
+        // hover texts asked for by plain widgets (`.hint(..)`) use the same popup, unless a richer one is already wanted
+        let hint = ui.ctx().data_mut(|d| d.remove_temp::<Option<TipC>>(egui::Id::new("hint_want"))).flatten();
+        if self.tip_want.is_none() {
+            self.tip_want = hint;
         }
         // tooltips fade too
         if let Some(w) = self.tip_want.take() {

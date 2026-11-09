@@ -61,7 +61,7 @@ Colour always has the same meaning on every screen: a Bluetooth thing is blue ev
 
 - **Cursor:** the pointing hand only on things that react to a click. Status chips and read-only graphics keep the normal cursor (`hit` sets the hand; use `ui.interact` for hover-only).
 - **Click feedback:** a halo (glow with the button's own corner radius) fades in over ~0.15 s, holds ~2 s, fades out ~0.5 s; the icon becomes a tick (green) or cross (red). No layout change.
-- **Hover details** use the shared boxed hover popup (`TipC` → `tip`, the style of the Spectrum hover): title in white, lines beneath in `TEXT`, border in the meaning colour, fade in/out ~0.12/0.15 s. One style everywhere: Spectrum hills, the drops strip. Radar nodes use the small pill version of the same. Plain egui hover text is for short tooltips only.
+- **Hover details** use the shared boxed hover popup (`TipC` → `tip`, the style of the Spectrum hover): title in white, lines beneath in `TEXT`, border in the meaning colour, fade in/out ~0.12/0.15 s. One style everywhere: Spectrum hills, the drops strip. Radar nodes use the small pill version of the same. Plain egui hover text is not used: any widget gets this popup at the pointer with `.hint("Title. Details.")` (a short text is just a title; near the top of the window the box flips below the pointer).
 - **Grouping:** things too dense to hover individually are merged visually (drops within 6 px become one thicker tick with a dot) and the hover lists the members.
 - **Disabled** = no panel and `DIM` text; say why in the tooltip if it isn't obvious.
 
@@ -88,4 +88,4 @@ One scale for Wi-Fi strength everywhere (`data::signal_frac`): 0 at −100 dBm, 
 
 ## Known gaps (not yet in line with this guide)
 
-- Some radar and Devices-row hovers predate the "state + what a click does" wording.
+- Some radar hovers predate the "state + what a click does" wording (Devices rows now say "Click for details" and hover cyan).
