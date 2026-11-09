@@ -378,7 +378,7 @@ impl App {
             show: [true; 3],
             scope: 0,
             hide_unnamed: false,
-            collapsed: HashSet::from([4]),
+            collapsed: HashSet::from([0, 1, 2, 3, 4]), // every group starts closed
             anchor: pos2(700.0, 400.0),
             tip_want: None,
             tip_last: None,
@@ -1841,64 +1841,24 @@ impl App {
     fn devices(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, BG);
-        // --- toolbar: search + filter chips
-        let (tb, _) = ui.allocate_exact_size(vec2(rect.width(), 74.0), Sense::hover());
-        let p = ui.painter().clone();
-        let search = Rect::from_min_size(tb.min + vec2(18.0, 10.0), vec2(300.0, 28.0));
-        ui.put(search, egui::TextEdit::singleline(&mut self.q).hint_text("Search name, vendor, MAC…").align(egui::Align2::LEFT_CENTER).min_size(search.size()));
-        let mut x = search.right() + 18.0;
-        let chip = |ui: &egui::Ui, x: &mut f32, y: f32, label: &str, on: bool, col: Color32| -> bool {
-            let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(12.5), Color32::WHITE);
-            let r = Rect::from_min_size(pos2(*x, y), vec2(g.size().x + 26.0, 28.0));
-            *x = r.right() + 8.0;
-            let resp = hit(ui, r, ui.scope_id().with(("chip", label)), Sense::click());
-            let pp = ui.painter();
-            pp.rect_filled(r, 14.0, if on { alpha(col, if resp.hovered() { 0.42 } else { 0.30 }) } else { alpha(Color32::WHITE, if resp.hovered() { 0.10 } else { 0.04 }) });
-            pp.rect_stroke(r, 14.0, Stroke::new(1.2, if on { alpha(col, 0.9) } else { alpha(Color32::WHITE, 0.18) }), StrokeKind::Inside);
-            pp.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.5), if on { Color32::WHITE } else { DIM });
-            resp.clicked()
-        };
-        let y1 = tb.top() + 10.0;
-        for (k, (lbl, col)) in [("Wi-Fi", AMBER), ("Bluetooth", BLUE), ("Network", GREEN)].into_iter().enumerate() {
-            if chip(ui, &mut x, y1, lbl, self.show[k], col) {
-                self.show[k] = !self.show[k];
-            }
-        }
-        x += 14.0;
-        for (k, lbl) in ["All", "Mine", "Others"].into_iter().enumerate() {
-            if chip(ui, &mut x, y1, lbl, self.scope == k as u8, CYAN) {
-                self.scope = k as u8;
-            }
-        }
-        x += 14.0;
-        if chip(ui, &mut x, y1, "Hide unnamed", self.hide_unnamed, MAGENTA) {
-            self.hide_unnamed = !self.hide_unnamed;
-        }
         // --- filter + group
         let q = self.q.to_lowercase();
         let groups: [(&str, &str, Color32); 5] = [
             ("YOURS", "Bluetooth devices", BLUE),
             ("YOURS", "Network devices (LAN)", GREEN),
-            ("YOURS", "Your Wi-Fi", AMBER),
-            ("NEARBY · not yours", "Neighbouring Wi-Fi networks", AMBER),
+            ("YOURS", "Wi-Fi networks", AMBER),
+            ("NEARBY · not yours", "Wi-Fi networks", AMBER),
             ("NEARBY · not yours", "Unnamed access points", DIM),
         ];
         let mut items: Vec<Vec<usize>> = vec![vec![]; 5];
-        let mut total = 0;
         for (i, d) in self.devs.iter().enumerate() {
             let mine = self.is_mine(d);
             let ok = self.show[d.kind as usize]
-                && match self.scope {
-                    1 => mine,
-                    2 => !mine,
-                    _ => true,
-                }
                 && !(self.hide_unnamed && !d.known)
                 && (q.is_empty() || d.name.to_lowercase().contains(&q) || d.vendor.to_lowercase().contains(&q) || d.id.to_lowercase().contains(&q) || d.details.iter().any(|(_, v)| v.to_lowercase().contains(&q)));
             if !ok {
                 continue;
             }
-            total += 1;
             let g = match d.kind {
                 Kind::Bt => 0,
                 Kind::Lan => 1,
@@ -1911,7 +1871,48 @@ impl App {
         for v in items.iter_mut() {
             v.sort_by_key(|&i| (!self.devs[i].connected as u8, std::cmp::Reverse(self.devs[i].dbm.map(|x| x as i32).unwrap_or(-200)), self.devs[i].name.clone()));
         }
-        p.text(pos2(tb.right() - 24.0, y1 + 14.0), Align2::RIGHT_CENTER, format!("Showing {} of {} devices", total, self.devs.len()), FontId::proportional(12.0), DIM);
+        let yours: usize = items[..3].iter().map(|v| v.len()).sum();
+        let nearby: usize = items[3..].iter().map(|v| v.len()).sum();
+        let total = if self.scope == 0 { yours } else { nearby };
+        if self.scope == 0 {
+            items[3].clear();
+            items[4].clear();
+        } else {
+            for v in &mut items[..3] {
+                v.clear();
+            }
+        }
+        // --- toolbar: search on top; below it the tabs (Yours / Nearby) and the filters, the same layout as Diagnostics
+        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.q).hint_text("Search name, vendor, MAC…").desired_width(320.0).margin(vec2(12.0, 10.0)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("Showing {} of {} devices", total, self.devs.len())).size(12.0).color(DIM));
+                });
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (i, l) in [format!("Yours  ·  {yours}"), format!("Nearby (not yours)  ·  {nearby}")].iter().enumerate() {
+                    if view_tab(ui, l, self.scope == i as u8) {
+                        self.scope = i as u8;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if toggle_chip(ui, "Hide unnamed", self.hide_unnamed, MAGENTA) {
+                        self.hide_unnamed = !self.hide_unnamed;
+                    }
+                    for (k, lbl, col) in [(2usize, "Network", GREEN), (1, "Bluetooth", BLUE), (0, "Wi-Fi", AMBER)] {
+                        if toggle_chip(ui, lbl, self.show[k], col) {
+                            self.show[k] = !self.show[k];
+                        }
+                    }
+                    ui.label(egui::RichText::new("SHOW").size(11.0).color(DIM));
+                });
+            });
+            ui.separator();
+        });
         // --- list
         let mut pick: Option<(String, Pos2)> = None;
         let mut toggle = None;
@@ -1919,17 +1920,9 @@ impl App {
         let devs = &self.devs;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let w = ui.available_width() - 34.0;
-            let mut last_section = "";
-            for (g, (section, title, col)) in groups.iter().enumerate() {
+            for (g, (_section, title, col)) in groups.iter().enumerate() {
                 if items[g].is_empty() {
                     continue;
-                }
-                if *section != last_section {
-                    last_section = section;
-                    ui.add_space(10.0);
-                    let (r, _) = ui.allocate_exact_size(vec2(w + 14.0, 24.0), Sense::hover());
-                    lcd(ui.painter(), pos2(r.left() + 18.0, r.center().y), Align2::LEFT_CENTER, section, 14.0, CYAN);
-                    ui.painter().line_segment([pos2(r.left() + 20.0 + section.len() as f32 * 10.0, r.center().y), pos2(r.right(), r.center().y)], Stroke::new(1.0, alpha(CYAN, 0.2)));
                 }
                 let open = !collapsed.contains(&g);
                 let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());

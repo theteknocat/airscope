@@ -2,7 +2,7 @@
 //! Everything is drawn with egui's painter; "glow" is additive (premultiplied alpha 0).
 use crate::data::Icon;
 use eframe::egui::epaint::PathStroke;
-use eframe::egui::{pos2, vec2, Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use eframe::egui::{pos2, vec2, Align2, Color32, CursorIcon, FontId, Mesh, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
 use std::f32::consts::{PI, TAU};
 
 pub const BG: Color32 = Color32::from_rgb(5, 9, 18);
@@ -437,4 +437,52 @@ pub fn glow_rect(p: &Painter, r: Rect, g: f32, col: Color32, k: f32) {
         }
     }
     p.add(Shape::mesh(m));
+}
+
+// ---------- toolbar widgets shared by the Devices and Diagnostics screens ----------
+
+/// Action button in the app's glass style; dimmed and inert when `on` is false.
+pub fn action_button(ui: &mut Ui, label: &str, accent: Color32, on: bool) -> bool {
+    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), if on { Color32::WHITE } else { DIM });
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, 36.0), Sense::click());
+    let p = ui.painter();
+    if on {
+        panel(p, r, 10.0, if resp.hovered() { CYAN } else { accent });
+    } else {
+        p.rect_filled(r, 10.0, alpha(Color32::WHITE, 0.04));
+    }
+    p.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
+    on && resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+}
+
+/// A view tab: plain text with a glowing underline on the current one.
+pub fn view_tab(ui: &mut Ui, label: &str, on: bool) -> bool {
+    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(16.0), Color32::WHITE);
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 32.0, 34.0), Sense::click());
+    let p = ui.painter();
+    let col = if on { Color32::WHITE } else if resp.hovered() { TEXT } else { DIM };
+    p.text(r.center() - vec2(0.0, 2.0), Align2::CENTER_CENTER, label, FontId::proportional(16.0), col);
+    if on {
+        let u = Rect::from_min_size(pos2(r.left() + 10.0, r.bottom() - 4.0), vec2(r.width() - 20.0, 3.0));
+        glow_rect(p, u, 8.0, CYAN, 0.5);
+        p.rect_filled(u, 1.5, CYAN);
+    }
+    resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+}
+
+/// A small on/off toggle for what the view shows: rounded outline with a lamp, nothing like the action buttons.
+pub fn toggle_chip(ui: &mut Ui, label: &str, on: bool, col: Color32) -> bool {
+    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(12.5), Color32::WHITE);
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 44.0, 28.0), Sense::click());
+    let p = ui.painter();
+    p.rect_filled(r, 14.0, if on { alpha(col, if resp.hovered() { 0.28 } else { 0.18 }) } else { alpha(Color32::WHITE, if resp.hovered() { 0.08 } else { 0.03 }) });
+    p.rect_stroke(r, 14.0, Stroke::new(1.2, if on { alpha(col, 0.85) } else { alpha(Color32::WHITE, 0.18) }), StrokeKind::Inside);
+    let c = pos2(r.left() + 16.0, r.center().y);
+    if on {
+        dot(p, c, 4.0, col, 0.2);
+    } else {
+        p.circle_stroke(c, 4.0, Stroke::new(1.2, DIM));
+    }
+    p.text(pos2(r.left() + 28.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.5), if on { Color32::WHITE } else { DIM });
+    resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }
