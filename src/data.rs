@@ -278,6 +278,11 @@ impl Oui {
     }
 }
 
+/// Where a Wi-Fi signal sits on the app's one signal scale (0 at -100 dBm, 1 at -10 dBm): graph height, dot size, strength bars.
+pub fn signal_frac(dbm: f32) -> f32 {
+    ((dbm + 100.0) / 90.0).clamp(0.0, 1.0)
+}
+
 pub fn dist_from_dbm(dbm: f32) -> f32 {
     // log-distance path loss: -40 dBm at 1 m, exponent 3 (indoor, walls). Rough on purpose.
     10f32.powf((-40.0 - dbm) / 30.0).clamp(0.6, 70.0)

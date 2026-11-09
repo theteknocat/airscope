@@ -37,7 +37,7 @@ fn afh(channels: &[std::ops::RangeInclusive<usize>]) -> Vec<bool> {
 /// Fill the shared state once and keep the "last updated" times fresh.
 pub fn start(h: &Handle, oui: &Oui) {
     let wifi: Vec<_> = [
-        ap("Maple House", "00:0A:EB:3C:91:A0", 1, 94, 286, "WPA2 WPA3", false),
+        ap("Maple House", "00:0A:EB:3C:91:A0", std::env::var("AIRSCOPE_DEMO_CHAN").ok().and_then(|v| v.parse().ok()).unwrap_or(1), 94, 286, "WPA2 WPA3", false),
         ap("Maple House", "00:0A:EB:3C:91:A1", 44, 88, 866, "WPA2 WPA3", true),
         ap("Maple House Guest", "00:0A:EB:3C:91:A2", 1, 90, 286, "WPA2", false),
         ap("Cedar Lane", "00:09:5B:2A:7C:10", 6, 68, 144, "WPA2", false),

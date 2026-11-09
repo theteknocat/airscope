@@ -82,8 +82,10 @@ Shrink the least important information first, never drop it, and keep it reachab
 - Radar data is latched to the sweep and frozen while a group is open or a drag is active (see `CLAUDE.md`).
 - Copy/Save results are shown on the buttons; saved reports and captures live under `~/.local/share/airscope/`.
 
+## Signal scale
+
+One scale for Wi-Fi strength everywhere (`data::signal_frac`): 0 at −100 dBm, 1 at −10 dBm. The Spectrum graph's gridlines are −80/−60/−40/−20 with the unit "dBm" (cyan) at the top of that number column; hill height, radar dot size and the strength bars use the same function. Values are true dBm from nl80211 when available.
+
 ## Known gaps (not yet in line with this guide)
 
-- The Spectrum screen still carries explanatory text: the footer line under the Bluetooth bars ("brighter channel = less Wi-Fi expected…"), the "quiet / crowded" gradient words and the three "How to read it" cards. They predate the principle; convert to visual cues where possible.
-- The sidebar legend says "Network (LAN)" while chips say "LAN".
-- Some tooltips (radar, Devices rows) predate the "state + click result" wording.
+- Some radar and Devices-row hovers predate the "state + what a click does" wording.

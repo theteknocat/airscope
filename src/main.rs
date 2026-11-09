@@ -102,7 +102,7 @@ fn node_rad(d: &Dev) -> f32 {
     if d.known {
         17.0
     } else {
-        4.0 + ((d.dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0
+        4.0 + data::signal_frac(d.dbm.unwrap_or(-85.0)) * 8.0
     }
 }
 
@@ -462,7 +462,7 @@ impl App {
         }
         // legend
         let mut y = rect.bottom() - 110.0;
-        for (c, l) in [(AMBER, "Wi-Fi"), (BLUE, "Bluetooth"), (GREEN, "Network (LAN)")] {
+        for (c, l) in [(AMBER, "Wi-Fi"), (BLUE, "Bluetooth"), (GREEN, "LAN")] {
             dot(&p, pos2(rect.left() + 28.0, y), 5.0, c, 0.0);
             p.text(pos2(rect.left() + 46.0, y), Align2::LEFT_CENTER, l, FontId::proportional(13.0), DIM);
             y += 22.0;
@@ -742,7 +742,7 @@ impl App {
             });
             for (id, kind, known, dbm) in gone {
                 if let Some(&(w, in_icon)) = self.last_world.get(&id) {
-                    let rad = if known { 17.0 } else { 4.0 + ((dbm.unwrap_or(-85.0) + 100.0) / 50.0).clamp(0.0, 1.0) * 8.0 };
+                    let rad = if known { 17.0 } else { 4.0 + data::signal_frac(dbm.unwrap_or(-85.0)) * 8.0 };
                     self.bursts.push(Burst { w, col: kind_col(kind), t0: t, rad, known, ghost: !in_icon });
                 }
             }
@@ -1612,7 +1612,7 @@ impl App {
         let n_links = self.links.len().max(1) as f32;
         let has_bt = !self.links.is_empty();
         let tail = 26.0 + if has_bt { 34.0 + 26.0 + n_links * 26.0 + 22.0 } else { 26.0 } + 14.0; // content below the axis, plus bottom padding
-        let gh = (rect.height() - 74.0 - 40.0 - tail - 200.0).clamp(150.0, 330.0);
+        let gh = (rect.height() - 74.0 - 40.0 - tail - 150.0).clamp(150.0, 330.0);
         let gx0 = l + 130.0;
         let gx1 = rect.right() - legend_w - 170.0;
         let gw = gx1 - gx0;
@@ -1621,24 +1621,51 @@ impl App {
         let frame = Rect::from_min_max(pos2(l, rect.top() + 52.0), pos2(gx1 + 134.0, base + tail));
         panel(&p, frame, 14.0, CYAN);
         // gridlines + axes
-        for (dbm, lbl) in [(-85.0, "-85"), (-70.0, "-70"), (-55.0, "-55")] {
-            let y = base - ((dbm + 95.0) / 55.0) * (gh - 20.0);
+        for (dbm, lbl) in [(-80.0, "-80"), (-60.0, "-60"), (-40.0, "-40"), (-20.0, "-20")] {
+            let y = base - data::signal_frac(dbm) * (gh - 20.0);
             p.line_segment([pos2(gx0, y), pos2(gx1, y)], Stroke::new(1.0, alpha(CYAN, 0.07)));
             p.text(pos2(gx0 - 6.0, y), Align2::RIGHT_CENTER, lbl, FontId::monospace(9.5), DIM);
         }
-        p.text(pos2(l + 18.0, rect.top() + 66.0), Align2::LEFT_TOP, "dBm", FontId::monospace(9.5), DIM);
+        p.text(pos2(gx0 - 6.0, base - (gh - 20.0) - 12.0), Align2::RIGHT_CENTER, "dBm", FontId::monospace(9.5), CYAN); // the unit, at the top of the number column
         for n in 1..=13 {
             let f = 2407.0 + 5.0 * n as f32;
             p.line_segment([pos2(fx(f), rect.top() + 72.0), pos2(fx(f), base)], Stroke::new(1.0, alpha(CYAN, if [1, 6, 11].contains(&n) { 0.16 } else { 0.06 })));
             p.text(pos2(fx(f), base + 9.0), Align2::CENTER_CENTER, n.to_string(), FontId::monospace(11.0), if [1, 6, 11].contains(&n) { CYAN } else { DIM });
         }
-        p.text(pos2(gx0 - 6.0, base + 9.0), Align2::RIGHT_CENTER, "Wi-Fi ch", FontId::proportional(10.5), DIM);
+        p.text(pos2(gx0 - 6.0, base + 9.0), Align2::RIGHT_CENTER, "Wi-Fi ch", FontId::monospace(9.5), CYAN);
         p.line_segment([pos2(gx0, base), pos2(gx1, base)], Stroke::new(1.5, alpha(CYAN, 0.35)));
 
         // hover target: from the legend, else from the graph
         let ptr = ui.input(|i| i.pointer.hover_pos());
         let mut pick: Option<(String, Pos2)> = None;
         let hh = |n: &Net, dx: f32| n.strength() * (gh - 20.0) * hill(dx);
+        // peak labels (strongest first, shifted up when they would collide, cut in the middle so they stay inside the graph)
+        let mut labels: Vec<(usize, Rect, String, bool)> = vec![];
+        {
+            let mut placed: Vec<Rect> = vec![];
+            for (i, n) in nets.iter().enumerate().filter(|(_, n)| !n.hidden) {
+                let full = if n.mine { format!("{} · yours", n.name) } else { n.name.clone() };
+                let cx = fx(n.f);
+                let max_w = (((cx - gx0).min(gx1 - cx)) * 2.0 - 12.0).max(60.0);
+                let shown = fit_middle(&p, &full, FontId::proportional(11.5), max_w);
+                let sz = p.layout_no_wrap(shown.clone(), FontId::proportional(11.5), Color32::WHITE).size() + vec2(10.0, 4.0);
+                let mut y = base - hh(n, 0.0) - 12.0;
+                let mut r = Rect::from_center_size(pos2(cx, y), sz);
+                let mut tries = 0;
+                while placed.iter().any(|q| q.intersects(r)) && tries < 6 {
+                    y -= 15.0;
+                    r = Rect::from_center_size(pos2(cx, y), sz);
+                    tries += 1;
+                }
+                if r.top() < rect.top() + 66.0 {
+                    continue;
+                }
+                if tries < 6 {
+                    placed.push(r);
+                }
+                labels.push((i, r, shown, tries >= 6));
+            }
+        }
         let mut hover: Option<usize> = None;
         let lx = gx1 + 154.0;
         let ly0 = rect.top() + 62.0;
@@ -1669,6 +1696,11 @@ impl App {
         }
         // hills under the cursor, nearest outline first (ties: the stronger network), so a hill hidden
         // inside a bigger one is still reachable by pointing near its own edge
+        if hover.is_none() {
+            if let Some(q) = ptr {
+                hover = labels.iter().find(|l| !l.3 && l.1.contains(q)).map(|l| l.0);
+            }
+        }
         let mut under: Vec<usize> = vec![];
         if hover.is_none() {
             if let Some(q) = ptr.filter(|q| q.x > gx0 && q.x < gx1 && q.y < base && q.y > rect.top() + 72.0) {
@@ -1710,25 +1742,16 @@ impl App {
             let w = if n.mine { 2.6 } else { 1.6 };
             p.add(egui::Shape::line(pts, Stroke::new(w, alpha(col, 0.95 * dim))));
         }
-        // labels above the peaks (strongest first, shifted up when they would collide)
-        let mut placed: Vec<Rect> = vec![];
-        for (i, n) in nets.iter().enumerate().filter(|(_, n)| !n.hidden) {
-            let g = p.layout_no_wrap(if n.mine { format!("{} · yours", n.name) } else { n.name.clone() }, FontId::proportional(11.5), Color32::WHITE);
-            let mut y = base - hh(n, 0.0) - 12.0;
-            let mut r = Rect::from_center_size(pos2(fx(n.f), y), g.size() + vec2(10.0, 4.0));
-            let mut tries = 0;
-            while placed.iter().any(|q| q.intersects(r)) && tries < 6 {
-                y -= 15.0;
-                r = Rect::from_center_size(pos2(fx(n.f), y), g.size() + vec2(10.0, 4.0));
-                tries += 1;
-            }
-            if tries >= 6 && hover != Some(i) || r.top() < rect.top() + 66.0 {
+        // labels above the peaks (placed before hover detection; drawn here)
+        for (i, r, shown, crowded) in &labels {
+            if *crowded && hover != Some(*i) {
                 continue;
             }
-            placed.push(r);
+            let n = &nets[*i];
             let col = col_of(n);
-            p.rect_filled(r, 6.0, Color32::from_rgba_unmultiplied(6, 12, 26, 190));
-            p.rect_stroke(r, 6.0, Stroke::new(1.0, alpha(col, if hover.map_or(true, |h| h == i) { 0.9 } else { 0.3 })), StrokeKind::Inside);
+            let g = p.layout_no_wrap(shown.clone(), FontId::proportional(11.5), Color32::WHITE);
+            p.rect_filled(*r, 6.0, Color32::from_rgba_unmultiplied(6, 12, 26, 190));
+            p.rect_stroke(*r, 6.0, Stroke::new(1.0, alpha(col, if hover.map_or(true, |h| h == *i) { 0.9 } else { 0.3 })), StrokeKind::Inside);
             p.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
         }
         // Bluetooth channels aligned under the same frequency axis
@@ -1764,8 +1787,7 @@ impl App {
             km.add_triangle(2, 3, 4);
             km.add_triangle(3, 5, 4);
             p.add(egui::Shape::mesh(km));
-            p.text(pos2(kr.left(), kr.bottom() + 9.0), Align2::LEFT_CENTER, "quiet", FontId::proportional(9.5), DIM);
-            p.text(pos2(kr.right(), kr.bottom() + 9.0), Align2::RIGHT_CENTER, "crowded", FontId::proportional(9.5), DIM);
+            ui.interact(kr.expand(3.0), ui.id().with("crowd_key"), Sense::hover()).on_hover_text("Wi-Fi crowding on each Bluetooth channel: dark = quiet, red = crowded");
             yc += 34.0;
         }
         let title = if has_bt { format!("CONNECTED BLUETOOTH DEVICES: {}", self.links.len()) } else { "NO BLUETOOTH DEVICES".to_string() };
@@ -1790,7 +1812,7 @@ impl App {
                 }
                 tip_box = Some((q, if l.name.is_empty() { l.mac.clone() } else { l.name.clone() }, lines));
             }
-            p.text(pos2(mid, yend + 6.0), Align2::CENTER_CENTER, "brighter channel = less Wi-Fi expected on it (estimate) · dark outline = avoided", FontId::proportional(10.5), DIM);
+            let _ = yend;
         }
 
         // legend
@@ -1802,7 +1824,7 @@ impl App {
             if hover == Some(*i) {
                 pl.rect_filled(*r, 6.0, alpha(col, 0.16));
             }
-            pl.circle_filled(pos2(r.left() + 10.0, r.center().y), 5.5, col);
+            dot(&pl, pos2(r.left() + 10.0, r.center().y), 5.0, col, 0.0);
             let nm = if n.mine { format!("{} · yours", n.name) } else if n.aps > 1 && n.hidden { format!("{} ×{}", n.name, n.aps) } else { n.name.clone() };
             let info = pl.layout_no_wrap(format!("ch{} {:.0}", n.chan, n.dbm), FontId::monospace(10.5), DIM);
             let nm = fit_middle(&pl, &nm, FontId::proportional(12.0), r.width() - 24.0 - 12.0 - info.size().x - 8.0); // full name shows in the hover box
@@ -1815,7 +1837,7 @@ impl App {
         }
         let n5 = self.devs.iter().filter(|d| d.kind == Kind::Wifi && d.freq.map_or(false, |f| f >= 3000)).count();
         p.text(pos2(lx, base + 14.0), Align2::LEFT_CENTER, format!("{} access points on 5 GHz not shown", n5), FontId::proportional(10.5), DIM);
-        p.text(pos2(lx, base + 28.0), Align2::LEFT_CENTER, "(5 GHz doesn't affect Bluetooth)", FontId::proportional(10.5), DIM);
+        ui.interact(Rect::from_min_size(pos2(lx, base + 6.0), vec2(200.0, 18.0)), ui.id().with("n5_note"), Sense::hover()).on_hover_text("5 GHz doesn't affect Bluetooth, so the graph leaves it out");
 
         // hover tooltip
         if let (Some(h), Some(q)) = (hover, ptr) {
@@ -1840,31 +1862,64 @@ impl App {
             });
         }
 
-        // explanation cards
+        // your network, drawn: where it sits and how busy each clean channel is (no explanation text)
         let cy = frame.bottom() + 12.0;
-        let ch = (rect.bottom() - cy - 12.0).clamp(60.0, 190.0);
-        let cwid = (rect.width() - 48.0 - 24.0) / 3.0;
-        let card = |i: usize, title: &str, text: &str, col: Color32| {
-            let r = Rect::from_min_size(pos2(l + i as f32 * (cwid + 12.0), cy), vec2(cwid, ch));
-            panel(&p, r, 12.0, col);
-            lcd(&p, pos2(r.left() + 14.0, r.top() + 16.0), Align2::LEFT_CENTER, title, 11.5, col);
-            let g = p.layout(text.to_string(), FontId::proportional(12.0), TEXT, r.width() - 28.0);
-            p.galley(pos2(r.left() + 14.0, r.top() + 32.0), g, TEXT);
-        };
-        card(0, "HOW TO READ IT", "Each hill is one Wi-Fi network. A hill is as wide as the radio frequencies it occupies (about 22 MHz, five channels' worth) and as tall as its signal is strong at this PC. Grey hills are access points that don't broadcast a name.", CYAN);
-        card(1, "WHAT OVERLAP MEANS", "Where hills overlap, those networks share the same airwaves. Same channel: they politely take turns, so each gets less speed. Partly overlapping channels are worse: they can't coordinate and just garble each other. Only channels 1, 6 and 11 never overlap. Bluetooth hops across all of it, so channels under a tall, crowded hill are the ones that get disturbed.", AMBER);
-        let mine_txt = match nets.iter().find(|n| n.mine && !n.name.contains("Guest")).or_else(|| nets.iter().find(|n| n.mine)) {
-            None => "None of your own networks are visible on 2.4 GHz.".to_string(),
-            Some(m) => {
-                let others: Vec<&Net> = nets.iter().filter(|o| !std::ptr::eq(*o, m) && !o.mine && o.dbm > -85.0 && (o.f - m.f).abs() < 22.0).collect();
-                let same: Vec<&str> = others.iter().filter(|o| (o.f - m.f).abs() < 1.0).map(|o| o.name.as_str()).collect();
-                let part: Vec<&str> = others.iter().filter(|o| (o.f - m.f).abs() >= 1.0).map(|o| o.name.as_str()).collect();
-                let q = [(1, 2412.0), (6, 2437.0), (11, 2462.0)].into_iter().min_by(|a, b| Self::load_at(&nets, a.1).partial_cmp(&Self::load_at(&nets, b.1)).unwrap()).unwrap().0;
-                let list = |v: &[&str]| v.iter().take(4).copied().collect::<Vec<_>>().join(", ");
-                format!("{} is on channel {}. It shares that channel with {} other network{}{} and partly overlaps {} more{}. The quietest of the clean channels (1, 6, 11) right now is channel {}.", m.name, m.chan, same.len(), if same.len() == 1 { "" } else { "s" }, if same.is_empty() { String::new() } else { format!(" ({})", list(&same)) }, part.len(), if part.is_empty() { String::new() } else { format!(" ({})", list(&part)) }, q)
+        let pr = Rect::from_min_max(pos2(l, cy), pos2(rect.right() - 24.0, (cy + 112.0).min(rect.bottom() - 8.0)));
+        panel(&p, pr, 12.0, GREEN);
+        lcd(&p, pos2(pr.left() + 14.0, pr.top() + 16.0), Align2::LEFT_CENTER, "YOUR NETWORK", 11.5, GREEN);
+        ui.interact(Rect::from_min_size(pr.min, vec2(240.0, pr.height())), ui.id().with("yournet"), Sense::hover()).on_hover_text("Channels 1, 6 and 11 are the only Wi-Fi channels that don't overlap each other, so they are the ones worth choosing between.");
+        let mine = nets.iter().find(|n| n.mine && !n.name.contains("Guest")).or_else(|| nets.iter().find(|n| n.mine));
+        match mine {
+            None => {
+                p.text(pos2(pr.left() + 14.0, pr.top() + 48.0), Align2::LEFT_CENTER, "not on 2.4 GHz", FontId::proportional(13.0), DIM);
             }
-        };
-        card(2, "YOUR NETWORK", &mine_txt, GREEN);
+            Some(mn) => {
+                let nm = fit_middle(&p, &mn.name, FontId::proportional(15.0), 220.0);
+                p.text(pos2(pr.left() + 14.0, pr.top() + 46.0), Align2::LEFT_CENTER, nm, FontId::proportional(15.0), Color32::WHITE);
+                lcd(&p, pos2(pr.left() + 14.0, pr.top() + 78.0), Align2::LEFT_CENTER, &format!("CH {}", mn.chan), 26.0, AMBER);
+            }
+        }
+        let chans: [u32; 3] = [1, 6, 11]; // the only 2.4 GHz channels that don't overlap each other; any other channel overlaps at least one of them
+        let chan_f = |c: u32| 2407.0 + 5.0 * c as f32;
+        let loads: Vec<f32> = chans.iter().map(|&c| (Self::load_at(&nets, chan_f(c)) / 2.2).clamp(0.0, 1.0)).collect();
+        let (gap, x0) = (12.0, pr.left() + 250.0);
+        let tw = ((pr.right() - 14.0 - x0 - gap * (chans.len() as f32 - 1.0)) / chans.len() as f32).max(110.0);
+        for (i, &c) in chans.iter().enumerate() {
+            let tr = Rect::from_min_size(pos2(x0 + i as f32 * (tw + gap), pr.top() + 12.0), vec2(tw, pr.height() - 24.0));
+            let load = loads[i];
+            let col = if load < 0.33 { GREEN } else if load < 0.66 { AMBER } else { RED };
+            panel(&p, tr, 10.0, col);
+            lcd(&p, pos2(tr.left() + 12.0, tr.top() + 18.0), Align2::LEFT_CENTER, &format!("CH {c}"), 13.0, col);
+            led_bar(&p, Rect::from_min_size(pos2(tr.left() + 12.0, tr.top() + 38.0), vec2(tr.width() - 24.0, 9.0)), load, col, 14);
+            // one dot per other network heard on or overlapping this channel (solid = same channel, ring = partly)
+            let f = chan_f(c);
+            let mine_here = mine.filter(|mn| (mn.f - f).abs() < 22.0); // your network is a bigger dot in every tile it is on or overlaps
+            let mut others: Vec<&Net> = nets.iter().filter(|o| (!o.mine && o.dbm > -85.0 && (o.f - f).abs() < 22.0) || mine_here.map_or(false, |mn| std::ptr::eq(mn, *o))).collect();
+            others.sort_by(|a, b| b.mine.cmp(&a.mine).then(b.dbm.partial_cmp(&a.dbm).unwrap_or(std::cmp::Ordering::Equal))); // yours first
+            let room = (((tr.width() - 24.0) / 17.0) as usize).max(1);
+            for (k, o) in others.iter().take(room).enumerate() {
+                let cc = pos2(tr.left() + 18.0 + k as f32 * 17.0, tr.bottom() - 20.0);
+                let same_ch = (o.f - f).abs() < 1.0;
+                let rad = if o.mine { 7.0 } else { 5.0 }; // yours is the bigger dot
+                if same_ch {
+                    dot(&p, cc, rad, col_of(o), 0.0); // glowing, like the list on the right: on exactly this channel
+                } else {
+                    p.circle_filled(cc, rad - 0.5, alpha(col_of(o), if o.mine { 0.7 } else { 0.4 })); // dimmer: only partly overlapping
+                }
+                let nm = if o.name.is_empty() { "(unnamed)".to_string() } else if o.mine { format!("{} (yours)", o.name) } else { o.name.clone() };
+                ui.interact(Rect::from_center_size(cc, vec2(15.0, 18.0)), ui.id().with(("chan_dot", c, k)), Sense::hover()).on_hover_text(format!("{nm} · ch{} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" }));
+            }
+            if others.len() > room {
+                p.text(pos2(tr.right() - 12.0, tr.bottom() - 20.0), Align2::RIGHT_CENTER, format!("+{}", others.len() - room), FontId::proportional(11.0), DIM);
+            }
+            let same = others.iter().filter(|o| (o.f - f).abs() < 1.0).count();
+            ui.interact(tr, ui.id().with(("chan_tile", c)), Sense::hover()).on_hover_text(format!(
+                "Channel {c}: {same} other network{} on it, {} partly overlapping{}",
+                if same == 1 { "" } else { "s" },
+                others.len() - same,
+                if mine_here.is_some() { ". Your network is here." } else { "" }
+            ));
+        }
         if let Some((q, title, lines)) = tip_box {
             self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, boxed: true, side: None });
         }
@@ -2016,7 +2071,7 @@ impl App {
                         p.text(pos2(x, r.center().y), Align2::RIGHT_CENTER, "CONNECTED", FontId::monospace(12.0), GREEN);
                         x -= 98.0;
                     }
-                    let strength = d.dbm.map(|dbm| ((dbm + 100.0) / 55.0).clamp(0.0, 1.0)).or_else(|| data::bt_quality(d.lq, d.rssi));
+                    let strength = d.dbm.map(data::signal_frac).or_else(|| data::bt_quality(d.lq, d.rssi));
                     if let Some(f) = strength {
                         led_bar(p, Rect::from_min_size(pos2(x - 130.0, r.center().y - 5.0), vec2(130.0, 10.0)), f, col, 13);
                         x -= 146.0;
@@ -2157,7 +2212,7 @@ struct Net {
 }
 impl Net {
     fn strength(&self) -> f32 {
-        ((self.dbm + 95.0) / 55.0).clamp(0.05, 1.0)
+        data::signal_frac(self.dbm).max(0.05)
     }
 }
 
@@ -2355,7 +2410,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         let (x0, x1) = (r.left() + 22.0, r.right() - 22.0);
         let has = |k: &str| d.issue.iter().any(|row| row.0 == k);
         if let Some(dbm) = d.dbm {
-            led_bar(&p, Rect::from_min_size(pos2(x0, by), vec2(w - 130.0, 9.0)), ((dbm + 100.0) / 55.0).clamp(0.0, 1.0), col, 24);
+            led_bar(&p, Rect::from_min_size(pos2(x0, by), vec2(w - 130.0, 9.0)), data::signal_frac(dbm), col, 24);
             p.text(pos2(x1, by + 4.5), Align2::RIGHT_CENTER, format!("{:.0} dBm", dbm), FontId::monospace(13.0), TEXT);
         } else if let Some(q) = d.lq {
             let mut y = by;
