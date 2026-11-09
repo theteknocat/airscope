@@ -577,6 +577,9 @@ pub fn toggle_chip(ui: &mut Ui, label: &str, on: bool, col: Color32) -> bool {
 /// Draws `icon` and `label` as one block centred in `r` (for buttons that are drawn by hand).
 pub fn icon_label(p: &Painter, r: Rect, icon: Glyph, label: &str, size: f32) {
     let g = p.layout_no_wrap(label.to_string(), FontId::proportional(size), Color32::WHITE);
+    if label.is_empty() {
+        return glyph(p, icon, r.center(), 7.5, Color32::WHITE);
+    }
     let x0 = r.center().x - (g.size().x + 24.0) / 2.0;
     glyph(p, icon, pos2(x0 + 8.0, r.center().y), 7.5, Color32::WHITE);
     p.galley(pos2(x0 + 24.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);

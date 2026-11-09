@@ -633,43 +633,56 @@ impl App {
         let wifi_n = self.devs.iter().filter(|d| d.kind == Kind::Wifi).count();
         let bt_n = self.links.len();
         let lan_n = self.devs.iter().filter(|d| d.kind == Kind::Lan).count();
+        // each chip has three text levels (full, count only, name only); the full text is always in the tooltip
         let chips = [
-            (AMBER, format!("WI-FI {} APs · {}", wifi_n, age(self.wifi_at))),
-            (BLUE, format!("BT {} linked · {}", bt_n, age(self.bt_at))),
-            (GREEN, format!("LAN {} · {}", lan_n, age(self.lan_at))),
+            (AMBER, ["WI-FI".to_string(), format!("WI-FI {wifi_n}"), format!("WI-FI {wifi_n} APs · {}", age(self.wifi_at))], format!("Wi-Fi: {wifi_n} access points, last scan {} ago", age(self.wifi_at))),
+            (BLUE, ["BT".to_string(), format!("BT {bt_n}"), format!("BT {bt_n} linked · {}", age(self.bt_at))], format!("Bluetooth: {bt_n} linked, last update {} ago", age(self.bt_at))),
+            (GREEN, ["LAN".to_string(), format!("LAN {lan_n}"), format!("LAN {lan_n} · {}", age(self.lan_at))], format!("LAN: {lan_n} devices, last update {} ago", age(self.lan_at))),
         ];
         let mut x = rect.right() - 20.0;
+        let left = rect.left() + 26.0 + title.len() as f32 * 17.0 + 16.0;
+        let width = |lvl: usize| -> f32 { chips.iter().map(|(_, t, _)| p.layout_no_wrap(t[lvl].clone(), FontId::monospace(12.0), TEXT).size().x + 50.0).sum() };
+        // chips shrink first (full text, count only, name only); if even names do not fit beside the full buttons, the buttons become icons
+        let fit = |btn: f32| (0..3).rev().find(|&l| width(l) <= x - btn - left);
+        let (lvl, compact) = match fit(314.0) {
+            Some(l) => (l, false),
+            None => (fit(92.0).unwrap_or(0), true),
+        };
+        let (rw, vw) = if compact { (38.0, 38.0) } else { (150.0, 132.0) };
         // rescan button
         {
-            let r = Rect::from_min_size(pos2(x - 150.0, rect.center().y - 17.0), vec2(150.0, 34.0));
+            let r = Rect::from_min_size(pos2(x - rw, rect.center().y - 17.0), vec2(rw, 34.0));
             let resp = hit(ui, r, ui.scope_id().with("rescan"), Sense::click());
             panel(&p, r, 9.0, if resp.hovered() { CYAN } else { BLUE });
-            icon_label(&p, r, Glyph::Refresh, "Rescan Wi-Fi", 14.0);
+            icon_label(&p, r, Glyph::Refresh, if compact { "" } else { "Rescan Wi-Fi" }, 14.0);
             if resp.clicked() {
                 self.h.lock().unwrap().rescan = true;
             }
-            resp.on_hover_text("Active scan. It briefly disturbs Bluetooth on the shared Wi-Fi/BT chip, so it only runs when you ask.");
-            x -= 166.0;
+            resp.on_hover_text("Rescan Wi-Fi. Active scan. It briefly disturbs Bluetooth on the shared Wi-Fi/BT chip, so it only runs when you ask.");
+            x -= rw + 16.0;
         }
         // vendor database button
         {
-            let r = Rect::from_min_size(pos2(x - 132.0, rect.center().y - 17.0), vec2(132.0, 34.0));
+            let r = Rect::from_min_size(pos2(x - vw, rect.center().y - 17.0), vec2(vw, 34.0));
             let resp = hit(ui, r, ui.scope_id().with("vendors"), Sense::click());
             panel(&p, r, 9.0, if resp.hovered() { CYAN } else { alpha(BLUE, 0.6) });
-            icon_label(&p, r, Glyph::List, "Vendor list", 14.0);
+            icon_label(&p, r, Glyph::List, if compact { "" } else { "Vendor list" }, 14.0);
             if resp.clicked() {
                 self.vendor_open = !self.vendor_open;
             }
-            resp.on_hover_text("Update the list that turns MAC addresses into manufacturer names.");
-            x -= 148.0;
+            resp.on_hover_text("Vendor list. Update the list that turns MAC addresses into manufacturer names.");
+            x -= vw + 16.0;
         }
-        for (c, txt) in chips.iter().rev() {
-            let g = p.layout_no_wrap(txt.clone(), FontId::monospace(12.0), TEXT);
+        for (i, (c, txt, tip)) in chips.iter().enumerate().rev() {
+            let g = p.layout_no_wrap(txt[lvl].clone(), FontId::monospace(12.0), TEXT);
             let w = g.size().x + 40.0;
             let r = Rect::from_min_size(pos2(x - w, rect.center().y - 15.0), vec2(w, 30.0));
             panel(&p, r, 15.0, *c);
             dot(&p, pos2(r.left() + 16.0, r.center().y), 3.5, *c, 0.2);
             p.galley(pos2(r.left() + 28.0, r.center().y - g.size().y / 2.0), g, TEXT);
+            if lvl < 2 {
+                hit(ui, r, ui.scope_id().with(("chip", i)), Sense::hover()).on_hover_text(tip.clone());
+            }
             x -= w + 10.0;
         }
         if !self.errs.is_empty() {
@@ -1915,6 +1928,23 @@ impl App {
                 });
             });
             ui.add_space(10.0);
+            // filters: right of the tabs when there is room, on a row of their own when not
+            let narrow = ui.available_width() < 820.0;
+            let (show, hide) = (&mut self.show, &mut self.hide_unnamed);
+            let mut chips = |ui: &mut egui::Ui, rev: bool| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(egui::RichText::new("SHOW").size(11.0).color(DIM));
+                let mut all = vec![(0usize, "Wi-Fi", AMBER), (1, "Bluetooth", BLUE), (2, "Network", GREEN), (3, "Hide unnamed", MAGENTA)];
+                if rev {
+                    all.reverse();
+                }
+                for (k, lbl, col) in all {
+                    let on = if k == 3 { *hide } else { show[k] };
+                    if toggle_chip(ui, lbl, on, col) {
+                        if k == 3 { *hide = !*hide } else { show[k] = !show[k] }
+                    }
+                }
+            };
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (i, l) in [format!("Yours  ·  {yours}"), format!("Nearby (not yours)  ·  {nearby}")].iter().enumerate() {
@@ -1922,19 +1952,14 @@ impl App {
                         self.scope = i as u8;
                     }
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    if toggle_chip(ui, "Hide unnamed", self.hide_unnamed, MAGENTA) {
-                        self.hide_unnamed = !self.hide_unnamed;
-                    }
-                    for (k, lbl, col) in [(2usize, "Network", GREEN), (1, "Bluetooth", BLUE), (0, "Wi-Fi", AMBER)] {
-                        if toggle_chip(ui, lbl, self.show[k], col) {
-                            self.show[k] = !self.show[k];
-                        }
-                    }
-                    ui.label(egui::RichText::new("SHOW").size(11.0).color(DIM));
-                });
+                if !narrow {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| chips(ui, true));
+                }
             });
+            if narrow {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| chips(ui, false));
+            }
             ui.separator();
         });
         // --- list
@@ -2508,7 +2533,7 @@ impl eframe::App for App {
 
 fn window_options(samples: u16) -> eframe::NativeOptions {
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1360.0, 860.0]).with_min_inner_size([960.0, 640.0]).with_title("Airscope").with_app_id("airscope"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1360.0, 860.0]).with_min_inner_size([1000.0, 640.0]).with_title("Airscope").with_app_id("airscope"),
         multisampling: samples, // smooths the edges of the custom meshes (orbs, bars, glows) that egui does not anti-alias itself
         ..Default::default()
     }

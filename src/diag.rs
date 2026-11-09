@@ -475,6 +475,10 @@ impl Diag {
             // row 1: actions on the file (glass buttons)
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
+                // the left group gets what the Copy/Save buttons leave, and its texts are cut short instead of running into them
+                let left_w = (ui.available_width() - if s.is_some() { 330.0 } else { 0.0 }).max(200.0);
+                ui.allocate_ui_with_layout(vec2(left_w, 34.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
                 if self.rec.is_some() {
                     if action_button(ui, Some(Glyph::Stop), "Stop", RED, 0.6, true, 0.0).clicked() {
                         if let Some(r) = self.rec.as_mut() {
@@ -511,7 +515,7 @@ impl Diag {
                     self.pick = Some(Pick::start("Open a Bluetooth capture file"));
                 }
                 let name = self.shown_name();
-                ui.label(if name.is_empty() { RichText::new("No capture opened").color(DIM) } else { RichText::new(name).color(TEXT).size(15.0) });
+                ui.add(egui::Label::new(if name.is_empty() { RichText::new("No capture opened").color(DIM) } else { RichText::new(name).color(TEXT).size(15.0) }).truncate());
                 if self.pos < self.total {
                     ui.label(RichText::new(format!("loading {}%", self.pos * 100 / self.total)).color(DIM));
                 }
@@ -519,8 +523,9 @@ impl Diag {
                     lamp(ui, GREEN, "LIVE", true);
                 }
                 if let Some((err, m)) = &self.rec_msg {
-                    ui.label(RichText::new(m).size(12.5).color(if *err { RED } else { DIM }));
+                    ui.add(egui::Label::new(RichText::new(m).size(12.5).color(if *err { RED } else { DIM })).truncate());
                 }
+                });
                 if let Some(s) = &s {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
