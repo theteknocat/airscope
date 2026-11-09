@@ -218,7 +218,9 @@ impl Snoop {
         matches!(e.kind, Kind::SniffExit { wait } if wait.map_or(true, |w| w > SLOW_EXIT_S))
     }
 
-    /// Whether a slow or unanswered sniff exit for the same device came shortly before this drop.
+    /// Whether a slow or unanswered sniff exit for the same device came shortly before this drop (the cards count this
+    /// in a single pass in `per_device`; this form is for tests).
+    #[cfg(test)]
     pub fn after_stall(&self, drop: &Ev) -> bool {
         self.events.iter().any(|e| e.addr == drop.addr && Self::slow_exit(e) && e.t <= drop.t && drop.t - e.t <= STALL_WINDOW_S)
     }

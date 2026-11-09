@@ -2,6 +2,7 @@
 //! what happened to each device: drops with their reason, sniff-exit requests the controller answered late, bursts.
 //! Reporting only: it never changes anything on the system.
 
+use crate::capture::{self, Outcome, Recording};
 use crate::data::Icon;
 use crate::fx::*;
 use crate::picker::Pick;
@@ -9,7 +10,11 @@ use crate::snoop::{self, dur, line, mac, Ev, Kind, Snoop};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+/// Capture lengths offered when recording: label, seconds.
+const CAPS: [(&str, u64); 4] = [("15 minutes", 900), ("1 hour", 3600), ("4 hours", 14400), ("12 hours", 43200)];
 
 /// Known Bluetooth devices by upper-case address: (name, icon).
 pub type Names = HashMap<String, (String, Icon)>;
@@ -39,11 +44,24 @@ pub struct Diag {
     /// Brief confirmation shown on a button: (when, which button: 0 copy / 1 save, outcome text).
     flash: Option<(Instant, u8, Result<String, String>)>,
     pick: Option<Pick>,
+    /// A capture being recorded through pkexec (None when idle), the length chosen, and the last status line (error?, text).
+    rec: Option<Recording>,
+    cap_idx: usize,
+    rec_msg: Option<(bool, String)>,
+    /// A new recording to open as soon as btmon has written its header.
+    follow: Option<PathBuf>,
+    /// When new data last arrived from the file (drives the LIVE lamp).
+    grew: Option<Instant>,
+    /// A recording just ended: save its report and summary once the last bytes are read.
+    finalize: bool,
+    summarised: bool,
+    sessions: Vec<capture::Session>,
+    sessions_at: Option<Instant>,
 }
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None };
         if !d.path.is_empty() {
             d.load();
         }
@@ -62,6 +80,7 @@ impl Diag {
         self.total = 0;
         self.key = u64::MAX;
         self.ev_px.clear();
+        self.summarised = false;
         let p = self.clean_path();
         match std::fs::metadata(&p) {
             Ok(m) if m.is_file() => {
@@ -102,6 +121,7 @@ impl Diag {
             return;
         }
         self.pos += buf.len() as u64;
+        self.grew = Some(Instant::now());
         if let Some(s) = self.snoop.as_mut() {
             if let Err(e) = s.feed(&buf) {
                 self.err = Some(e);
@@ -174,7 +194,7 @@ impl Diag {
     }
 
     fn report(&self, s: &Snoop, names: &Names) -> String {
-        let mut r = format!("# Bluetooth capture report\n\nFile: {}\n\n## Summary\n\n", self.clean_path().rsplit('/').next().unwrap_or(""));
+        let mut r = format!("# Bluetooth capture report\n\nFile: {}\n\n## Summary\n\n", self.shown_name());
         for (_, l) in self.summary(s, names) {
             r += &format!("{l}\n");
         }
@@ -191,17 +211,37 @@ impl Diag {
     }
 
     fn save(&mut self, s: &Snoop, names: &Names) {
-        let base = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).map(std::path::PathBuf::from).or_else(|| std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".local/share")));
-        let Some(base) = base else { return };
-        let dir = base.join("airscope/reports");
-        let first = s.first_us.map_or(0.0, |f| (f - 0x00dc_ddb3_0f2f_8000i64) as f64 / 1e6);
-        let stem = self.clean_path().rsplit('/').next().unwrap_or("capture").trim_end_matches(".snoop").to_string();
-        let file = dir.join(format!("{stem}-{}.md", snoop::date(first)));
-        let res = match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, self.report(s, names))) {
-            Ok(()) => Ok(format!("Saved to {}", file.display().to_string().replacen(&std::env::var("HOME").unwrap_or_default(), "~", 1))),
+        // a capture in the library keeps its report next to it; any other capture's report goes to the shared reports folder
+        let file = match capture::session_dir_of(Path::new(&self.clean_path())) {
+            Some(dir) => dir.join(capture::REPORT_FILE),
+            None => {
+                let base = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local/share")));
+                let Some(base) = base else { return };
+                let first = Self::first_unix(s);
+                let stem = self.shown_name().trim_end_matches(".snoop").to_string();
+                base.join("airscope/reports").join(format!("{stem}-{}.md", snoop::date(first)))
+            }
+        };
+        let res = match file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&file, self.report(s, names))) {
+            Ok(()) => {
+                self.sessions_at = None;
+                Ok(format!("Saved to {}", file.display().to_string().replacen(&std::env::var("HOME").unwrap_or_default(), "~", 1)))
+            }
             Err(e) => Err(format!("Could not save: {e}")),
         };
         self.flash = Some((Instant::now(), 1, res));
+    }
+
+    /// The capture's name for display: a library capture is named by when it was started.
+    fn shown_name(&self) -> String {
+        let p = self.clean_path();
+        let path = Path::new(&p);
+        let f = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if f == capture::CAPTURE_FILE {
+            path.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str()).unwrap_or(f).to_string()
+        } else {
+            f.to_string()
+        }
     }
 
     fn first_unix(s: &Snoop) -> f64 {
@@ -307,6 +347,57 @@ impl Diag {
         });
     }
 
+    /// The saved sessions, newest first: when each was started, how long, how big, how many drops, with Open and Copy path.
+    fn library_view(&mut self, ui: &mut egui::Ui) {
+        if self.sessions_at.map_or(true, |t| t.elapsed() > Duration::from_secs(3)) {
+            self.sessions = capture::list();
+            self.sessions_at = Some(Instant::now());
+        }
+        if self.sessions.is_empty() {
+            ui.label(RichText::new("No saved captures yet. A recording made with the Record button is kept here, with its analysis.").color(DIM));
+            return;
+        }
+        let w = ui.available_width() - 8.0;
+        let mut open: Option<PathBuf> = None;
+        let mut copy: Option<PathBuf> = None;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for sess in &self.sessions {
+                let (r, _) = ui.allocate_exact_size(vec2(w, 84.0), Sense::hover());
+                let recording = self.rec.as_ref().map_or(false, |x| x.file == sess.capture);
+                let accent = if recording { RED } else if sess.summary.as_ref().map_or(false, |x| x.drops > 0) { AMBER } else { BLUE };
+                let p = ui.painter().clone();
+                panel(&p, r, 12.0, accent);
+                lcd(&p, pos2(r.left() + 20.0, r.top() + 28.0), Align2::LEFT_CENTER, &sess.name.replacen('_', "   ", 1), 19.0, if recording { RED } else { CYAN });
+                let sub = match &sess.summary {
+                    Some(x) => format!("{}  ·  {}  ·  {} drops  ·  {} records{}", dur(x.duration), size_str(sess.size), x.drops, x.records, if sess.report { "  ·  report saved" } else { "" }),
+                    None => format!("{}  ·  not analysed yet: open it to analyse", size_str(sess.size)),
+                };
+                p.text(pos2(r.left() + 20.0, r.top() + 58.0), Align2::LEFT_CENTER, if recording { "recording now".to_string() } else { sub }, FontId::proportional(13.0), DIM);
+                let bar = Rect::from_min_size(pos2(r.right() - 300.0, r.top() + 24.0), vec2(280.0, 36.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    if action_button(ui, "Open", BLUE, 0.0, true, 0.0).clicked() {
+                        open = Some(sess.capture.clone());
+                    }
+                    if action_button(ui, "Copy path", BLUE, 0.0, true, 0.0).clicked() {
+                        copy = Some(sess.dir.clone());
+                    }
+                });
+                ui.advance_cursor_after_rect(r); // the button area above is a child Ui that moved the cursor to its own bottom
+                ui.add_space(10.0);
+            }
+        });
+        if let Some(c) = open {
+            self.path = c.display().to_string();
+            self.tab = 0;
+            self.load();
+        }
+        if let Some(dir) = copy {
+            ui.ctx().copy_text(dir.display().to_string());
+            self.rec_msg = Some((false, "Folder path copied to the clipboard".into()));
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, names: &Names) {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, BG);
@@ -325,6 +416,30 @@ impl Diag {
                 Err(e) => self.err = Some(e),
             }
         }
+        let outcome = self.rec.as_mut().map(|r| r.poll());
+        match outcome {
+            Some(Outcome::Finished) => {
+                self.rec = None;
+                self.finalize = true;
+                self.checked = Instant::now() - Duration::from_secs(3); // look at the file again right away
+                self.rec_msg = Some((false, "Capture finished and saved to the library.".into()));
+            }
+            Some(Outcome::Failed(m)) => {
+                self.rec = None;
+                self.follow = None;
+                self.rec_msg = Some((true, m));
+            }
+            _ => {}
+        }
+        if let Some(f) = self.follow.clone() {
+            if std::fs::metadata(&f).map_or(false, |m| m.len() > 16) {
+                self.follow = None;
+                self.rec_msg = None;
+                self.path = f.display().to_string();
+                self.tab = 0;
+                self.load();
+            }
+        }
         self.pump();
         let s = self.snoop.take();
         if let Some(s) = &s {
@@ -338,19 +453,73 @@ impl Diag {
                 self.tl = (0..s.events.len()).rev().filter(|&i| Self::problem(&s.events[i]) || !self.problems_only).collect();
                 self.tl_key = k;
             }
+            // a capture in the library: keep its summary (and, when a recording has just ended, its report) up to date
+            if self.pos >= self.total {
+                if let Some(dir) = capture::session_dir_of(Path::new(&self.clean_path())) {
+                    if self.finalize {
+                        let _ = std::fs::write(dir.join(capture::REPORT_FILE), self.report(s, names));
+                        self.finalize = false;
+                        self.summarised = false;
+                    }
+                    if self.rec.is_none() && !self.summarised {
+                        capture::write_summary(&dir, &capture::Summary { records: s.records, drops: s.drops().count(), duration: s.duration() });
+                        self.summarised = true;
+                        self.sessions_at = None;
+                    }
+                } else {
+                    self.finalize = false;
+                }
+            }
         }
         egui::Frame::NONE.inner_margin(18.0).show(ui, |ui| {
             // row 1: actions on the file (glass buttons)
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
+                if self.rec.is_some() {
+                    if action_button(ui, "Stop", RED, 0.6, true, 0.0).clicked() {
+                        if let Some(r) = self.rec.as_mut() {
+                            self.rec_msg = Some(match r.stop() {
+                                Ok(()) => (false, "Enter your password to end the capture.".to_string()),
+                                Err(e) => (true, e),
+                            });
+                        }
+                    }
+                    if let Some(r) = &self.rec {
+                        lamp(ui, RED, &format!("REC  {} left", hms(r.left().as_secs())), true);
+                    }
+                } else {
+                    if action_button(ui, "Record", RED, 0.0, true, 0.0).clicked() {
+                        match Recording::start(Duration::from_secs(CAPS[self.cap_idx].1)) {
+                            Ok(r) => {
+                                self.follow = Some(r.file.clone());
+                                self.rec = Some(r);
+                                self.rec_msg = Some((false, "Waiting for your password...".into()));
+                            }
+                            Err(e) => self.rec_msg = Some((true, e)),
+                        }
+                    }
+                    ui.label(RichText::new("for").color(DIM));
+                    egui::ComboBox::from_id_salt("cap_len").selected_text(CAPS[self.cap_idx].0).show_ui(ui, |ui| {
+                        for (i, (l, _)) in CAPS.iter().enumerate() {
+                            ui.selectable_value(&mut self.cap_idx, i, *l);
+                        }
+                    });
+                }
+                ui.separator();
                 let picking = self.pick.is_some();
                 if action_button(ui, if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).clicked() {
                     self.pick = Some(Pick::start("Open a Bluetooth capture file"));
                 }
-                let name = self.clean_path().rsplit('/').next().unwrap_or("").to_string();
+                let name = self.shown_name();
                 ui.label(if name.is_empty() { RichText::new("No capture opened").color(DIM) } else { RichText::new(name).color(TEXT).size(15.0) });
                 if self.pos < self.total {
                     ui.label(RichText::new(format!("loading {}%", self.pos * 100 / self.total)).color(DIM));
+                }
+                if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) {
+                    lamp(ui, GREEN, "LIVE", true);
+                }
+                if let Some((err, m)) = &self.rec_msg {
+                    ui.label(RichText::new(m).size(12.5).color(if *err { RED } else { DIM }));
                 }
                 if let Some(s) = &s {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -392,30 +561,36 @@ impl Diag {
             // row 2: which view (tabs, left) and what to show in it (toggle chips, right)
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                for (i, l) in ["Summary", "Timeline"].iter().enumerate() {
+                for (i, l) in ["Summary", "Timeline", "Library"].iter().enumerate() {
                     if view_tab(ui, l, self.tab == i as u8) {
                         self.tab = i as u8;
                     }
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    if self.tab > 0 && toggle_chip(ui, "Problems only", self.problems_only, AMBER) {
-                        self.problems_only = !self.problems_only;
-                    }
-                    if toggle_chip(ui, "Device addresses", self.addrs, CYAN) {
-                        self.addrs = !self.addrs;
-                    }
-                    ui.label(RichText::new("SHOW").size(11.0).color(DIM));
-                });
+                if self.tab != 2 {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if self.tab > 0 && toggle_chip(ui, "Problems only", self.problems_only, AMBER) {
+                            self.problems_only = !self.problems_only;
+                        }
+                        if toggle_chip(ui, "Device addresses", self.addrs, CYAN) {
+                            self.addrs = !self.addrs;
+                        }
+                        ui.label(RichText::new("SHOW").size(11.0).color(DIM));
+                    });
+                }
             });
             ui.separator();
             if let Some(e) = &self.err {
                 ui.label(RichText::new(e).color(RED));
             }
+            if self.tab == 2 {
+                self.library_view(ui);
+                return;
+            }
             let Some(s) = &s else {
                 if self.err.is_none() {
-                    ui.label(RichText::new("Press Open (or drop a capture file on this window) to see what happened to each Bluetooth device: when the link dropped and why, and whether the controller was slow to answer.").color(DIM));
-                    ui.label(RichText::new("A capture is made with: sudo btmon -w ~/capture.snoop   (it can still be running).").color(DIM));
+                    ui.label(RichText::new("Press Record to capture Bluetooth activity (you will be asked for your password), or Open (or drop a capture file on this window) to see what happened to each Bluetooth device: when the link dropped and why, and whether the controller was slow to answer.").color(DIM));
+                    ui.label(RichText::new("Recordings are kept in the Library tab with their analysis. A capture made by hand (sudo btmon -w file) can be opened too, even while it is still running.").color(DIM));
                 }
                 return;
             };
@@ -513,4 +688,22 @@ fn card(ui: &mut egui::Ui, size: egui::Vec2, d: &snoop::DevStat, name: &str, ic:
         led_bar(p, Rect::from_min_size(pos2(r.left() + 20.0, y + 18.0), vec2(r.width() - 40.0, 10.0)), d.slow_exits as f32 / d.exits as f32, if d.slow_exits > 0 { AMBER } else { GREEN }, 28);
         p.text(pos2(r.left() + 20.0, y + 42.0), Align2::LEFT_CENTER, format!("{} of {} requests  ·  {} of {} drops came within 30 s after one", d.slow_exits, d.exits, d.after_stall, d.drops), FontId::proportional(12.0), TEXT);
     }
+}
+
+/// A small status lamp with a label, optionally pulsing.
+fn lamp(ui: &mut egui::Ui, col: Color32, label: &str, pulse: bool) {
+    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(13.0), col);
+    let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 22.0, 22.0), Sense::hover());
+    let t = if pulse { 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 4.0).sin() } else { 1.0 };
+    let p = ui.painter();
+    dot(p, pos2(r.left() + 7.0, r.center().y), 4.5, col, 0.4 * t);
+    p.galley(pos2(r.left() + 20.0, r.center().y - g.size().y / 2.0), g, col);
+}
+
+fn hms(secs: u64) -> String {
+    if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) }
+}
+
+fn size_str(b: u64) -> String {
+    if b < 1 << 20 { format!("{:.0} KB", b as f64 / 1024.0) } else if b < 1 << 30 { format!("{:.1} MB", b as f64 / (1 << 20) as f64) } else { format!("{:.2} GB", b as f64 / (1u64 << 30) as f64) }
 }

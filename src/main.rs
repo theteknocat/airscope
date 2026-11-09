@@ -1,6 +1,7 @@
 mod data;
 mod demo;
 mod bluez;
+mod capture;
 mod diag;
 mod fx;
 mod hci;
