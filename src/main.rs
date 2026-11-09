@@ -1580,8 +1580,6 @@ impl App {
                     p.rect_stroke(r, 2.0, Stroke::new(1.0, alpha(DIM, 0.45)), StrokeKind::Inside);
                 }
             }
-            let n = l.afh.as_ref().map_or(79, |m| m.iter().filter(|x| **x).count());
-            p.text(pos2(end_x + 12.0, y + 9.0), Align2::LEFT_CENTER, format!("{}/79 in use", n), FontId::monospace(10.0), DIM);
             y += 26.0;
         }
         (y, hov, clk)
@@ -1606,7 +1604,6 @@ impl App {
             Color32::from_rgb(PAL[i].0, PAL[i].1, PAL[i].2)
         };
         let l = rect.left() + 24.0;
-        p.text(pos2(l, rect.top() + 26.0), Align2::LEFT_CENTER, "2.4 GHz: Wi-Fi networks as hills on the frequencies they use, with Bluetooth's channels directly underneath", FontId::proportional(12.0), DIM);
 
         let legend_w = (rect.width() * 0.22).clamp(150.0, 300.0); // legend shrinks first on narrow windows so the graph keeps its width
         let n_links = self.links.len().max(1) as f32;
@@ -1614,12 +1611,14 @@ impl App {
         let tail = 26.0 + if has_bt { 34.0 + 26.0 + n_links * 26.0 + 22.0 } else { 26.0 } + 14.0; // content below the axis, plus bottom padding
         let gh = (rect.height() - 74.0 - 40.0 - tail - 150.0).clamp(150.0, 330.0);
         let gx0 = l + 130.0;
-        let gx1 = rect.right() - legend_w - 170.0;
+        let gx1 = rect.right() - legend_w - 60.0;
         let gw = gx1 - gx0;
         let base = rect.top() + 74.0 + gh;
         let fx = |f: f32| gx0 + (f - 2399.0) / 87.0 * gw;
-        let frame = Rect::from_min_max(pos2(l, rect.top() + 52.0), pos2(gx1 + 134.0, base + tail));
+        let frame = Rect::from_min_max(pos2(l, rect.top() + 14.0), pos2(gx1 + 24.0, base + tail));
         panel(&p, frame, 14.0, CYAN);
+        let n24 = nets.iter().filter(|n| !n.hidden || n.aps > 0).map(|n| n.aps.max(1) as usize).sum::<usize>();
+        lcd(&p, pos2((gx0 + gx1) / 2.0, rect.top() + 36.0), Align2::CENTER_CENTER, &format!("2.4 GHZ WI-FI NETWORKS WITHIN RANGE: {}", n24), 12.0, AMBER);
         // gridlines + axes
         for (dbm, lbl) in [(-80.0, "-80"), (-60.0, "-60"), (-40.0, "-40"), (-20.0, "-20")] {
             let y = base - data::signal_frac(dbm) * (gh - 20.0);
@@ -1667,11 +1666,13 @@ impl App {
             }
         }
         let mut hover: Option<usize> = None;
-        let lx = gx1 + 154.0;
-        let ly0 = rect.top() + 62.0;
-        let max_rows = (((base + 30.0 - ly0) / 24.0) as usize).saturating_sub(2).max(4);
+        let lx = gx1 + 44.0;
+        let card = Rect::from_min_max(pos2(lx - 12.0, frame.top()), pos2(rect.right() - 18.0, frame.bottom()));
+        panel(&p, card, 14.0, CYAN);
+        let ly0 = card.top() + 12.0;
+        let max_rows = (((card.height() - 24.0) / 24.0) as usize).max(1);
         // legend: every network, scrollable when there are more than fit
-        let lview = Rect::from_min_max(pos2(lx, ly0), pos2(rect.right() - 20.0, ly0 + max_rows as f32 * 24.0));
+        let lview = Rect::from_min_max(pos2(lx, ly0), pos2(card.right() - 14.0, ly0 + max_rows as f32 * 24.0));
         let lmax = (nets.len() as f32 - max_rows as f32).max(0.0) * 24.0;
         let lid = egui::Id::new("spectrum_legend_scroll");
         let mut loff: f32 = ui.ctx().data(|d| d.get_temp(lid)).unwrap_or(0.0);
@@ -1774,27 +1775,13 @@ impl App {
                     p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 5.0)), 2.0, add(Color32::WHITE, 0.12 * v));
                 }
             }
-            // key: quiet -> crowded
-            let kr = Rect::from_min_size(pos2(gx1 + 10.0, yc + 3.0), vec2(64.0, 12.0));
-            let mut km = egui::Mesh::default();
-            let (c0, c1) = (shade(BG, 1.8), RED);
-            for (x, c) in [(kr.left(), c0), (kr.center().x, mix(AMBER, c0, 0.2)), (kr.right(), c1)] {
-                km.colored_vertex(pos2(x, kr.top()), c);
-                km.colored_vertex(pos2(x, kr.bottom()), c);
-            }
-            km.add_triangle(0, 1, 2);
-            km.add_triangle(1, 3, 2);
-            km.add_triangle(2, 3, 4);
-            km.add_triangle(3, 5, 4);
-            p.add(egui::Shape::mesh(km));
-            ui.interact(kr.expand(3.0), ui.id().with("crowd_key"), Sense::hover()).on_hover_text("Wi-Fi crowding on each Bluetooth channel: dark = quiet, red = crowded");
             yc += 34.0;
         }
         let title = if has_bt { format!("CONNECTED BLUETOOTH DEVICES: {}", self.links.len()) } else { "NO BLUETOOTH DEVICES".to_string() };
         let mid = (gx0 + gx1) / 2.0;
         lcd(&p, pos2(mid, yc + 8.0), Align2::CENTER_CENTER, &title, 12.0, BLUE);
         if has_bt {
-            let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, (l + 12.0, gx1 + 122.0), &crowd);
+            let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, gx1, yc + 26.0, (l + 12.0, gx1 + 12.0), &crowd);
             if let (Some(i), Some(q)) = (bt_click, ptr) {
                 pick = Some((self.links[i].mac.clone(), q));
             }
@@ -1816,7 +1803,6 @@ impl App {
         }
 
         // legend
-        lcd(&p, pos2(lx, rect.top() + 36.0 + 12.0), Align2::LEFT_CENTER, "NETWORKS", 12.0, CYAN);
         let pl = p.with_clip_rect(lview.expand2(vec2(4.0, 0.0)));
         for (r, i) in &legend {
             let n = &nets[*i];
@@ -1833,12 +1819,7 @@ impl App {
         }
         if lmax > 0.0 {
             scrollbar(&p, Rect::from_min_max(pos2(lview.right() - 5.0, lview.top()), pos2(lview.right(), lview.bottom())), loff, lmax, lview.height(), lview.height() + lmax, CYAN);
-            p.text(pos2(lx, lview.bottom() + 10.0), Align2::LEFT_CENTER, format!("{} networks · scroll for the rest", nets.len()), FontId::proportional(11.0), DIM);
         }
-        let n5 = self.devs.iter().filter(|d| d.kind == Kind::Wifi && d.freq.map_or(false, |f| f >= 3000)).count();
-        p.text(pos2(lx, base + 14.0), Align2::LEFT_CENTER, format!("{} access points on 5 GHz not shown", n5), FontId::proportional(10.5), DIM);
-        ui.interact(Rect::from_min_size(pos2(lx, base + 6.0), vec2(200.0, 18.0)), ui.id().with("n5_note"), Sense::hover()).on_hover_text("5 GHz doesn't affect Bluetooth, so the graph leaves it out");
-
         // hover tooltip
         if let (Some(h), Some(q)) = (hover, ptr) {
             let n = &nets[h];
