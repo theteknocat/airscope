@@ -186,16 +186,6 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
     }
 }
 
-fn pill(p: &egui::Painter, anchor: Pos2, title: &str, sub: &str, col: Color32) {
-    let g1 = p.layout_no_wrap(title.to_string(), FontId::proportional(14.0), Color32::WHITE);
-    let g2 = p.layout_no_wrap(sub.to_string(), FontId::proportional(11.5), DIM);
-    let w = g1.size().x.max(g2.size().x) + 28.0;
-    let r = Rect::from_min_size(pos2(anchor.x - w / 2.0, anchor.y - 46.0), vec2(w, 46.0));
-    panel(p, r, 10.0, col);
-    p.galley(pos2(r.left() + 14.0, r.top() + 7.0), g1, Color32::WHITE);
-    p.galley(pos2(r.left() + 14.0, r.top() + 26.0), g2, DIM);
-}
-
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
     Radar,
@@ -1346,13 +1336,13 @@ impl App {
                 Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
                 None => d.vendor.clone(),
             };
-            let tc = TipC { anchor: disp[ni] + vec2(0.0, -24.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], boxed: false, side: None };
+            let tc = TipC { anchor: disp[ni] + vec2(0.0, -10.0), col: kind_col(d.kind), title: d.name.clone(), sub: vec![sub], side: None };
             self.tip_want = Some(tc);
         } else if let Some(gi) = group_hover {
             let g = &groups[gi];
             let names: Vec<String> = g.members.iter().take(4).map(|&i| self.latched[nodes[i].i].name.clone()).collect();
             let more = if g.members.len() > 4 { format!(" +{}", g.members.len() - 4) } else { String::new() };
-            let tc = TipC { anchor: g.center + vec2(0.0, -34.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{} · click to expand", names.join(", "), more)], boxed: false, side: None };
+            let tc = TipC { anchor: g.center + vec2(0.0, -20.0), col: CYAN, title: format!("{} devices close together", g.members.len()), sub: vec![format!("{}{} · click to expand", names.join(", "), more)], side: None };
             self.tip_want = Some(tc);
         }
 
@@ -1838,9 +1828,9 @@ impl App {
             let title = format!("{}{}", n.name, if n.aps > 1 { format!(" ({} access points)", n.aps) } else { String::new() });
             self.tip_want = Some(if from_legend {
                 // beside the legend, level with the pointer, so the rows above and below stay readable
-                TipC { anchor: pos2(0.0, q.y), col: col_of(n), title, sub: subs, boxed: true, side: Some(lview.left() - 14.0) }
+                TipC { anchor: pos2(0.0, q.y), col: col_of(n), title, sub: subs, side: Some(lview.left() - 14.0) }
             } else {
-                TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y - 14.0), col: col_of(n), title, sub: subs, boxed: stacked, side: None }
+                TipC { anchor: pos2(q.x.clamp(rect.left() + 200.0, rect.right() - 200.0), q.y), col: col_of(n), title, sub: subs, side: None }
             });
         }
 
@@ -1895,7 +1885,7 @@ impl App {
                 if ui.interact(slot, ui.id().with(("chan_dot", c, k)), Sense::hover()).hovered() {
                     p.circle_filled(cc, rad + 4.0, alpha(col_of(o), 0.16));
                     tile_h = nets.iter().position(|n| std::ptr::eq(n, *o));
-                    yn_tip = Some(TipC { anchor: hq, col: col_of(o), title: nm.clone(), sub: vec![format!("ch {} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" })], boxed: true, side: None });
+                    yn_tip = Some(TipC { anchor: hq, col: col_of(o), title: nm.clone(), sub: vec![format!("ch {} · {:.0} dBm · {}", o.chan, o.dbm, if same_ch { "on this channel" } else { "partly overlaps" })], side: None });
                 }
             }
             if others.len() > room {
@@ -1907,7 +1897,7 @@ impl App {
             self.tip_want = Some(t);
         }
         if let Some((q, title, lines)) = tip_box {
-            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, boxed: true, side: None });
+            self.tip_want = Some(TipC { anchor: q, col: BLUE, title, sub: lines, side: None });
         }
         if let Some((id, q)) = pick {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) { None } else { Some(id) };
@@ -2108,7 +2098,7 @@ impl Hint for egui::Response {
                 _ => (text.clone(), String::new()), // one sentence: all title, wrapped when long
             };
             let anchor = self.ctx.input(|i| i.pointer.hover_pos()).unwrap_or(self.rect.center_bottom());
-            let c = TipC { anchor, col: CYAN, title, sub: if rest.is_empty() { vec![] } else { vec![rest] }, boxed: true, side: None };
+            let c = TipC { anchor, col: CYAN, title, sub: if rest.is_empty() { vec![] } else { vec![rest] }, side: None };
             self.ctx.data_mut(|d| d.insert_temp(egui::Id::new("hint_want"), Some(c)));
         }
         self
@@ -2121,16 +2111,11 @@ struct TipC {
     col: Color32,
     title: String,
     sub: Vec<String>,
-    boxed: bool,
     side: Option<f32>, // boxed only: put the box to the left of this x, centred on anchor.y
 }
 
 fn draw_tip(p: &egui::Painter, c: &TipC, bounds: Rect) {
-    if c.boxed {
-        tip(p, c.anchor, bounds, &c.title, &c.sub, c.col, c.side);
-    } else {
-        pill(p, c.anchor, &c.title, c.sub.first().map(|x| x.as_str()).unwrap_or(""), c.col);
-    }
+    tip(p, c.anchor, bounds, &c.title, &c.sub, c.col, c.side);
 }
 
 /// How strongly the radar sweep is lighting up a point (1 as it passes, fading over ~0.9 rad behind it).

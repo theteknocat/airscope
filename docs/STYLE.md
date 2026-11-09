@@ -5,7 +5,7 @@ How the app looks and behaves, so new screens and changes stay consistent. The c
 ## Principles
 
 1. **Show, don't explain.** Use colour, shape, position and icons before words. No help paragraphs, no "how to use" hints on a screen (the radar's "scroll · drag · double-click" hint and the "SHOW" label were removed for this reason). A short caption is fine when a picture truly can't carry the meaning.
-2. **Tooltips carry what the picture can't:** the name of an icon-only button, the full text of something shortened, and the current state plus what a click does ("Showing Wi-Fi networks. Click to hide them."). Never a tooltip that only repeats the label.
+2. **Tooltips carry what the picture can't:** the name of an icon-only button, the full text of something shortened, and the current state of a toggle ("Showing Wi-Fi networks. Click to hide them."). Never a tooltip that only repeats the label. That something is clickable is shown by the pointing-hand cursor together with a visible hover reaction (glow, cyan border or popup), not by words: no "click for details" on radar nodes or cards. The hand cursor is not a desktop-app convention, so it is only ever used with that hover reaction.
 3. **Nothing moves under the pointer.** Feedback (copied, saved, failed) is shown on the control itself, not as a message that pushes the layout around.
 4. **Report, don't touch.** The app observes. Privileged work goes through the desktop's own password prompt (`pkexec`); our own code never runs as root. No active Wi-Fi scan unless the user presses Rescan (scans briefly disturb Bluetooth on the shared chip).
 5. **Honest numbers.** Show measured values (true dBm from nl80211) and say "unknown"/"(unnamed)" rather than inventing a value. A reading's source can change, so don't hide limits (the old percentage-based dBm tops out at −50).
@@ -61,7 +61,7 @@ Colour always has the same meaning on every screen: a Bluetooth thing is blue ev
 
 - **Cursor:** the pointing hand only on things that react to a click. Status chips and read-only graphics keep the normal cursor (`hit` sets the hand; use `ui.interact` for hover-only).
 - **Click feedback:** a halo (glow with the button's own corner radius) fades in over ~0.15 s, holds ~2 s, fades out ~0.5 s; the icon becomes a tick (green) or cross (red). No layout change.
-- **Hover details** use the shared boxed hover popup (`TipC` → `tip`, the style of the Spectrum hover): title in white, lines beneath in `TEXT`, border in the meaning colour, fade in/out ~0.12/0.15 s. One style everywhere: Spectrum hills, the drops strip. Radar nodes use the small pill version of the same. Plain egui hover text is not used: any widget gets this popup at the pointer with `.hint("Title. Details.")` (a short text is just a title; near the top of the window the box flips below the pointer).
+- **Hover details** use the shared boxed hover popup (`TipC` → `tip`, the style of the Spectrum hover): title in white, lines beneath in `TEXT`, border in the meaning colour, fade in/out ~0.12/0.15 s. One style everywhere: Spectrum hills and dots, the drops strip, the radar nodes and groups, and every `.hint()` text. Max width 340 px, fits its text, 12 px padding. Plain egui hover text is not used: any widget gets this popup at the pointer with `.hint("Title. Details.")` (a short text is just a title; near the top of the window the box flips below the pointer).
 - **Grouping:** things too dense to hover individually are merged visually (drops within 6 px become one thicker tick with a dot) and the hover lists the members.
 - **Disabled** = no panel and `DIM` text; say why in the tooltip if it isn't obvious.
 
@@ -88,4 +88,4 @@ One scale for Wi-Fi strength everywhere (`data::signal_frac`): 0 at −100 dBm, 
 
 ## Known gaps (not yet in line with this guide)
 
-- Some radar hovers predate the "state + what a click does" wording (Devices rows now say "Click for details" and hover cyan).
+- (none known)
