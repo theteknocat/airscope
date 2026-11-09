@@ -454,9 +454,10 @@ pub fn glow_rect_r(p: &Painter, r: Rect, rad: f32, g: f32, col: Color32, k: f32)
 
 /// Action button in the app's glass style; dimmed and inert when `on` is false. `flash` (0..1) fades a state halo in and out (accent is then
 /// the state colour); `min_w` keeps the width steady when the label changes. Returns the response (use `.clicked()`).
-pub fn action_button(ui: &mut Ui, label: &str, accent: Color32, flash: f32, on: bool, min_w: f32) -> eframe::egui::Response {
+pub fn action_button(ui: &mut Ui, icon: Option<Glyph>, label: &str, accent: Color32, flash: f32, on: bool, min_w: f32) -> eframe::egui::Response {
     let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), if on { Color32::WHITE } else { DIM });
-    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 40.0).max(min_w), 36.0), if on { Sense::click() } else { Sense::hover() });
+    let extra = if icon.is_some() { 26.0 } else { 0.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 40.0 + extra).max(min_w), 36.0), if on { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
     if on {
         if flash > 0.0 {
@@ -466,8 +467,61 @@ pub fn action_button(ui: &mut Ui, label: &str, accent: Color32, flash: f32, on: 
     } else {
         p.rect_filled(r, 10.0, alpha(Color32::WHITE, 0.04));
     }
-    p.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
+    // icon and text are centred together as one block
+    let x0 = r.center().x - (g.size().x + extra) / 2.0;
+    if let Some(ic) = icon {
+        glyph(p, ic, pos2(x0 + 8.0, r.center().y), 7.5, if on { Color32::WHITE } else { DIM });
+    }
+    p.galley(pos2(x0 + extra, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
     if on { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
+}
+
+/// Small line icons for buttons.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Glyph {
+    Record,
+    Stop,
+    Open,
+    Copy,
+    Save,
+    Check,
+    Cross,
+}
+
+/// Draws `g` centred on `c`, about `2 * s` across.
+pub fn glyph(p: &Painter, g: Glyph, c: Pos2, s: f32, col: Color32) {
+    let st = Stroke::new(1.7, col);
+    let pt = |x: f32, y: f32| c + vec2(x, y) * s;
+    let line = |pts: &[(f32, f32)]| {
+        p.add(Shape::line(pts.iter().map(|q| pt(q.0, q.1)).collect(), st));
+    };
+    match g {
+        Glyph::Record => {
+            p.circle_filled(c, s * 0.85, if col == Color32::WHITE { RED } else { col }); // the red record dot
+        }
+        Glyph::Stop => {
+            p.rect_filled(Rect::from_center_size(c, Vec2::splat(s * 1.5)), 2.0, col);
+        }
+        Glyph::Open => {
+            // a folder with its tab
+            p.add(Shape::closed_line(vec![pt(-1.0, -0.65), pt(-0.3, -0.65), pt(0.05, -0.3), pt(1.0, -0.3), pt(1.0, 0.8), pt(-1.0, 0.8)], st));
+        }
+        Glyph::Copy => {
+            p.rect_stroke(Rect::from_min_max(pt(-0.95, -0.95), pt(0.35, 0.35)), 1.5, st, StrokeKind::Middle);
+            p.rect_stroke(Rect::from_min_max(pt(-0.35, -0.35), pt(0.95, 0.95)), 1.5, st, StrokeKind::Middle);
+        }
+        Glyph::Save => {
+            // an arrow going down into a tray
+            line(&[(0.0, -0.95), (0.0, 0.3)]);
+            line(&[(-0.55, -0.25), (0.0, 0.35), (0.55, -0.25)]);
+            line(&[(-0.95, 0.15), (-0.95, 0.9), (0.95, 0.9), (0.95, 0.15)]);
+        }
+        Glyph::Check => line(&[(-0.85, 0.05), (-0.3, 0.65), (0.9, -0.65)]),
+        Glyph::Cross => {
+            line(&[(-0.7, -0.7), (0.7, 0.7)]);
+            line(&[(0.7, -0.7), (-0.7, 0.7)]);
+        }
+    }
 }
 
 /// A view tab: plain text with a glowing underline on the current one.

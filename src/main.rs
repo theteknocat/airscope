@@ -441,7 +441,7 @@ impl App {
         p.rect_filled(rect, 0.0, shade(BG, 1.5));
         p.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.18)));
         lcd(&p, pos2(rect.left() + 22.0, rect.top() + 38.0), Align2::LEFT_CENTER, "AIRSCOPE", 21.0, CYAN);
-        let items = [(Screen::Radar, "Radar", 0u8), (Screen::Spectrum, "Spectrum", 1), (Screen::Devices, "Devices", 2), (Screen::Diagnostics, "Diagnostics", 3)];
+        let items = [(Screen::Radar, "Radar", 0u8), (Screen::Spectrum, "Spectrum", 1), (Screen::Devices, "Devices", 2), (Screen::Diagnostics, "BT Diagnostics", 3)];
         for (i, (s, label, ic)) in items.iter().enumerate() {
             let r = Rect::from_min_size(pos2(rect.left() + 14.0, rect.top() + 84.0 + i as f32 * 52.0), vec2(rect.width() - 28.0, 42.0));
             let resp = hit(ui, r, ui.scope_id().with(label), Sense::click());
@@ -625,7 +625,7 @@ impl App {
             Screen::Radar => "RADAR",
             Screen::Spectrum => "SPECTRUM",
             Screen::Devices => "DEVICES",
-            Screen::Diagnostics => "DIAGNOSTICS",
+            Screen::Diagnostics => "BT DIAGNOSTICS",
         };
         lcd(&p, pos2(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, title, 28.0, CYAN);
 

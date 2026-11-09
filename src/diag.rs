@@ -376,10 +376,10 @@ impl Diag {
                 let bar = Rect::from_min_size(pos2(r.right() - 300.0, r.top() + 24.0), vec2(280.0, 36.0));
                 ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
-                    if action_button(ui, "Open", BLUE, 0.0, true, 0.0).clicked() {
+                    if action_button(ui, Some(Glyph::Open), "Open", BLUE, 0.0, true, 0.0).clicked() {
                         open = Some(sess.capture.clone());
                     }
-                    if action_button(ui, "Copy path", BLUE, 0.0, true, 0.0).clicked() {
+                    if action_button(ui, Some(Glyph::Copy), "Copy path", BLUE, 0.0, true, 0.0).clicked() {
                         copy = Some(sess.dir.clone());
                     }
                 });
@@ -476,7 +476,7 @@ impl Diag {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 if self.rec.is_some() {
-                    if action_button(ui, "Stop", RED, 0.6, true, 0.0).clicked() {
+                    if action_button(ui, Some(Glyph::Stop), "Stop", RED, 0.6, true, 0.0).clicked() {
                         if let Some(r) = self.rec.as_mut() {
                             self.rec_msg = Some(match r.stop() {
                                 Ok(()) => (false, "Enter your password to end the capture.".to_string()),
@@ -488,7 +488,7 @@ impl Diag {
                         lamp(ui, RED, &format!("REC  {} left", hms(r.left().as_secs())), true);
                     }
                 } else {
-                    if action_button(ui, "Record", RED, 0.0, true, 0.0).clicked() {
+                    if action_button(ui, Some(Glyph::Record), "Record", RED, 0.0, true, 0.0).clicked() {
                         match Recording::start(Duration::from_secs(CAPS[self.cap_idx].1)) {
                             Ok(r) => {
                                 self.follow = Some(r.file.clone());
@@ -507,7 +507,7 @@ impl Diag {
                 }
                 ui.separator();
                 let picking = self.pick.is_some();
-                if action_button(ui, if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).clicked() {
+                if action_button(ui, Some(Glyph::Open), if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).clicked() {
                     self.pick = Some(Pick::start("Open a Bluetooth capture file"));
                 }
                 let name = self.shown_name();
@@ -540,7 +540,9 @@ impl Diag {
                             let tip = f.map(|f| match &f.2 {
                                 Ok(t) | Err(t) => t.clone(),
                             });
-                            let r = action_button(ui, label, mix(BLUE, tint, t), t, true, 128.0);
+                            // the icon turns into a tick (or a cross) while the result shows
+                            let ic = if label == normal { if idx == 1 { Glyph::Save } else { Glyph::Copy } } else if tint == RED { Glyph::Cross } else { Glyph::Check };
+                            let r = action_button(ui, Some(ic), label, mix(BLUE, tint, t), t, true, 150.0);
                             let r = match tip {
                                 Some(t) => r.on_hover_text(t),
                                 None => r,
