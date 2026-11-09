@@ -55,6 +55,9 @@ Colour always has the same meaning on every screen: a Bluetooth thing is blue ev
 - **`toggle_chip`**: lamp-style filter chip (filled dot = on, ring = off), always with a state tooltip. Filters sit right of the tabs with no "SHOW" label.
 - **Legends**: a small `dot` (r≈4–5, meaning colour) then the label in `DIM`, like the sidebar legend and the drops strip. Not the colour's name in words.
 - **Icons** (`Glyph`): line icons, drawn, not fonts. Every button gets one; the icon changes to a tick or cross for the result of an action.
+- **Count badge** (`view_tab` badge): a small solid cyan circle with the number to the right of a tab's name (the Library tab shows how many saved captures there are); hidden at 0, "99+" above 99. It is flat, with no glow: glow is for things that are live, active or hovered (lamps, selected tab, halos), not for static indicators.
+- **Destructive actions** (deleting a capture): an icon-only red button; clicking it turns that card's own line and buttons into "Delete this capture and its analysis? This can't be undone." with Cancel and a red Delete, in place, no dialog and no layout shift.
+- **Empty state:** show the real layout as dimmed placeholders with a centred title saying why they are empty; point at the buttons that start things (cyan pulsing outline, arrow and "Start here"), shown for 30 s or until the pointer first enters them, then never again: the marker file `~/.local/share/airscope/seen-start-here` records it (delete it to test the pointer again). The placeholder matches the tab: stat tiles, strip and cards for Summary, a table skeleton with the real column headings for Timeline.
 - **Status lamp** (`lamp`): coloured dot with short word (REC, LIVE).
 
 ## Interaction

@@ -60,13 +60,22 @@ pub struct Diag {
     summarised: bool,
     sessions: Vec<capture::Session>,
     sessions_at: Option<Instant>,
+    /// Rectangle around the Record and Open buttons (set each frame while drawing the toolbar; the empty state highlights it).
+    cta: Option<Rect>,
+    /// Library session folder waiting for the delete confirmation.
+    del_pending: Option<PathBuf>,
+    /// The "Start here" pointer: when it first showed, and when it began fading (30 s, or the first hover over the buttons; once per run).
+    cta_since: Option<Instant>,
+    cta_off: Option<Instant>,
+    /// The "Start here" pointer was already shown in an earlier run (marker file `seen-start-here` in the data folder).
+    cta_seen: Option<bool>,
     /// Library capture being analysed on a background thread, and whether it has finished.
     bg: Option<(PathBuf, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
 }
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, bg: None, tip: Default::default() };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, cta: None, del_pending: None, cta_since: None, cta_off: None, cta_seen: None, bg: None, tip: Default::default() };
         if !d.path.is_empty() {
             d.load();
         } else if let Some(r) = Recording::adopt() {
@@ -382,12 +391,35 @@ impl Diag {
             }
         }
         if self.sessions.is_empty() {
-            ui.label(RichText::new("No saved captures yet. A recording made with the Record button is kept here, with its analysis.").color(DIM));
+            // nothing saved: ghost cards in the real layout, a title saying why, and the pointer at Record/Open
+            let w = ui.available_width() - 8.0;
+            ui.add_space(14.0);
+            let (tr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
+            lcd(ui.painter(), tr.center(), Align2::CENTER_CENTER, "NO SAVED CAPTURES YET", 13.0, alpha(TEXT, 0.8));
+            ui.add_space(8.0);
+            for _ in 0..2 {
+                let (r, _) = ui.allocate_exact_size(vec2(w, 84.0), Sense::hover());
+                let p = ui.painter();
+                panel(p, r, 12.0, alpha(DIM, 0.45));
+                let bar = alpha(Color32::WHITE, 0.06);
+                p.rect_filled(Rect::from_min_size(pos2(r.left() + 20.0, r.top() + 20.0), vec2(190.0, 16.0)), 8.0, bar);
+                p.rect_filled(Rect::from_min_size(pos2(r.left() + 20.0, r.top() + 53.0), vec2(280.0, 10.0)), 5.0, bar);
+                for k in 0..3 {
+                    let bw = [36.0, 124.0, 100.0][k];
+                    let x = r.right() - 20.0 - [36.0 + 12.0 + 124.0 + 12.0 + 100.0, 124.0 + 12.0 + 100.0, 100.0][k];
+                    p.rect_filled(Rect::from_min_size(pos2(x, r.top() + 24.0), vec2(bw, 36.0)), 10.0, alpha(Color32::WHITE, 0.04));
+                }
+                ui.add_space(10.0);
+            }
+            if self.snoop.is_none() && self.path.is_empty() {
+                self.start_here(ui);
+            }
             return;
         }
         let w = ui.available_width() - 8.0;
         let mut open: Option<PathBuf> = None;
         let mut copy: Option<PathBuf> = None;
+        let mut del: Option<PathBuf> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for sess in &self.sessions {
                 let (r, _) = ui.allocate_exact_size(vec2(w, 84.0), Sense::hover());
@@ -401,15 +433,33 @@ impl Diag {
                     None if self.bg.as_ref().map_or(false, |(c, _)| *c == sess.capture) => format!("{}  ·  analysing…", size_str(sess.size)),
                     None => format!("{}  ·  not analysed yet", size_str(sess.size)),
                 };
-                p.text(pos2(r.left() + 20.0, r.top() + 58.0), Align2::LEFT_CENTER, if recording { "recording now".to_string() } else { sub }, FontId::proportional(13.0), DIM);
-                let bar = Rect::from_min_size(pos2(r.right() - 300.0, r.top() + 24.0), vec2(280.0, 36.0));
+                let asking = self.del_pending.as_ref() == Some(&sess.dir);
+                if asking {
+                    p.text(pos2(r.left() + 20.0, r.top() + 58.0), Align2::LEFT_CENTER, "Delete this capture and its analysis? This can't be undone.", FontId::proportional(13.0), RED);
+                } else {
+                    p.text(pos2(r.left() + 20.0, r.top() + 58.0), Align2::LEFT_CENTER, if recording { "recording now".to_string() } else { sub }, FontId::proportional(13.0), DIM);
+                }
+                let bar = Rect::from_min_size(pos2(r.right() - 380.0, r.top() + 24.0), vec2(360.0, 36.0));
                 ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
-                    if action_button(ui, Some(Glyph::Open), "Open", BLUE, 0.0, true, 0.0).clicked() {
-                        open = Some(sess.capture.clone());
-                    }
-                    if action_button(ui, Some(Glyph::Copy), "Copy path", BLUE, 0.0, true, 0.0).clicked() {
-                        copy = Some(sess.dir.clone());
+                    if asking {
+                        // right to left: Delete sits on the right, Cancel beside it
+                        if action_button(ui, Some(Glyph::Trash), "Delete", RED, 0.6, true, 0.0).clicked() {
+                            del = Some(sess.dir.clone());
+                        }
+                        if action_button(ui, Some(Glyph::Cross), "Cancel", BLUE, 0.0, true, 0.0).clicked() {
+                            self.del_pending = None;
+                        }
+                    } else {
+                        if action_button(ui, Some(Glyph::Open), "Open", BLUE, 0.0, true, 0.0).clicked() {
+                            open = Some(sess.capture.clone());
+                        }
+                        if action_button(ui, Some(Glyph::Copy), "Copy path", BLUE, 0.0, true, 0.0).clicked() {
+                            copy = Some(sess.dir.clone());
+                        }
+                        if action_button(ui, Some(Glyph::Trash), "", RED, 0.0, !recording, 0.0).hint(if recording { "A recording in progress can't be deleted" } else { "Delete this capture" }).clicked() {
+                            self.del_pending = Some(sess.dir.clone());
+                        }
                     }
                 });
                 ui.advance_cursor_after_rect(r); // the button area above is a child Ui that moved the cursor to its own bottom
@@ -421,6 +471,24 @@ impl Diag {
             self.tab = 0;
             self.load();
         }
+        if let Some(dir) = del {
+            self.del_pending = None;
+            let cap = dir.join(capture::CAPTURE_FILE);
+            match capture::delete_session(&dir) {
+                Ok(()) => {
+                    if PathBuf::from(self.clean_path()) == cap {
+                        // it was the open capture: close it
+                        self.path.clear();
+                        self.snoop = None;
+                        self.pos = 0;
+                        self.total = 0;
+                    }
+                    self.rec_msg = Some((false, "Capture deleted".into()));
+                }
+                Err(e) => self.rec_msg = Some((true, e)),
+            }
+            self.sessions_at = None;
+        }
         if let Some(dir) = copy {
             ui.ctx().copy_text(dir.display().to_string());
             self.rec_msg = Some((false, "Folder path copied to the clipboard".into()));
@@ -431,7 +499,9 @@ impl Diag {
     fn name_row(&mut self, ui: &mut egui::Ui) {
         let name = snoop::pretty_stamp(&self.shown_name());
         let reserve = 20.0 + if self.pos < self.total { 90.0 } else { 0.0 } + if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) { 80.0 } else { 0.0 };
-        if name.is_empty() {
+        if name.is_empty() && self.rec.is_none() && self.err.is_none() && (self.tab != 2 || self.sessions.is_empty()) {
+            // nothing opened: the "Start here" pointer is drawn by the empty state instead of a label
+        } else if name.is_empty() {
             ui.label(RichText::new("No capture opened").color(DIM));
         } else {
             let font = egui::FontId::proportional(15.0);
@@ -452,6 +522,133 @@ impl Diag {
         }
     }
 
+    fn start_record(&mut self) {
+        match Recording::start(Duration::from_secs(CAPS[self.cap_idx].1)) {
+            Ok(r) => {
+                self.follow = Some(r.file.clone());
+                self.rec = Some(r);
+                self.rec_msg = Some((false, "Waiting for your password...".into()));
+            }
+            Err(e) => self.rec_msg = Some((true, e)),
+        }
+    }
+
+    /// Nothing opened yet: the real screen as dimmed placeholders (so the result's shape is visible), with a card in the
+    /// middle holding the two ways to begin, drawn large, and a link to the Library.
+    fn empty_view(&mut self, ui: &mut egui::Ui) {
+        let top = ui.cursor().top();
+        let w = ui.available_width() - 6.0;
+        let gap = 12.0;
+        let tw = (w - gap * 3.0) / 4.0;
+        let ghost = alpha(DIM, 0.45);
+        ui.add_space(14.0);
+        let (tr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
+        lcd(ui.painter(), tr.center(), Align2::CENTER_CENTER, if self.rec.is_some() { "RECORDING IS STARTING" } else { "NO CAPTURE OPEN OR IN PROGRESS" }, 13.0, alpha(TEXT, 0.8));
+        ui.add_space(8.0);
+        if self.tab == 1 {
+            // Timeline: a table skeleton with the real column headings
+            let (x_time, x_off, x_dev, x_msg) = (16.0, 196.0, 212.0, 436.0);
+            let (hr, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
+            let p = ui.painter();
+            let hf = FontId::proportional(11.5);
+            let hc = alpha(DIM, 0.7);
+            p.text(pos2(hr.left() + x_time, hr.center().y), Align2::LEFT_CENTER, "TIME", hf.clone(), hc);
+            p.text(pos2(hr.left() + x_off, hr.center().y), Align2::RIGHT_CENTER, "SINCE START", hf.clone(), hc);
+            p.text(pos2(hr.left() + x_dev, hr.center().y), Align2::LEFT_CENTER, "DEVICE", hf.clone(), hc);
+            p.text(pos2(hr.left() + x_msg, hr.center().y), Align2::LEFT_CENTER, "EVENT", hf, hc);
+            p.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.15)));
+            let bar = alpha(Color32::WHITE, 0.06);
+            for k in 0..9 {
+                let (rr, _) = ui.allocate_exact_size(vec2(w, 36.0), Sense::hover());
+                let p = ui.painter();
+                let cy = rr.center().y;
+                let msg_w = (w - x_msg - 14.0).max(160.0);
+                p.rect_filled(Rect::from_min_size(pos2(rr.left() + x_time, cy - 5.0), vec2(70.0, 10.0)), 5.0, bar);
+                p.rect_filled(Rect::from_min_size(pos2(rr.left() + x_off - 52.0, cy - 5.0), vec2(52.0, 10.0)), 5.0, bar);
+                p.rect_filled(Rect::from_min_size(pos2(rr.left() + x_dev, cy - 5.0), vec2([120.0, 90.0, 140.0][k % 3], 10.0)), 5.0, bar);
+                p.rect_filled(Rect::from_min_size(pos2(rr.left() + x_msg, cy - 5.0), vec2(msg_w * [0.7, 0.45, 0.6, 0.35][k % 4], 10.0)), 5.0, bar);
+                p.line_segment([rr.left_bottom(), rr.right_bottom()], Stroke::new(1.0, alpha(Color32::WHITE, 0.05)));
+            }
+        } else {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for label in ["LINK DROPS", "CAPTURED", "DATA PACKETS", "DROP BURSTS"] {
+                    let (r, _) = ui.allocate_exact_size(vec2(tw, 78.0), Sense::hover());
+                    let p = ui.painter();
+                    panel(p, r, 12.0, ghost);
+                    p.text(pos2(r.left() + 18.0, r.top() + 20.0), Align2::LEFT_CENTER, label, FontId::proportional(12.0), alpha(DIM, 0.7));
+                    lcd(p, pos2(r.left() + 18.0, r.top() + 49.0), Align2::LEFT_CENTER, "-", 26.0, alpha(DIM, 0.6));
+                }
+            });
+            ui.add_space(14.0);
+            let (r, _) = ui.allocate_exact_size(vec2(w, 96.0), Sense::hover());
+            panel(ui.painter(), r, 12.0, ghost);
+            ui.painter().text(pos2(r.left() + 18.0, r.top() + 18.0), Align2::LEFT_CENTER, "DROPS OVER TIME", FontId::proportional(12.0), alpha(DIM, 0.7));
+            ui.painter().rect_filled(Rect::from_min_max(pos2(r.left() + 18.0, r.top() + 34.0), pos2(r.right() - 18.0, r.bottom() - 26.0)), 4.0, alpha(Color32::WHITE, 0.04));
+            ui.add_space(14.0);
+            let cols = if w >= 860.0 { 2 } else { 1 };
+            let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for _ in 0..cols {
+                    let (r, _) = ui.allocate_exact_size(vec2(cw, 150.0), Sense::hover());
+                    let p = ui.painter();
+                    panel(p, r, 12.0, ghost);
+                    p.circle_filled(pos2(r.left() + 40.0, r.top() + 40.0), 17.0, alpha(Color32::WHITE, 0.06));
+                    for (i, wf) in [0.45, 0.3].into_iter().enumerate() {
+                        p.rect_filled(Rect::from_min_size(pos2(r.left() + 70.0, r.top() + 30.0 + i as f32 * 18.0), vec2((r.width() - 140.0) * wf, 10.0)), 5.0, alpha(Color32::WHITE, 0.06));
+                    }
+                    for i in 0..3 {
+                        p.rect_filled(Rect::from_min_size(pos2(r.left() + 22.0, r.top() + 84.0 + i as f32 * 20.0), vec2((r.width() - 44.0) * [0.9, 0.7, 0.8][i], 9.0)), 4.0, alpha(Color32::WHITE, 0.05));
+                    }
+                }
+            });
+
+        }
+        self.start_here(ui);
+    }
+
+    /// The "Start here" pointer: a pulsing outline round the Record and Open buttons with an arrow and label, shown for
+    /// 30 s or until the pointer first enters them (once per run). Not while a recording is starting.
+    fn start_here(&mut self, ui: &mut egui::Ui) {
+        if self.rec.is_some() {
+            return;
+        }
+        let marker = capture::captures_dir().and_then(|d| d.parent().map(|p| p.join("seen-start-here")));
+        if *self.cta_seen.get_or_insert_with(|| marker.as_ref().map_or(false, |m| m.exists())) {
+            return;
+        }
+        // highlight the toolbar buttons and point at them: shown for 30 s, or until the pointer first enters them
+        if let Some(b) = self.cta {
+            let since = *self.cta_since.get_or_insert_with(Instant::now);
+            let hot = ui.input(|i| i.pointer.hover_pos()).map_or(false, |q| b.expand2(vec2(10.0, 7.0)).contains(q));
+            if self.cta_off.is_none() && (hot || since.elapsed() > Duration::from_secs(30)) {
+                self.cta_off = Some(Instant::now());
+                if let Some(m) = &marker {
+                    if let Some(d) = m.parent() {
+                        let _ = std::fs::create_dir_all(d);
+                    }
+                    let _ = std::fs::write(m, "shown\n"); // remembered: delete this file to see the pointer again
+                }
+            }
+            let fade = self.cta_off.map_or(1.0, |t| 1.0 - (t.elapsed().as_secs_f32() / 0.5).min(1.0));
+            if fade > 0.0 {
+                let p = ui.painter().clone();
+                let pulse = 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 2.4).sin();
+                let hr = b.expand2(vec2(10.0, 7.0));
+                glow_rect_r(&p, hr, 14.0, 14.0, CYAN, (0.25 + 0.2 * pulse) * fade);
+                p.rect_stroke(hr, 14.0, Stroke::new(1.6, alpha(CYAN, (0.55 + 0.35 * pulse) * fade)), egui::StrokeKind::Outside);
+                let (ax, ay) = (hr.right() + 22.0, hr.center().y);
+                let st = Stroke::new(2.0, alpha(CYAN, fade));
+                p.line_segment([pos2(ax, ay), pos2(ax + 22.0, ay)], st);
+                p.line_segment([pos2(ax, ay), pos2(ax + 7.0, ay - 6.0)], st);
+                p.line_segment([pos2(ax, ay), pos2(ax + 7.0, ay + 6.0)], st);
+                p.text(pos2(ax + 32.0, ay), Align2::LEFT_CENTER, "Start here", FontId::proportional(17.0), alpha(CYAN, fade));
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, names: &Names) {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, BG);
@@ -469,6 +666,11 @@ impl Diag {
                 Ok(None) => {}
                 Err(e) => self.err = Some(e),
             }
+        }
+        self.cta = None;
+        if self.sessions_at.map_or(true, |t| t.elapsed() > Duration::from_secs(3)) {
+            self.sessions = capture::list(); // keeps the Library tab's count current
+            self.sessions_at = Some(Instant::now());
         }
         let outcome = self.rec.as_mut().map(|r| r.poll());
         match outcome {
@@ -549,15 +751,10 @@ impl Diag {
                         lamp(ui, RED, &format!("REC  {} left", hms(r.left().as_secs())), true);
                     }
                 } else {
-                    if action_button(ui, Some(Glyph::Record), if stacked { "" } else { "Record" }, RED, 0.0, true, 0.0).hint("Record Bluetooth activity (asks for your password)").clicked() {
-                        match Recording::start(Duration::from_secs(CAPS[self.cap_idx].1)) {
-                            Ok(r) => {
-                                self.follow = Some(r.file.clone());
-                                self.rec = Some(r);
-                                self.rec_msg = Some((false, "Waiting for your password...".into()));
-                            }
-                            Err(e) => self.rec_msg = Some((true, e)),
-                        }
+                    let rb = action_button(ui, Some(Glyph::Record), if stacked { "" } else { "Record" }, RED, 0.0, true, 0.0).hint("Record Bluetooth activity (asks for your password)");
+                    self.cta = Some(rb.rect);
+                    if rb.clicked() {
+                        self.start_record();
                     }
                     ui.label(RichText::new("for").color(DIM));
                     egui::ComboBox::from_id_salt("cap_len").selected_text(CAPS[self.cap_idx].0).show_ui(ui, |ui| {
@@ -568,7 +765,9 @@ impl Diag {
                 }
                 ui.separator();
                 let picking = self.pick.is_some();
-                if action_button(ui, Some(Glyph::Open), if stacked { "" } else if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).hint("Open a capture file").clicked() {
+                let ob = action_button(ui, Some(Glyph::Open), if stacked { "" } else if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).hint("Open a capture file");
+                self.cta = self.cta.map(|r| r.union(ob.rect));
+                if ob.clicked() {
                     self.pick = Some(Pick::start("Open a Bluetooth capture file"));
                 }
                 self.name_row(ui);
@@ -617,7 +816,7 @@ impl Diag {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (i, l) in ["Summary", "Timeline", "Library"].iter().enumerate() {
-                    if view_tab(ui, l, self.tab == i as u8) {
+                    if view_tab(ui, l, self.tab == i as u8, if i == 2 { self.sessions.len() } else { 0 }) {
                         self.tab = i as u8;
                     }
                 }
@@ -643,8 +842,7 @@ impl Diag {
             }
             let Some(s) = &s else {
                 if self.err.is_none() {
-                    ui.label(RichText::new("Press Record to capture Bluetooth activity (you will be asked for your password), or Open (or drop a capture file on this window) to see what happened to each Bluetooth device: when the link dropped and why, and whether the controller was slow to answer.").color(DIM));
-                    ui.label(RichText::new("Recordings are kept in the Library tab with their analysis. A capture made by hand (sudo btmon -w file) can be opened too, even while it is still running.").color(DIM));
+                    self.empty_view(ui);
                 }
                 return;
             };

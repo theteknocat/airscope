@@ -489,6 +489,7 @@ pub enum Glyph {
     Cross,
     Refresh,
     List,
+    Trash,
 }
 
 /// Draws `g` centred on `c`, about `2 * s` across.
@@ -535,6 +536,13 @@ pub fn glyph(p: &Painter, g: Glyph, c: Pos2, s: f32, col: Color32) {
                 line(&[(-0.4, y), (0.95, y)]);
             }
         }
+        Glyph::Trash => {
+            line(&[(-0.95, -0.5), (0.95, -0.5)]); // lid
+            line(&[(-0.35, -0.5), (-0.35, -0.95), (0.35, -0.95), (0.35, -0.5)]); // handle
+            p.add(Shape::closed_line(vec![pt(-0.7, -0.5), pt(-0.58, 1.0), pt(0.58, 1.0), pt(0.7, -0.5)], st)); // bin
+            line(&[(-0.2, -0.1), (-0.2, 0.7)]);
+            line(&[(0.2, -0.1), (0.2, 0.7)]);
+        }
         Glyph::Check => line(&[(-0.85, 0.05), (-0.3, 0.65), (0.9, -0.65)]),
         Glyph::Cross => {
             line(&[(-0.7, -0.7), (0.7, 0.7)]);
@@ -544,12 +552,20 @@ pub fn glyph(p: &Painter, g: Glyph, c: Pos2, s: f32, col: Color32) {
 }
 
 /// A view tab: plain text with a glowing underline on the current one.
-pub fn view_tab(ui: &mut Ui, label: &str, on: bool) -> bool {
+pub fn view_tab(ui: &mut Ui, label: &str, on: bool, badge: usize) -> bool {
     let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(16.0), Color32::WHITE);
-    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 32.0, 34.0), Sense::click());
+    let extra = if badge > 0 { 24.0 } else { 0.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 32.0 + extra, 34.0), Sense::click());
     let p = ui.painter();
     let col = if on { Color32::WHITE } else if resp.hovered() { TEXT } else { DIM };
-    p.text(r.center() - vec2(0.0, 2.0), Align2::CENTER_CENTER, label, FontId::proportional(16.0), col);
+    p.text(pos2(r.left() + 16.0 + g.size().x / 2.0, r.center().y - 2.0), Align2::CENTER_CENTER, label, FontId::proportional(16.0), col);
+    if badge > 0 {
+        // a small solid cyan circle with the count, like the group counts on the radar
+        let c = pos2(r.left() + 16.0 + g.size().x + 14.0, r.center().y - 2.0);
+        p.circle_filled(c, 9.0, CYAN); // flat, no glow
+        let txt = if badge > 99 { "99+".to_string() } else { badge.to_string() };
+        p.text(c, Align2::CENTER_CENTER, txt, FontId::monospace(if badge > 99 { 9.0 } else { 11.0 }), Color32::from_rgb(8, 16, 30));
+    }
     if on {
         let u = Rect::from_min_size(pos2(r.left() + 10.0, r.bottom() - 4.0), vec2(r.width() - 20.0, 3.0));
         glow_rect(p, u, 8.0, CYAN, 0.5);

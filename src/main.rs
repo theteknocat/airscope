@@ -2009,7 +2009,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (i, l) in [format!("Yours  ·  {yours}"), format!("Nearby (not yours)  ·  {nearby}")].iter().enumerate() {
-                    if view_tab(ui, l, self.scope == i as u8) {
+                    if view_tab(ui, l, self.scope == i as u8, 0) {
                         self.scope = i as u8;
                     }
                 }

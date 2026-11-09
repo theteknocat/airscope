@@ -192,6 +192,15 @@ pub fn write_summary(dir: &Path, s: &Summary) {
     let _ = std::fs::write(dir.join("summary.tsv"), format!("{}\t{}\t{}\n", s.records, s.drops, s.duration));
 }
 
+/// Deletes a saved session folder (only a direct child of the library that holds a capture file).
+pub fn delete_session(dir: &Path) -> Result<(), String> {
+    let root = captures_dir().ok_or("no library folder")?;
+    if dir.parent() != Some(root.as_path()) || !dir.join(CAPTURE_FILE).is_file() {
+        return Err("not a saved capture".into());
+    }
+    std::fs::remove_dir_all(dir).map_err(|e| format!("Could not delete: {e}"))
+}
+
 /// True when the saved summary is missing or older than the capture file (it grew after the last analysis).
 pub fn needs_analysis(s: &Session) -> bool {
     let mt = |p: PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
