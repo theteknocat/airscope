@@ -64,6 +64,10 @@ impl Diag {
         let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None };
         if !d.path.is_empty() {
             d.load();
+        } else if let Some(r) = Recording::adopt() {
+            // a capture started by an earlier run of the app is still going: pick it up again
+            d.follow = Some(r.file.clone());
+            d.rec = Some(r);
         }
         d
     }

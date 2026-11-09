@@ -41,7 +41,9 @@ fn stamp() -> String {
 // ---------- recording ----------
 
 pub struct Recording {
-    child: Child,
+    /// None for a recording found already running (started by an earlier run of the app).
+    child: Option<Child>,
+    checked: Instant,
     pub dir: PathBuf,
     pub file: PathBuf,
     pub cap: Duration,
@@ -79,15 +81,36 @@ impl Recording {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("Could not start the password prompt: {e}"))?;
-        Ok(Recording { child, dir, file, cap, started: Instant::now() })
+        Ok(Recording { child: Some(child), checked: Instant::now(), dir, file, cap, started: Instant::now() })
     }
 
     pub fn left(&self) -> Duration {
         self.cap.saturating_sub(self.started.elapsed())
     }
 
+    /// A capture an earlier run of the app started that is still going: a btmon writing `capture.snoop` in a
+    /// library session folder. The time left comes from the session's `meta.tsv`.
+    pub fn adopt() -> Option<Recording> {
+        let root = captures_dir()?;
+        let (_, file) = btmon_files().into_iter().find(|(_, f)| session_dir_of(f).is_some() && f.starts_with(&root))?;
+        let dir = file.parent()?.to_path_buf();
+        let meta = std::fs::read_to_string(dir.join("meta.tsv")).ok()?;
+        let get = |k: &str| meta.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('\t')?.trim().parse::<u64>().ok());
+        let (start, cap) = (get("started")?, get("cap_secs")?);
+        let elapsed = Duration::from_secs(now_unix().saturating_sub(start));
+        Some(Recording { child: None, checked: Instant::now(), dir, file, cap: Duration::from_secs(cap), started: Instant::now().checked_sub(elapsed).unwrap_or_else(Instant::now) })
+    }
+
     pub fn poll(&mut self) -> Outcome {
-        match self.child.try_wait() {
+        let Some(child) = self.child.as_mut() else {
+            // adopted: no child to wait for, so look for the btmon now and then (not every frame)
+            if self.checked.elapsed() < Duration::from_secs(2) {
+                return Outcome::Running;
+            }
+            self.checked = Instant::now();
+            return if find_btmon(&self.file).is_some() { Outcome::Running } else { Outcome::Finished };
+        };
+        match child.try_wait() {
             Ok(None) => Outcome::Running,
             Ok(Some(st)) => {
                 if std::fs::metadata(&self.file).map_or(false, |m| m.len() > 16) || st.success() {
@@ -109,23 +132,36 @@ impl Recording {
     pub fn stop(&mut self) -> Result<(), String> {
         match find_btmon(&self.file) {
             Some(pid) => Command::new(PKEXEC).arg(KILL).arg("-TERM").arg(pid.to_string()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| format!("Could not start the password prompt: {e}")),
-            None => self.child.kill().map_err(|e| format!("Could not cancel: {e}")),
+            None => match self.child.as_mut() {
+                Some(c) => c.kill().map_err(|e| format!("Could not cancel: {e}")),
+                None => Err("The capture has already ended.".into()),
+            },
         }
     }
 }
 
-/// Process id of the btmon writing to `file`, found by reading /proc (no external tool).
-fn find_btmon(file: &Path) -> Option<u32> {
-    let want = file.to_str()?.as_bytes();
-    for ent in std::fs::read_dir("/proc").ok()?.flatten() {
+/// Every running `btmon -w <file>` as (pid, file), found by reading /proc (no external tool).
+fn btmon_files() -> Vec<(u32, PathBuf)> {
+    let mut out = vec![];
+    for ent in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         let Some(pid) = ent.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
         let Ok(cmd) = std::fs::read(ent.path().join("cmdline")) else { continue };
         let args: Vec<&[u8]> = cmd.split(|b| *b == 0).collect();
-        if args.first().map_or(false, |a| a.ends_with(b"btmon")) && args.iter().any(|a| *a == want) {
-            return Some(pid);
+        if !args.first().map_or(false, |a| a.ends_with(b"btmon")) {
+            continue;
+        }
+        if let Some(w) = args.iter().position(|a| *a == b"-w") {
+            if let Some(f) = args.get(w + 1).and_then(|f| std::str::from_utf8(f).ok()) {
+                out.push((pid, PathBuf::from(f)));
+            }
         }
     }
-    None
+    out
+}
+
+/// Process id of the btmon writing to `file`.
+fn find_btmon(file: &Path) -> Option<u32> {
+    btmon_files().into_iter().find(|(_, f)| f == file).map(|(p, _)| p)
 }
 
 // ---------- library ----------
