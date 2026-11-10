@@ -21,3 +21,5 @@ shot devices AIRSCOPE_SCREEN=devices AIRSCOPE_EXPAND=1
 shot diagnostics AIRSCOPE_SCREEN=diag AIRSCOPE_SNOOP="$tmp/demo.snoop"
 shot diagnostics-device AIRSCOPE_SCREEN=diag AIRSCOPE_INFO=1 AIRSCOPE_SNOOP="$tmp/demo.snoop"
 shot vendor-list AIRSCOPE_VENDOR=1
+shot diagnostics-help AIRSCOPE_SCREEN=diag AIRSCOPE_HELP=1 AIRSCOPE_SNOOP="$tmp/demo.snoop"
+shot spectrum-help AIRSCOPE_SCREEN=spectrum AIRSCOPE_HELP=1

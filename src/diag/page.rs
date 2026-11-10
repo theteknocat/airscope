@@ -876,11 +876,9 @@ impl Diag {
             ("Data packet counts", (false, ""), (true, "")),
             ("Starts at once, no password", (true, ""), (false, "asks for your password")),
         ];
-        let bullets = [
+        let bullets: [&str; 2] = [
             "System log: look here to see what already happened.",
             "Recording: start one while the trouble is happening, to learn why.",
-            "Click a device card for its details; \"Show only this device\" filters the table.",
-            "Library reopens or deletes saved recordings. Export saves the report as a file.",
         ];
         let (row_h, pad) = (30.0, 20.0);
         let h = pad + 22.0 + 14.0 + 30.0 + rows.len() as f32 * row_h + 18.0 + bullets.len() as f32 * 24.0 + pad;

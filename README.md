@@ -38,7 +38,7 @@ link dropped and why. It is a native Linux app (Rust, egui) that runs on Wayland
   you weren't looking. The **Library** button lists your past recordings (analysed in the background,
   deletable) and opens any capture file. It tells
   radio-type drops (connection timeouts) from normal ones (a device going to sleep), and shows slow answers from
-  the Bluetooth controller. Reports can be copied or saved.
+  the Bluetooth controller. Reports can be copied or exported. The **?** button explains how the system log differs from a recording.
 - **Vendor names** from a built-in MAC prefix list that you can update yourself (see below).
 
 | | |
@@ -46,6 +46,7 @@ link dropped and why. It is a native Linux app (Rust, egui) that runs on Wayland
 | ![Device info](docs/screenshots/radar-info.png) | ![Spectrum](docs/screenshots/spectrum.png) |
 | ![Devices](docs/screenshots/devices.png) | ![BT Diagnostics](docs/screenshots/diagnostics.png) |
 | ![Device details](docs/screenshots/diagnostics-device.png) | ![Vendor list](docs/screenshots/vendor-list.png) |
+| ![BT Diagnostics help](docs/screenshots/diagnostics-help.png) | ![Spectrum help](docs/screenshots/spectrum-help.png) |
 
 *(All screenshots use the built-in demo data: invented networks, devices and a made-up Bluetooth capture.)*
 
@@ -134,3 +135,5 @@ Releases are built by GitHub Actions when a tag is pushed: bump `version` in `Ca
 ## License
 
 [MIT](LICENSE)
+
+The question mark on the help button is from [Font Awesome Free](https://fontawesome.com) (CC BY 4.0).

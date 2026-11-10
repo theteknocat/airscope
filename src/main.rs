@@ -196,6 +196,54 @@ fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos:
     }
 }
 
+/// What a help box row's marker looks like.
+#[derive(Clone, Copy)]
+enum Mark {
+    Dot(Color32),
+    Dash,
+}
+
+const SPECTRUM_HELP: [(Mark, &str, &str); 4] = [
+    (Mark::Dash, "Why the hills overlap", "A Wi-Fi network is about 20 MHz wide but channels are only 5 MHz apart, so it spills over its neighbours. Only channels 1, 6 and 11 stay clear of each other: a network on channel 3 disturbs both 1 and 6."),
+    (Mark::Dash, "Reading the Bluetooth rows", "Bluetooth shares this band with Wi-Fi. A lit cell is a channel the device hops on; gaps are channels it steers around because they were noisy. A fully lit row means it can't avoid anything, so it suffers most when Wi-Fi is busy."),
+    (Mark::Dash, "Choosing a channel", "Compare the three tiles at the bottom: the one with fewer and weaker networks is the quietest place for your router. Airscope only reports, it never changes a setting."),
+    (Mark::Dash, "Where the data comes from", "Airscope never starts a Wi-Fi scan itself, because a scan briefly disturbs Bluetooth on a shared chip. It shows what the system's own periodic scans find, so changes can take a little while to appear."),
+];
+
+/// A help box under the header's "?" button: a title and rows of marker, heading and wrapped description.
+/// Returns its rectangle (for outside-click closing).
+fn help_panel(ctx: &egui::Context, btn: Rect, title: &str, rows: &[(Mark, &str, &str)]) -> Rect {
+    let (w, pad) = (520.0f32, 20.0);
+    let tx = 34.0;
+    let wrap = w - 2.0 * pad - tx;
+    let lay = |t: &str, size: f32, col: Color32| ctx.fonts_mut(|f| f.layout(t.to_string(), FontId::proportional(size), col, wrap));
+    let laid: Vec<_> = rows.iter().map(|(_, h, d)| (lay(h, 14.0, Color32::WHITE), lay(d, 12.5, DIM))).collect();
+    let h = pad + 22.0 + 14.0 + laid.iter().map(|(a, b)| a.size().y + b.size().y + 16.0).sum::<f32>() + pad - 6.0;
+    let r = Rect::from_min_size(pos2((btn.right() - w).max(10.0), btn.bottom() + 8.0), vec2(w, h));
+    egui::Area::new(egui::Id::new("screen_help")).order(egui::Order::Foreground).fade_in(false).fixed_pos(r.min).show(ctx, |ui| {
+        let (_, _) = ui.allocate_exact_size(r.size(), Sense::click());
+        let p = ui.painter_at(r.expand(40.0));
+        panel(&p, r, 14.0, BLUE);
+        lcd(&p, pos2(r.left() + pad, r.top() + pad + 11.0), Align2::LEFT_CENTER, title, 16.0, CYAN);
+        let mut y = r.top() + pad + 22.0 + 14.0;
+        p.line_segment([pos2(r.left() + pad, y - 6.0), pos2(r.right() - pad, y - 6.0)], Stroke::new(1.0, alpha(CYAN, 0.2)));
+        for ((mark, _, _), (head, desc)) in rows.iter().zip(laid) {
+            let mc = pos2(r.left() + pad + 8.0, y + 9.0);
+            match mark {
+                Mark::Dot(c) => dot(&p, mc, 4.5, *c, 0.2),
+                Mark::Dash => {
+                    p.line_segment([mc - vec2(4.0, 0.0), mc + vec2(4.0, 0.0)], Stroke::new(1.5, alpha(CYAN, 0.7)));
+                }
+            }
+            let (hh, dh) = (head.size().y, desc.size().y);
+            p.galley(pos2(r.left() + pad + tx, y), head, Color32::WHITE);
+            p.galley(pos2(r.left() + pad + tx, y + hh + 2.0), desc, DIM);
+            y += hh + dh + 16.0;
+        }
+    });
+    r
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
     Radar,
@@ -484,7 +532,7 @@ impl App {
 
     /// Screens that have an "About this screen" button (the rest explain themselves).
     fn has_help(s: Screen) -> bool {
-        matches!(s, Screen::Diagnostics)
+        matches!(s, Screen::Diagnostics | Screen::Spectrum)
     }
 
     /// Dialog for importing a newer vendor list, drawn like the rest of the app: centred, dimmed backdrop.
@@ -2572,7 +2620,10 @@ impl eframe::App for App {
             let btn = self.help_btn.filter(|_| Self::has_help(self.screen));
             match btn {
                 Some(b) => {
-                    let r = diag::Diag::help_box(ui.ctx(), b);
+                    let r = match self.screen {
+                        Screen::Spectrum => help_panel(ui.ctx(), b, "SPECTRUM", &SPECTRUM_HELP),
+                        _ => diag::Diag::help_box(ui.ctx(), b),
+                    };
                     let (esc, out) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !r.contains(q) && !b.contains(q))));
                     if esc || out {
                         self.help_open = false;
