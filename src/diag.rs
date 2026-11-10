@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod logview;
+mod page;
 
 /// How far a scroll area reaches into the page's right margin, so its floating scrollbar sits beside the content, not over it.
 const SCROLL_MARGIN: f32 = 18.0;
@@ -47,13 +48,14 @@ pub struct Diag {
     key: u64,
     /// Timeline rows, newest first, as indices into the events (`tl_key` = events, problems-only, records).
     tl: Vec<usize>,
-    tl_key: (usize, bool, u64),
+    tl_key: (u8, usize, u64, bool, Option<String>),
+    /// How many of `tl` the table lists (grows a page at a time as the scroll nears the end).
+    tl_limit: usize,
     /// Timeline layout: measured width of each event's message at the table font (grows as events are measured,
     /// a few thousand per frame) and the line height.
     ev_px: Vec<f32>,
     line_h: f32,
     checked: Instant,
-    tab: u8,
     addrs: bool,
     problems_only: bool,
     /// Brief confirmation shown on a button: (when, which button: 0 copy / 1 save, outcome text).
@@ -65,6 +67,8 @@ pub struct Diag {
     rec: Option<Recording>,
     cap_idx: usize,
     rec_msg: Option<(bool, String)>,
+    /// When the status message was first shown (plain messages fade after a few seconds).
+    msg_seen: Option<(String, Instant)>,
     /// A new recording to open as soon as btmon has written its header.
     follow: Option<PathBuf>,
     /// When new data last arrived from the file (drives the LIVE lamp).
@@ -76,14 +80,29 @@ pub struct Diag {
     sessions_at: Option<Instant>,
     /// Rectangle around the Record and Open buttons (set each frame while drawing the toolbar; the empty state highlights it).
     cta: Option<Rect>,
-    /// The System log tab.
+    /// The system log source.
     log: logview::LogState,
+    log_px: Vec<f32>,
+    log_devs: Vec<page::LogDev>,
+    log_devs_key: Option<(u64, bool, usize)>,
+    /// Only this device's events are listed (card key), the card whose info box is open, where its card and box are on screen.
+    dev_filter: Option<String>,
+    info: Option<String>,
+    info_card: Option<Rect>,
+    info_rect: Option<Rect>,
+    /// The Library picker: open?, the toolbar button it hangs from, where it is on screen.
+    lib_open: bool,
+    lib_btn: Option<Rect>,
+    lib_rect: Option<Rect>,
+    dbg_done: bool,
     /// A "save report as" dialog that is open, and whether it is for the System log (else the open capture).
     save_pick: Option<(Pick, bool)>,
     /// Library session folder waiting for the delete confirmation.
     del_pending: Option<PathBuf>,
     /// The "Start here" pointer: when it first showed, and when it began fading (30 s, or the first hover over the buttons; once per run).
     cta_since: Option<Instant>,
+    /// Set when something points at Record (the ghost tile, the hint chip): the buttons glow for a few seconds.
+    rec_pulse: Option<Instant>,
     cta_off: Option<Instant>,
     /// The "Start here" pointer was already shown in an earlier run (marker file `seen-start-here` in the data folder).
     cta_seen: Option<bool>,
@@ -93,7 +112,7 @@ pub struct Diag {
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, cta: None, log: Default::default(), save_pick: None, del_pending: None, cta_since: None, cta_off: None, cta_seen: None, bg: None, tip: Default::default() };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_limit: 1000, tl_key: (0, 0, u64::MAX, false, None), ev_px: vec![], line_h: 0.0, checked: Instant::now(), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, msg_seen: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, cta: None, log: Default::default(), log_px: vec![], log_devs: vec![], log_devs_key: None, dev_filter: None, info: None, info_card: None, info_rect: None, lib_open: std::env::var("AIRSCOPE_LIBRARY").is_ok(), lib_btn: None, lib_rect: None, dbg_done: false, save_pick: None, del_pending: None, cta_since: None, rec_pulse: None, cta_off: None, cta_seen: None, bg: None, tip: Default::default() };
         if !d.path.is_empty() {
             d.load();
         } else if let Some(r) = Recording::adopt() {
@@ -282,261 +301,79 @@ impl Diag {
         s.first_us.map_or(0.0, |f| (f - 0x00dc_ddb3_0f2f_8000i64) as f64 / 1e6)
     }
 
-    /// Visual summary: headline tiles, a strip showing when the drops happened, then one card per device.
-    fn summary_view(&self, ui: &mut egui::Ui, s: &Snoop, names: &Names) {
-        let w = ui.available_width() - SCROLL_MARGIN; // the scroll area reaches into the right margin; content stops at the edge
-        let gap = 12.0;
-        let drops = s.drops().count();
-        let bursts = &self.bursts;
-        let tw = (w - gap * 3.0) / 4.0;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            tile(ui, tw, "LINK DROPS", &drops.to_string(), if drops > 0 { RED } else { GREEN });
-            tile(ui, tw, "CAPTURED", &dur(s.duration()), CYAN);
-            tile(ui, tw, "DATA PACKETS", &s.acl.to_string(), BLUE);
-            tile(ui, tw, "DROP BURSTS", &bursts.len().to_string(), if bursts.is_empty() { GREEN } else { AMBER });
-        });
-        ui.add_space(14.0);
-        let spec = StripSpec { first: Self::first_unix(s), total: s.duration(), title: "DROPS OVER TIME", legend: ("other", "radio-type drop"), what: "link drops" };
-        let ticks: Vec<Tick> = s.drops().map(|e| Tick { t: e.t, unix: e.unix, radio: matches!(e.kind, Kind::Disconnected { reason, .. } if crate::hci::reason(reason).2), who: self.who(&e.addr, names), detail: None }).collect();
-        strip(ui, w, &spec, &ticks, bursts, &self.tip);
-        ui.add_space(14.0);
-        let stats = &self.stats;
-        let cols = if w >= 860.0 { 2 } else { 1 };
-        let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
-        let ch = stats.iter().map(card_h).fold(0.0, f32::max);
-        for row in stats.chunks(cols) {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for d in row {
-                    let name = self.who(&d.addr, names);
-                    let ic = names.get(&mac(&d.addr)).map_or(Icon::Bluetooth, |n| n.1);
-                    card(ui, vec2(cw, ch), d, &name, ic);
-                }
-            });
-            ui.add_space(gap);
-        }
+    /// Opens a capture file (and forgets the device filter and info box of the one before).
+    fn open_path(&mut self, path: String) {
+        self.path = path;
+        self.dev_filter = None;
+        self.info = None;
+        self.load();
     }
 
-    /// The timeline as a table: Time, Since start, Device, Event. The event text wraps inside its own column. Rows have
-    /// different heights, so each row's height is estimated from its text length (generously, so rows never overlap)
-    /// and only the rows in view are drawn, which keeps a capture with a very long history fast.
-    fn timeline(&mut self, ui: &mut egui::Ui, s: &Snoop, names: &Names) {
-        let font = FontId::proportional(13.5);
-        if self.line_h == 0.0 {
-            self.line_h = ui.painter().layout_no_wrap("Ag".to_string(), font.clone(), Color32::WHITE).size().y;
-        }
-        for _ in 0..3000 {
-            let Some(e) = s.events.get(self.ev_px.len()) else { break };
-            let px = ui.painter().layout_no_wrap(snoop::message(e), font.clone(), Color32::WHITE).size().x;
-            self.ev_px.push(px);
-        }
-        let w = ui.available_width();
-        let (x_time, x_off, x_dev, x_msg) = (16.0, 196.0, 212.0, 436.0);
-        let dev_w = x_msg - x_dev - 14.0;
-        let msg_w = (w - x_msg - 14.0).max(160.0);
-        // header
-        let (hr, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
-        let p = ui.painter();
-        let hf = FontId::proportional(11.5);
-        p.text(pos2(hr.left() + x_time, hr.center().y), Align2::LEFT_CENTER, "TIME", hf.clone(), DIM);
-        p.text(pos2(hr.left() + x_off, hr.center().y), Align2::RIGHT_CENTER, "SINCE START", hf.clone(), DIM);
-        p.text(pos2(hr.left() + x_dev, hr.center().y), Align2::LEFT_CENTER, "DEVICE", hf.clone(), DIM);
-        p.text(pos2(hr.left() + x_msg, hr.center().y), Align2::LEFT_CENTER, "EVENT", hf, DIM);
-        p.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.25)));
-        // row heights: one line if the text fits its column, otherwise the wrapped line count with a little slack
-        let lines = |px: f32, col: f32| if px <= col - 2.0 { 1.0 } else { (px * 1.08 / col).ceil() };
-        let dev_px: Vec<(snoop::Addr, f32)> = self.stats.iter().map(|d| (d.addr, ui.painter().layout_no_wrap(self.who(&d.addr, names), font.clone(), Color32::WHITE).size().x)).collect();
-        let (ev_px, line_h) = (&self.ev_px, self.line_h);
-        let height = |i: usize| -> f32 {
-            let dp = dev_px.iter().find(|d| d.0 == s.events[i].addr).map_or(0.0, |d| d.1);
-            lines(ev_px.get(i).copied().unwrap_or(0.0), msg_w).max(lines(dp, dev_w)) * line_h + 18.0
-        };
-        let total: f32 = self.tl.iter().map(|&i| height(i)).sum();
-        scroll_in_margin(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, vp| {
-            let (rect, _) = ui.allocate_exact_size(vec2(w, total.max(1.0)), Sense::hover());
-            let p = ui.painter().clone();
-            let mut y = 0.0;
-            for &i in &self.tl {
-                let h = height(i);
-                if y > vp.max.y {
-                    break;
-                }
-                if y + h >= vp.min.y {
-                    let e = &s.events[i];
-                    let (top, col) = (rect.top() + y, Self::colour(e));
-                    if Self::problem(e) {
-                        p.rect_filled(Rect::from_min_size(pos2(rect.left() + 2.0, top + 5.0), vec2(3.0, h - 10.0)), 1.5, col);
-                    }
-                    let ty = top + 9.0;
-                    let mono = FontId::monospace(12.5);
-                    p.text(pos2(rect.left() + x_time, ty), Align2::LEFT_TOP, snoop::clock(e.unix), mono.clone(), DIM);
-                    p.text(pos2(rect.left() + x_off, ty), Align2::RIGHT_TOP, snoop::offset(e), mono, DIM);
-                    let g = p.layout(self.who(&e.addr, names), FontId::proportional(13.5), TEXT, dev_w);
-                    p.galley(pos2(rect.left() + x_dev, ty), g, TEXT);
-                    let g = p.layout(snoop::message(e), FontId::proportional(13.5), col, msg_w);
-                    p.galley(pos2(rect.left() + x_msg, ty), g, col);
-                    p.line_segment([pos2(rect.left(), top + h), pos2(rect.right(), top + h)], Stroke::new(1.0, alpha(Color32::WHITE, 0.07)));
-                }
-                y += h;
-            }
-        }));
+    /// Closes the open capture: the page goes back to the system log.
+    fn close_capture(&mut self) {
+        self.path.clear();
+        self.snoop = None;
+        self.err = None;
+        self.pos = 0;
+        self.total = 0;
+        self.key = u64::MAX;
+        self.ev_px.clear();
+        self.rec_msg = None;
+        self.dev_filter = None;
+        self.info = None;
     }
 
-    /// The saved sessions, newest first: when each was started, how long, how big, how many drops, with Open and Copy path.
-    fn library_view(&mut self, ui: &mut egui::Ui) {
-        if self.sessions_at.map_or(true, |t| t.elapsed() > Duration::from_secs(3)) {
-            self.sessions = capture::list();
-            self.sessions_at = Some(Instant::now());
-        }
-        // finish the analysis of captures nobody has opened (e.g. one that ended while the app was closed), one at a time
-        if self.bg.as_ref().map_or(false, |(_, d)| d.load(std::sync::atomic::Ordering::Relaxed)) {
-            self.bg = None;
-            self.sessions_at = None;
-        }
-        if self.bg.is_none() {
-            let open = PathBuf::from(self.clean_path());
-            let live = |c: &PathBuf| self.rec.as_ref().map_or(false, |r| &r.file == c) || *c == open || std::fs::metadata(c).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(true, |e| e < Duration::from_secs(10));
-            if let Some(s) = self.sessions.iter().find(|s| capture::needs_analysis(s) && !live(&s.capture)) {
-                let (dir, cap) = (s.dir.clone(), s.capture.clone());
-                let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let flag = done.clone();
-                self.bg = Some((cap.clone(), done));
-                std::thread::spawn(move || {
-                    capture::analyse(&dir, &cap);
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                });
-            }
-        }
-        if self.sessions.is_empty() {
-            // nothing saved: ghost cards in the real layout, a title saying why, and the pointer at Record/Open
-            let w = ui.available_width();
-            ui.add_space(14.0);
-            let (tr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
-            lcd(ui.painter(), tr.center(), Align2::CENTER_CENTER, "NO SAVED CAPTURES YET", 13.0, alpha(TEXT, 0.8));
-            ui.add_space(8.0);
-            for _ in 0..2 {
-                let (r, _) = ui.allocate_exact_size(vec2(w, 84.0), Sense::hover());
-                let p = ui.painter();
-                panel(p, r, 12.0, alpha(DIM, 0.45));
-                let bar = alpha(Color32::WHITE, 0.06);
-                p.rect_filled(Rect::from_min_size(pos2(r.left() + 20.0, r.top() + 20.0), vec2(190.0, 16.0)), 8.0, bar);
-                p.rect_filled(Rect::from_min_size(pos2(r.left() + 20.0, r.top() + 53.0), vec2(280.0, 10.0)), 5.0, bar);
-                for k in 0..3 {
-                    let bw = [36.0, 124.0, 100.0][k];
-                    let x = r.right() - 20.0 - [36.0 + 12.0 + 124.0 + 12.0 + 100.0, 124.0 + 12.0 + 100.0, 100.0][k];
-                    p.rect_filled(Rect::from_min_size(pos2(x, r.top() + 24.0), vec2(bw, 36.0)), 10.0, alpha(Color32::WHITE, 0.04));
-                }
-                ui.add_space(10.0);
-            }
-            if self.snoop.is_none() && self.path.is_empty() {
-                self.start_here(ui);
-            }
-            return;
-        }
-        let w = ui.available_width();
-        let mut open: Option<PathBuf> = None;
-        let mut copy: Option<PathBuf> = None;
-        let mut del: Option<PathBuf> = None;
-        scroll_in_margin(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for sess in &self.sessions {
-                let (r, _) = ui.allocate_exact_size(vec2(w, 84.0), Sense::hover());
-                let recording = self.rec.as_ref().map_or(false, |x| x.file == sess.capture);
-                let accent = if recording { RED } else if sess.summary.as_ref().map_or(false, |x| x.drops > 0) { AMBER } else { BLUE };
-                let p = ui.painter().clone();
-                panel(&p, r, 12.0, accent);
-                lcd(&p, pos2(r.left() + 20.0, r.top() + 28.0), Align2::LEFT_CENTER, &snoop::pretty_stamp(&sess.name), 19.0, if recording { RED } else { CYAN });
-                let sub = match &sess.summary {
-                    Some(x) => format!("{}  ·  {}  ·  {} drops  ·  {} records{}", dur(x.duration), size_str(sess.size), x.drops, x.records, if sess.report { "  ·  report saved" } else { "" }),
-                    None if self.bg.as_ref().map_or(false, |(c, _)| *c == sess.capture) => format!("{}  ·  analysing…", size_str(sess.size)),
-                    None => format!("{}  ·  not analysed yet", size_str(sess.size)),
-                };
-                let asking = self.del_pending.as_ref() == Some(&sess.dir);
-                if asking {
-                    p.text(pos2(r.left() + 20.0, r.top() + 58.0), Align2::LEFT_CENTER, "Delete this capture and its analysis? This can't be undone.", FontId::proportional(13.0), RED);
-                } else {
-                    p.text(pos2(r.left() + 20.0, r.top() + 58.0), Align2::LEFT_CENTER, if recording { "recording now".to_string() } else { sub }, FontId::proportional(13.0), DIM);
-                }
-                let bar = Rect::from_min_size(pos2(r.right() - 380.0, r.top() + 24.0), vec2(360.0, 36.0));
-                ui.scope_builder(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    if asking {
-                        // right to left: Delete sits on the right, Cancel beside it
-                        if action_button(ui, Some(Glyph::Trash), "Delete", RED, 0.6, true, 0.0).clicked() {
-                            del = Some(sess.dir.clone());
-                        }
-                        if action_button(ui, Some(Glyph::Cross), "Cancel", BLUE, 0.0, true, 0.0).clicked() {
-                            self.del_pending = None;
-                        }
-                    } else {
-                        if action_button(ui, Some(Glyph::Open), "Open", BLUE, 0.0, true, 0.0).clicked() {
-                            open = Some(sess.capture.clone());
-                        }
-                        if action_button(ui, Some(Glyph::Copy), "Copy path", BLUE, 0.0, true, 0.0).clicked() {
-                            copy = Some(sess.dir.clone());
-                        }
-                        if action_button(ui, Some(Glyph::Trash), "", RED, 0.0, !recording, 0.0).hint(if recording { "A recording in progress can't be deleted" } else { "Delete this capture" }).clicked() {
-                            self.del_pending = Some(sess.dir.clone());
-                        }
-                    }
-                });
-                ui.advance_cursor_after_rect(r); // the button area above is a child Ui that moved the cursor to its own bottom
-                ui.add_space(10.0);
-            }
-        }));
-        if let Some(c) = open {
-            self.path = c.display().to_string();
-            self.tab = 0;
-            self.load();
-        }
-        if let Some(dir) = del {
-            self.del_pending = None;
-            let cap = dir.join(capture::CAPTURE_FILE);
-            match capture::delete_session(&dir) {
-                Ok(()) => {
-                    if PathBuf::from(self.clean_path()) == cap {
-                        // it was the open capture: close it
-                        self.path.clear();
-                        self.snoop = None;
-                        self.pos = 0;
-                        self.total = 0;
-                    }
-                    self.rec_msg = Some((false, "Capture deleted".into()));
-                }
-                Err(e) => self.rec_msg = Some((true, e)),
-            }
-            self.sessions_at = None;
-        }
-        if let Some(dir) = copy {
-            ui.ctx().copy_text(dir.display().to_string());
-            self.rec_msg = Some((false, "Folder path copied to the clipboard".into()));
-        }
-    }
-
-    /// Open capture's name, loading progress, LIVE lamp and the latest status message.
+    /// Page header for a capture: its date and time with loading progress, the LIVE lamp (recordings only) and the
+    /// latest status message; the Close button on the right.
     fn name_row(&mut self, ui: &mut egui::Ui) {
-        let name = if self.tab == 3 { String::new() } else { snoop::pretty_stamp(&self.shown_name()) }; // the open capture's name would sit beside the log's own report buttons
-        let reserve = 20.0 + if self.pos < self.total { 90.0 } else { 0.0 } + if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) { 80.0 } else { 0.0 };
-        if name.is_empty() && self.rec.is_none() && self.err.is_none() && (self.tab != 2 || self.sessions.is_empty()) {
-            // nothing opened: the "Start here" pointer is drawn by the empty state instead of a label
-        } else if name.is_empty() {
-            ui.label(RichText::new("No capture opened").color(DIM));
-        } else {
-            let font = egui::FontId::proportional(15.0);
-            let shown = crate::fit_middle(ui.painter(), &name, font, (ui.available_width() - reserve).max(60.0));
-            let r = ui.label(RichText::new(&shown).color(TEXT).size(15.0));
-            if shown != name {
-                r.hint(name);
+        let name = snoop::pretty_stamp(&self.shown_name());
+        let sub = if self.rec.is_some() { "Live recording" } else { "Recording" };
+        let loading = (self.pos < self.total).then(|| self.pos * 100 / self.total);
+        let live = self.rec.is_some() && self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6));
+        if let Some((err, m)) = self.rec_msg.clone() {
+            if self.msg_seen.as_ref().map_or(true, |(s, _)| *s != m) {
+                self.msg_seen = Some((m.clone(), Instant::now()));
             }
+            let age = self.msg_seen.as_ref().map_or(0.0, |(_, t)| t.elapsed().as_secs_f32());
+            if !err && age > 6.0 && !m.starts_with("Waiting") {
+                self.rec_msg = None;
+            } else if !err {
+                ui.ctx().request_repaint_after(Duration::from_millis(500));
+            }
+        } else {
+            self.msg_seen = None;
         }
-        if self.pos < self.total {
-            ui.label(RichText::new(format!("loading {}%", self.pos * 100 / self.total)).color(DIM));
-        }
-        if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) {
-            lamp(ui, GREEN, "LIVE", true);
-        }
-        if let Some((err, m)) = &self.rec_msg {
-            ui.add(egui::Label::new(RichText::new(m).size(12.5).color(if *err { RED } else { DIM })).truncate());
+        let msg = self.rec_msg.clone();
+        let can_close = self.rec.is_none() && !self.path.is_empty();
+        let mut close = false;
+        let aw = ui.available_width();
+        Diag::header(ui, sub, |ui| {
+            if name.is_empty() {
+                ui.label(RichText::new("\u{2026}").color(DIM));
+            } else {
+                let font = egui::FontId::proportional(15.0);
+                let shown = crate::fit_middle(ui.painter(), &name, font, (aw - 400.0).max(120.0));
+                let r = ui.label(RichText::new(&shown).color(TEXT).size(15.0));
+                if shown != name {
+                    r.hint(name.clone());
+                }
+            }
+            if let Some(l) = loading {
+                ui.label(RichText::new(format!("loading {l}%")).color(DIM));
+            }
+            if live {
+                lamp(ui, GREEN, "LIVE", true);
+            }
+            if let Some((err, m)) = &msg {
+                ui.add(egui::Label::new(RichText::new(m).size(12.5).color(if *err { RED } else { DIM })).truncate());
+            }
+        }, |ui| {
+            if can_close && action_button_h(ui, Some(Glyph::Back), "System log", BLUE, 0.0, true, 0.0, page::CTL_H).hint("Back to system log").clicked() {
+                close = true;
+            }
+        });
+        if close {
+            self.close_capture();
         }
     }
 
@@ -549,80 +386,6 @@ impl Diag {
             }
             Err(e) => self.rec_msg = Some((true, e)),
         }
-    }
-
-    /// Nothing opened yet: the real screen as dimmed placeholders (so the result's shape is visible), with a card in the
-    /// middle holding the two ways to begin, drawn large, and a link to the Library.
-    fn empty_view(&mut self, ui: &mut egui::Ui) {
-        let w = ui.available_width();
-        let gap = 12.0;
-        let tw = (w - gap * 3.0) / 4.0;
-        let ghost = alpha(DIM, 0.45);
-        ui.add_space(14.0);
-        let (tr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
-        lcd(ui.painter(), tr.center(), Align2::CENTER_CENTER, if self.rec.is_some() { "RECORDING IS STARTING" } else { "NO CAPTURE OPEN OR IN PROGRESS" }, 13.0, alpha(TEXT, 0.8));
-        ui.add_space(8.0);
-        if self.tab == 1 {
-            // Timeline: a table skeleton with the real column headings
-            let (x_time, x_off, x_dev, x_msg) = (16.0, 196.0, 212.0, 436.0);
-            let (hr, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
-            let p = ui.painter();
-            let hf = FontId::proportional(11.5);
-            let hc = alpha(DIM, 0.7);
-            p.text(pos2(hr.left() + x_time, hr.center().y), Align2::LEFT_CENTER, "TIME", hf.clone(), hc);
-            p.text(pos2(hr.left() + x_off, hr.center().y), Align2::RIGHT_CENTER, "SINCE START", hf.clone(), hc);
-            p.text(pos2(hr.left() + x_dev, hr.center().y), Align2::LEFT_CENTER, "DEVICE", hf.clone(), hc);
-            p.text(pos2(hr.left() + x_msg, hr.center().y), Align2::LEFT_CENTER, "EVENT", hf, hc);
-            p.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.15)));
-            let bar = alpha(Color32::WHITE, 0.06);
-            for k in 0..9 {
-                let (rr, _) = ui.allocate_exact_size(vec2(w, 36.0), Sense::hover());
-                let p = ui.painter();
-                let cy = rr.center().y;
-                let msg_w = (w - x_msg - 14.0).max(160.0);
-                p.rect_filled(Rect::from_min_size(pos2(rr.left() + x_time, cy - 5.0), vec2(70.0, 10.0)), 5.0, bar);
-                p.rect_filled(Rect::from_min_size(pos2(rr.left() + x_off - 52.0, cy - 5.0), vec2(52.0, 10.0)), 5.0, bar);
-                p.rect_filled(Rect::from_min_size(pos2(rr.left() + x_dev, cy - 5.0), vec2([120.0, 90.0, 140.0][k % 3], 10.0)), 5.0, bar);
-                p.rect_filled(Rect::from_min_size(pos2(rr.left() + x_msg, cy - 5.0), vec2(msg_w * [0.7, 0.45, 0.6, 0.35][k % 4], 10.0)), 5.0, bar);
-                p.line_segment([rr.left_bottom(), rr.right_bottom()], Stroke::new(1.0, alpha(Color32::WHITE, 0.05)));
-            }
-        } else {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for label in ["LINK DROPS", "CAPTURED", "DATA PACKETS", "DROP BURSTS"] {
-                    let (r, _) = ui.allocate_exact_size(vec2(tw, 78.0), Sense::hover());
-                    let p = ui.painter();
-                    panel(p, r, 12.0, ghost);
-                    p.text(pos2(r.left() + 18.0, r.top() + 20.0), Align2::LEFT_CENTER, label, FontId::proportional(12.0), alpha(DIM, 0.7));
-                    lcd(p, pos2(r.left() + 18.0, r.top() + 49.0), Align2::LEFT_CENTER, "-", 26.0, alpha(DIM, 0.6));
-                }
-            });
-            ui.add_space(14.0);
-            let (r, _) = ui.allocate_exact_size(vec2(w, 96.0), Sense::hover());
-            panel(ui.painter(), r, 12.0, ghost);
-            ui.painter().text(pos2(r.left() + 18.0, r.top() + 18.0), Align2::LEFT_CENTER, "DROPS OVER TIME", FontId::proportional(12.0), alpha(DIM, 0.7));
-            ui.painter().rect_filled(Rect::from_min_max(pos2(r.left() + 18.0, r.top() + 34.0), pos2(r.right() - 18.0, r.bottom() - 26.0)), 4.0, alpha(Color32::WHITE, 0.04));
-            ui.add_space(14.0);
-            let cols = if w >= 860.0 { 2 } else { 1 };
-            let cw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for _ in 0..cols {
-                    let (r, _) = ui.allocate_exact_size(vec2(cw, 150.0), Sense::hover());
-                    let p = ui.painter();
-                    panel(p, r, 12.0, ghost);
-                    p.circle_filled(pos2(r.left() + 40.0, r.top() + 40.0), 17.0, alpha(Color32::WHITE, 0.06));
-                    for (i, wf) in [0.45, 0.3].into_iter().enumerate() {
-                        p.rect_filled(Rect::from_min_size(pos2(r.left() + 70.0, r.top() + 30.0 + i as f32 * 18.0), vec2((r.width() - 140.0) * wf, 10.0)), 5.0, alpha(Color32::WHITE, 0.06));
-                    }
-                    for i in 0..3 {
-                        p.rect_filled(Rect::from_min_size(pos2(r.left() + 22.0, r.top() + 84.0 + i as f32 * 20.0), vec2((r.width() - 44.0) * [0.9, 0.7, 0.8][i], 9.0)), 4.0, alpha(Color32::WHITE, 0.05));
-                    }
-                }
-            });
-
-        }
-        self.start_here(ui);
     }
 
     /// The "Start here" pointer: a pulsing outline round the Record and Open buttons with an arrow and label, shown for
@@ -666,27 +429,116 @@ impl Diag {
         }
     }
 
+    /// Width of a toolbar button with this label (icon, gap, text, padding), as `action_button` makes it.
+    fn button_w(ui: &egui::Ui, label: &str, min_w: f32) -> f32 {
+        (ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), Color32::WHITE).size().x + 66.0).max(min_w)
+    }
+
+    /// Row 1: Record (or Stop) with its length on the left; Library, Copy report and Export on the right. When the
+    /// window is too narrow for the labels the buttons shrink to icons; the breakpoint comes from the real label widths.
+    fn toolbar(&mut self, ui: &mut egui::Ui, s: Option<&Snoop>, names: &Names) {
+        let cap_mode = s.is_some() || !self.path.is_empty() || self.rec.is_some();
+        let reports = if cap_mode { s.is_some() } else { true };
+        let w_of = |t: &str| ui.painter().layout_no_wrap(t.to_string(), FontId::proportional(14.0), Color32::WHITE).size().x;
+        let widest = CAPS.iter().map(|c| w_of(c.0)).fold(0.0, f32::max);
+        let left_full = Self::button_w(ui, "Record", 0.0) + 12.0 + w_of("for") + 12.0 + widest + 40.0;
+        let right_full = Self::button_w(ui, "Library", 0.0) + 12.0 + if reports { Self::button_w(ui, "Copy report", 0.0) + Self::button_w(ui, "Export", 0.0) + 24.0 } else { 0.0 };
+        let stacked = ui.available_width() < left_full.max(260.0) + right_full + 30.0;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            if self.rec.is_some() {
+                if action_button(ui, Some(Glyph::Stop), if stacked { "" } else { "Stop" }, RED, 0.6, true, 0.0).hint("Stop the recording (asks for your password)").clicked() {
+                    if let Some(r) = self.rec.as_mut() {
+                        self.rec_msg = Some(match r.stop() {
+                            Ok(()) => (false, "Enter your password to end the capture.".to_string()),
+                            Err(e) => (true, e),
+                        });
+                    }
+                }
+                if let Some(r) = &self.rec {
+                    lamp(ui, RED, &format!("REC  {} left", hms(r.left().as_secs())), true);
+                }
+            } else {
+                let rb = action_button(ui, Some(Glyph::Record), if stacked { "" } else { "Record" }, RED, 0.0, true, 0.0).hint("Record Bluetooth activity (asks for your password)");
+                if rb.clicked() {
+                    self.start_record();
+                }
+                ui.label(RichText::new("for").color(DIM));
+                let cb = egui::ComboBox::from_id_salt("cap_len").selected_text(CAPS[self.cap_idx].0).show_ui(ui, |ui| {
+                    for (i, (l, _)) in CAPS.iter().enumerate() {
+                        ui.selectable_value(&mut self.cap_idx, i, *l);
+                    }
+                });
+                self.cta = Some(rb.rect.union(cb.response.rect));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                // right to left: Export is added first, so it sits on the right
+                if reports {
+                    for (idx, normal, done, tip) in [(1u8, "Export", "Saved", "Export the report to a file"), (0u8, "Copy report", "Copied", "Copy the report to the clipboard")] {
+                        let f = self.flash.as_ref().filter(|f| f.1 == idx && f.0.elapsed() < Duration::from_millis(2500));
+                        let el = f.map_or(0.0, |f| f.0.elapsed().as_secs_f32());
+                        // fade in over 0.15 s, hold, fade out over the last 0.5 s
+                        let fade = if f.is_none() { 0.0 } else if el < 0.15 { el / 0.15 } else if el < 2.0 { 1.0 } else { 1.0 - (el - 2.0) / 0.5 };
+                        let t = fade * fade * (3.0 - 2.0 * fade);
+                        let tint = if matches!(f, Some((_, _, Err(_)))) { RED } else { GREEN };
+                        let label = match f {
+                            Some((_, _, Err(_))) if el > 0.1 && el < 2.35 => "Failed",
+                            Some(_) if el > 0.1 && el < 2.35 => done,
+                            _ => normal,
+                        };
+                        let result = f.map(|f| match &f.2 {
+                            Ok(t) | Err(t) => t.clone(),
+                        });
+                        // the icon turns into a tick (or a cross) while the result shows
+                        let ic = if label == normal { if idx == 1 { Glyph::Save } else { Glyph::Copy } } else if tint == RED { Glyph::Cross } else { Glyph::Check };
+                        let r = action_button(ui, Some(ic), if stacked { "" } else { label }, mix(BLUE, tint, t), t, true, if stacked { 0.0 } else { [normal, done, "Failed"].iter().map(|l| Self::button_w(ui, l, 0.0)).fold(0.0, f32::max) });
+                        let r = r.hint(result.unwrap_or_else(|| tip.to_string()));
+                        if r.clicked() {
+                            if !cap_mode {
+                                if idx == 1 {
+                                    self.begin_save(true);
+                                } else {
+                                    ui.ctx().copy_text(self.log_report(names));
+                                    self.flash = Some((Instant::now(), 0, Ok("Report copied to the clipboard".into())));
+                                }
+                            } else if let Some(s) = s {
+                                if idx == 1 {
+                                    self.begin_save(false);
+                                } else {
+                                    ui.ctx().copy_text(self.report(s, names));
+                                    self.flash = Some((Instant::now(), 0, Ok("Report copied to the clipboard".into())));
+                                }
+                            }
+                        }
+                    }
+                }
+                let lb = action_button(ui, Some(Glyph::Open), if stacked { "" } else { "Library" }, BLUE, if self.lib_open { 0.0 } else { 0.0 }, true, 0.0).hint("Open a saved recording, or a capture file");
+                self.lib_btn = Some(lb.rect);
+                if lb.clicked() {
+                    self.lib_open = !self.lib_open;
+                }
+            });
+        });
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, names: &Names) {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, BG);
         if let Some(p) = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().display().to_string()).find(|s| !s.is_empty())) {
-            self.path = p;
-            self.load();
+            self.open_path(p);
         }
         if let Some(res) = self.pick.as_ref().and_then(|p| p.poll()) {
             self.pick = None;
             match res {
-                Ok(Some(path)) => {
-                    self.path = path.display().to_string();
-                    self.load();
-                }
+                Ok(Some(path)) => self.open_path(path.display().to_string()),
                 Ok(None) => {}
                 Err(e) => self.err = Some(e),
             }
         }
         self.cta = None;
         if self.sessions_at.map_or(true, |t| t.elapsed() > Duration::from_secs(3)) {
-            self.sessions = capture::list(); // keeps the Library tab's count current
+            self.sessions = capture::list();
             self.sessions_at = Some(Instant::now());
         }
         let outcome = self.rec.as_mut().map(|r| r.poll());
@@ -708,9 +560,7 @@ impl Diag {
             if std::fs::metadata(&f).map_or(false, |m| m.len() > 16) {
                 self.follow = None;
                 self.rec_msg = None;
-                self.path = f.display().to_string();
-                self.tab = 0;
-                self.load();
+                self.open_path(f.display().to_string());
             }
         }
         self.pump();
@@ -728,11 +578,6 @@ impl Diag {
                 self.stats = s.per_device();
                 self.bursts = s.bursts(120.0);
                 self.key = s.records;
-            }
-            let k = (s.events.len(), self.problems_only, s.records);
-            if self.tl_key != k {
-                self.tl = (0..s.events.len()).rev().filter(|&i| Self::problem(&s.events[i]) || !self.problems_only).collect();
-                self.tl_key = k;
             }
             // a capture in the library: keep its summary (and, when a recording has just ended, its report) up to date
             if self.pos >= self.total {
@@ -753,159 +598,69 @@ impl Diag {
             }
         }
         egui::Frame::NONE.inner_margin(18.0).show(ui, |ui| {
-            // row 1: actions on the file (glass buttons)
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                // the left group gets what the Copy/Save buttons leave, and its texts are cut short instead of running into them
-                // Narrow window: the buttons shrink to icons (tooltips keep the names); the file name is cut in the middle if it still does not fit
-                let avail = ui.available_width();
-                let reports = s.is_some() || self.tab == 3; // Copy / Save report: for the open capture, or for the System log tab
-                let stacked = reports && avail < 930.0;
-                let left_w = (avail - if !reports { 0.0 } else if stacked { 100.0 } else { 330.0 }).max(200.0);
-                ui.allocate_ui_with_layout(vec2(left_w, 34.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                if self.rec.is_some() {
-                    if action_button(ui, Some(Glyph::Stop), if stacked { "" } else { "Stop" }, RED, 0.6, true, 0.0).hint("Stop the recording (asks for your password)").clicked() {
-                        if let Some(r) = self.rec.as_mut() {
-                            self.rec_msg = Some(match r.stop() {
-                                Ok(()) => (false, "Enter your password to end the capture.".to_string()),
-                                Err(e) => (true, e),
-                            });
-                        }
-                    }
-                    if let Some(r) = &self.rec {
-                        lamp(ui, RED, &format!("REC  {} left", hms(r.left().as_secs())), true);
-                    }
-                } else {
-                    let rb = action_button(ui, Some(Glyph::Record), if stacked { "" } else { "Record" }, RED, 0.0, true, 0.0).hint("Record Bluetooth activity (asks for your password)");
-                    self.cta = Some(rb.rect);
-                    if rb.clicked() {
-                        self.start_record();
-                    }
-                    ui.label(RichText::new("for").color(DIM));
-                    egui::ComboBox::from_id_salt("cap_len").selected_text(CAPS[self.cap_idx].0).show_ui(ui, |ui| {
-                        for (i, (l, _)) in CAPS.iter().enumerate() {
-                            ui.selectable_value(&mut self.cap_idx, i, *l);
-                        }
-                    });
-                }
-                ui.separator();
-                let picking = self.pick.is_some();
-                let ob = action_button(ui, Some(Glyph::Open), if stacked { "" } else if picking { "Choosing..." } else { "Open" }, BLUE, 0.0, !picking, 0.0).hint("Open a capture file");
-                self.cta = self.cta.map(|r| r.union(ob.rect));
-                if ob.clicked() {
-                    self.pick = Some(Pick::start("Open a Bluetooth capture file"));
-                }
-                self.name_row(ui);
-                });
-                if reports {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 12.0;
-                        // right to left: Save is added first, so it sits on the right
-                        for (idx, normal, done) in [(1u8, "Save report", "Saved"), (0u8, "Copy report", "Copied")] {
-                            let f = self.flash.as_ref().filter(|f| f.1 == idx && f.0.elapsed() < Duration::from_millis(2500));
-                            let el = f.map_or(0.0, |f| f.0.elapsed().as_secs_f32());
-                            // fade in over 0.15 s, hold, fade out over the last 0.5 s
-                            let fade = if f.is_none() { 0.0 } else if el < 0.15 { el / 0.15 } else if el < 2.0 { 1.0 } else { 1.0 - (el - 2.0) / 0.5 };
-                            let t = fade * fade * (3.0 - 2.0 * fade);
-                            let tint = if matches!(f, Some((_, _, Err(_)))) { RED } else { GREEN };
-                            let label = match f {
-                                Some((_, _, Err(_))) if el > 0.1 && el < 2.35 => "Failed",
-                                Some(_) if el > 0.1 && el < 2.35 => done,
-                                _ => normal,
-                            };
-                            let tip = f.map(|f| match &f.2 {
-                                Ok(t) | Err(t) => t.clone(),
-                            });
-                            // the icon turns into a tick (or a cross) while the result shows
-                            let ic = if label == normal { if idx == 1 { Glyph::Save } else { Glyph::Copy } } else if tint == RED { Glyph::Cross } else { Glyph::Check };
-                            let r = action_button(ui, Some(ic), if stacked { "" } else { label }, mix(BLUE, tint, t), t, true, if stacked { 0.0 } else { 150.0 });
-                            let r = match tip {
-                                Some(t) => r.hint(t),
-                                None if stacked => r.hint(normal),
-                                None => r,
-                            };
-                            if r.clicked() {
-                                if self.tab == 3 {
-                                    if idx == 1 {
-                                        self.begin_save(true);
-                                    } else {
-                                        ui.ctx().copy_text(self.log_report(names));
-                                        self.flash = Some((Instant::now(), 0, Ok("Report copied to the clipboard".into())));
-                                    }
-                                } else if let Some(s) = &s {
-                                    if idx == 1 {
-                                        self.begin_save(false);
-                                    } else {
-                                        ui.ctx().copy_text(self.report(s, names));
-                                        self.flash = Some((Instant::now(), 0, Ok("Report copied to the clipboard".into())));
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }
-            });
+            self.toolbar(ui, s.as_ref(), names);
             ui.add_space(10.0);
-            // row 2: which view (tabs, left) and what to show in it (toggle chips, right)
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                for (i, l) in ["Summary", "Timeline", "Library", "System log"].iter().enumerate() {
-                    if view_tab(ui, l, self.tab == i as u8, if i == 2 { self.sessions.len() } else { 0 }) {
-                        self.tab = i as u8;
-                    }
-                }
-                if self.tab != 2 {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        if self.tab > 0 && toggle_chip(ui, "Problems only", self.problems_only, AMBER, match (self.tab == 3, self.problems_only) { (false, true) => "Showing only drops and slow answers. Click to show every event.", (false, false) => "Showing every event. Click to show only drops and slow answers.", (true, true) => "Showing only problems. Click to include routine events, such as a keyboard reconnecting.", (true, false) => "Showing routine events too. Click to show only problems." }) {
-                            self.problems_only = !self.problems_only;
-                        }
-                        if toggle_chip(ui, "Device addresses", self.addrs, CYAN, if self.addrs { "Showing full device addresses. Click to hide them." } else { "Addresses are hidden. Click to show the full device addresses." }) {
-                            self.addrs = !self.addrs;
-                        }
-                    });
-                }
-            });
             ui.separator();
             if let Some(e) = &self.err {
                 ui.label(RichText::new(e).color(RED));
             }
-            if self.tab == 2 {
-                self.library_view(ui);
-                return;
-            }
-            if self.tab == 3 {
-                self.log_view(ui, names);
-                return;
-            }
-            let Some(s) = &s else {
-                if self.err.is_none() {
-                    self.empty_view(ui);
-                }
-                return;
-            };
-            if self.tab == 0 {
-                scroll_in_margin(ui, |ui| egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.summary_view(ui, s, names)));
-            } else if self.tl.is_empty() {
-                ui.label(RichText::new(if self.problems_only { "No problems in this capture." } else { "No events in this capture." }).color(DIM));
-            } else {
-                self.timeline(ui, s, names);
-            }
+            self.page(ui, s.as_ref(), names);
         });
-        // the Library's Open button calls load() while `s` is taken out: keep the freshly loaded capture, not the old one
-        if self.snoop.is_none() && self.err.is_none() {
+        // the Library picker hangs from the toolbar button; a click elsewhere or Esc closes it
+        if self.lib_open {
+            let was_open = self.lib_rect.is_some();
+            self.library_popover(ui.ctx(), rect);
+            let (esc, outside) = ui.input(|i| {
+                let q = i.pointer.interact_pos();
+                (i.key_pressed(egui::Key::Escape), i.pointer.primary_clicked() && q.map_or(false, |q| !self.lib_rect.map_or(false, |r| r.contains(q)) && !self.lib_btn.map_or(false, |r| r.contains(q))))
+            });
+            if self.lib_open && was_open && (esc || outside) {
+                self.lib_open = false;
+                self.del_pending = None;
+            }
+        }
+        if self.sessions.is_empty() && s.is_none() && self.path.is_empty() && !self.lib_open {
+            self.start_here(ui);
+        }
+        if let (Some(t), Some(b)) = (self.rec_pulse, self.cta) {
+            let age = t.elapsed().as_secs_f32();
+            if age > 3.5 || self.rec.is_some() {
+                self.rec_pulse = None;
+            } else {
+                let fade = (3.5 - age).min(1.0);
+                let pulse = 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 2.4).sin();
+                let hr = b.expand2(vec2(10.0, 7.0));
+                glow_rect_r(ui.painter(), hr, 14.0, 14.0, CYAN, (0.25 + 0.2 * pulse) * fade);
+                ui.painter().rect_stroke(hr, 14.0, Stroke::new(1.6, alpha(CYAN, (0.55 + 0.35 * pulse) * fade)), egui::StrokeKind::Outside);
+                ui.ctx().request_repaint();
+            }
+        }
+        // opening or closing a capture above replaced `self.snoop`; otherwise put the one taken out back
+        if self.snoop.is_none() && self.err.is_none() && !self.path.is_empty() {
             self.snoop = s;
         }
     }
 }
 
-fn tile(ui: &mut egui::Ui, w: f32, label: &str, value: &str, col: Color32) {
-    let (r, _) = ui.allocate_exact_size(vec2(w, 78.0), Sense::hover());
+/// A tile. An empty `value` makes a ghost: what a recording would show here but the system log can't. True when clicked.
+fn tile(ui: &mut egui::Ui, w: f32, label: &str, value: &str, col: Color32) -> bool {
+    let ghost = value.is_empty();
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 78.0), if ghost { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
+    if ghost {
+        let hot = resp.hovered();
+        p.rect_filled(r, 12.0, alpha(Color32::WHITE, if hot { 0.06 } else { 0.025 }));
+        p.rect_stroke(r, 12.0, Stroke::new(1.0, alpha(DIM, if hot { 0.7 } else { 0.4 })), egui::StrokeKind::Inside);
+        p.text(pos2(r.left() + 18.0, r.top() + 20.0), Align2::LEFT_CENTER, label, FontId::proportional(12.0), alpha(DIM, 0.8));
+        glyph(p, Glyph::Record, pos2(r.left() + 24.0, r.top() + 49.0), 5.5, RED);
+        p.text(pos2(r.left() + 38.0, r.top() + 49.0), Align2::LEFT_CENTER, "Needs a recording", FontId::proportional(14.0), alpha(DIM, if hot { 1.0 } else { 0.8 }));
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).hint("The system log can't count data packets. A recording can: click to see where to start one.");
+        return resp.clicked();
+    }
     panel(p, r, 12.0, col);
     p.text(pos2(r.left() + 18.0, r.top() + 20.0), Align2::LEFT_CENTER, label, FontId::proportional(12.0), DIM);
     lcd(p, pos2(r.left() + 18.0, r.top() + 49.0), Align2::LEFT_CENTER, value, 26.0, col);
+    false
 }
 
 /// What a time strip is drawn for: where it starts (unix seconds) and how long it runs, its title and legend, and what to
@@ -1066,11 +821,10 @@ fn card_h(d: &snoop::DevStat) -> f32 {
     78.0 + 22.0 * d.reasons.len().max(1) as f32 + 10.0 + 66.0 + if d.exits > 0 { 66.0 } else { 0.0 } + 14.0
 }
 
-fn card(ui: &mut egui::Ui, size: egui::Vec2, d: &snoop::DevStat, name: &str, ic: Icon) {
-    let (r, _) = ui.allocate_exact_size(size, Sense::hover());
+/// The full per-device card, painted into `r` (the info box gives it extra room below for its button).
+fn card_at(p: &egui::Painter, r: Rect, d: &snoop::DevStat, name: &str, ic: Icon) {
     let radio = d.reasons.iter().any(|(c, _)| crate::hci::reason(*c).2);
     let accent = if radio { RED } else if d.drops > 0 { AMBER } else { BLUE };
-    let p = ui.painter();
     panel(p, r, 14.0, accent);
     let c = pos2(r.left() + 36.0, r.top() + 38.0);
     orb(p, c, 17.0, BLUE, 0.0);

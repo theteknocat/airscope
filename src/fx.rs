@@ -456,9 +456,15 @@ pub fn glow_rect_r(p: &Painter, r: Rect, rad: f32, g: f32, col: Color32, k: f32)
 /// Action button in the app's glass style; dimmed and inert when `on` is false. `flash` (0..1) fades a state halo in and out (accent is then
 /// the state colour); `min_w` keeps the width steady when the label changes. Returns the response (use `.clicked()`).
 pub fn action_button(ui: &mut Ui, icon: Option<Glyph>, label: &str, accent: Color32, flash: f32, on: bool, min_w: f32) -> eframe::egui::Response {
-    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), if on { Color32::WHITE } else { DIM });
+    action_button_h(ui, icon, label, accent, flash, on, min_w, 36.0)
+}
+
+/// `action_button` at another height (28 for the smaller controls of the page header).
+pub fn action_button_h(ui: &mut Ui, icon: Option<Glyph>, label: &str, accent: Color32, flash: f32, on: bool, min_w: f32, h: f32) -> eframe::egui::Response {
+    let small = h < 32.0;
+    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(if small { 13.0 } else { 14.0 }), if on { Color32::WHITE } else { DIM });
     let extra = if icon.is_some() && !label.is_empty() { 26.0 } else { 0.0 };
-    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + 40.0 + extra).max(min_w), 36.0), if on { Sense::click() } else { Sense::hover() });
+    let (r, resp) = ui.allocate_exact_size(vec2((g.size().x + if small { 30.0 } else { 40.0 } + extra).max(min_w), h), if on { Sense::click() } else { Sense::hover() });
     let p = ui.painter();
     if on {
         if flash > 0.0 {
@@ -471,7 +477,7 @@ pub fn action_button(ui: &mut Ui, icon: Option<Glyph>, label: &str, accent: Colo
     // icon and text are centred together as one block
     let x0 = r.center().x - (g.size().x + extra) / 2.0;
     if let Some(ic) = icon {
-        glyph(p, ic, if label.is_empty() { r.center() } else { pos2(x0 + 8.0, r.center().y) }, 7.5, if on { Color32::WHITE } else { DIM });
+        glyph(p, ic, if label.is_empty() { r.center() } else { pos2(x0 + 8.0, r.center().y) }, if small { 6.5 } else { 7.5 }, if on { Color32::WHITE } else { DIM });
     }
     p.galley(pos2(x0 + extra, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
     if on { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
@@ -488,9 +494,16 @@ pub enum Glyph {
     Check,
     Cross,
     Refresh,
+    Undo,
+    Back,
+    Help,
     List,
     Trash,
 }
+
+/// Outline of the question mark, in units of its 512-wide source box centred on 0 (see `Glyph::Help`).
+const QM: [(f32, f32); 118] = [(-0.3367, -0.3543), (-0.3259, -0.3795), (-0.3123, -0.4029), (-0.2961, -0.4242), (-0.2774, -0.4432), (-0.2567, -0.4598), (-0.2342, -0.4738), (-0.2100, -0.4850), (-0.1845, -0.4932), (-0.1579, -0.4983), (-0.1305, -0.5000), (0.0973, -0.5000), (0.1373, -0.4968), (0.1753, -0.4874), (0.2106, -0.4725), (0.2429, -0.4524), (0.2716, -0.4277), (0.2963, -0.3990), (0.3163, -0.3667), (0.3312, -0.3313), (0.3405, -0.2934), (0.3438, -0.2535), (0.3424, -0.2273), (0.3382, -0.2016), (0.3315, -0.1767), (0.3222, -0.1527), (0.3105, -0.1299), (0.2966, -0.1084), (0.2804, -0.0885), (0.2622, -0.0702), (0.2420, -0.0538), (0.2199, -0.0395), (0.0938, 0.0328), (0.0923, 0.0477), (0.0886, 0.0619), (0.0828, 0.0751), (0.0752, 0.0872), (0.0658, 0.0979), (0.0549, 0.1072), (0.0427, 0.1147), (0.0293, 0.1203), (0.0150, 0.1238), (0.0000, 0.1250), (-0.0152, 0.1238), (-0.0297, 0.1202), (-0.0432, 0.1146), (-0.0554, 0.1070), (-0.0664, 0.0976), (-0.0757, 0.0867), (-0.0833, 0.0744), (-0.0890, 0.0610), (-0.0925, 0.0465), (-0.0938, 0.0312), (-0.0938, -0.0215), (-0.0932, -0.0315), (-0.0916, -0.0412), (-0.0891, -0.0507), (-0.0855, -0.0598), (-0.0811, -0.0684), (-0.0758, -0.0766), (-0.0696, -0.0841), (-0.0626, -0.0911), (-0.0549, -0.0973), (-0.0465, -0.1027), (0.1266, -0.2020), (0.1319, -0.2054), (0.1367, -0.2093), (0.1411, -0.2137), (0.1449, -0.2184), (0.1483, -0.2236), (0.1511, -0.2290), (0.1533, -0.2348), (0.1549, -0.2407), (0.1559, -0.2469), (0.1562, -0.2531), (0.1555, -0.2627), (0.1532, -0.2719), (0.1496, -0.2803), (0.1448, -0.2881), (0.1389, -0.2949), (0.1320, -0.3008), (0.1243, -0.3056), (0.1159, -0.3091), (0.1068, -0.3113), (0.0973, -0.3121), (-0.1305, -0.3121), (-0.1344, -0.3119), (-0.1382, -0.3112), (-0.1418, -0.3100), (-0.1453, -0.3084), (-0.1485, -0.3064), (-0.1514, -0.3041), (-0.1541, -0.3014), (-0.1563, -0.2984), (-0.1583, -0.2950), (-0.1598, -0.2914), (-0.1613, -0.2867), (-0.1675, -0.2728), (-0.1757, -0.2604), (-0.1856, -0.2496), (-0.1969, -0.2406), (-0.2094, -0.2334), (-0.2228, -0.2283), (-0.2369, -0.2252), (-0.2515, -0.2243), (-0.2662, -0.2258), (-0.2809, -0.2297), (-0.2947, -0.2359), (-0.3070, -0.2441), (-0.3178, -0.2539), (-0.3268, -0.2652), (-0.3340, -0.2777), (-0.3392, -0.2912), (-0.3423, -0.3053), (-0.3432, -0.3198), (-0.3418, -0.3346), (-0.3379, -0.3492), (-0.3363, -0.3539)];
+const QM_TRI: [u16; 348] = [117, 0, 1, 117, 1, 2, 117, 2, 3, 117, 3, 4, 117, 4, 5, 117, 5, 6, 117, 6, 7, 117, 7, 8, 117, 8, 9, 117, 9, 10, 117, 10, 11, 117, 11, 12, 117, 12, 13, 117, 13, 14, 117, 14, 15, 117, 15, 16, 117, 16, 17, 117, 17, 18, 117, 18, 19, 117, 19, 20, 20, 21, 22, 20, 22, 23, 20, 23, 24, 20, 24, 25, 20, 25, 26, 20, 26, 27, 20, 27, 28, 20, 28, 29, 20, 29, 30, 20, 30, 31, 20, 31, 32, 32, 33, 34, 32, 34, 35, 32, 35, 36, 32, 36, 37, 32, 37, 38, 32, 38, 39, 32, 39, 40, 32, 40, 41, 20, 32, 41, 20, 41, 42, 20, 42, 43, 20, 43, 44, 20, 44, 45, 20, 45, 46, 20, 46, 47, 20, 47, 48, 20, 48, 49, 20, 49, 50, 20, 50, 51, 20, 51, 52, 20, 52, 53, 20, 53, 54, 20, 54, 55, 20, 55, 56, 20, 56, 57, 20, 57, 58, 20, 58, 59, 20, 59, 60, 20, 60, 61, 20, 61, 62, 20, 62, 63, 20, 63, 64, 20, 64, 65, 20, 65, 66, 20, 66, 67, 20, 67, 68, 20, 68, 69, 20, 69, 70, 20, 70, 71, 20, 71, 72, 20, 72, 73, 20, 73, 74, 20, 74, 75, 20, 75, 76, 20, 76, 77, 20, 77, 78, 20, 78, 79, 20, 79, 80, 20, 80, 81, 20, 81, 82, 20, 82, 83, 117, 20, 83, 117, 83, 84, 117, 84, 85, 117, 85, 86, 117, 86, 87, 117, 87, 88, 117, 88, 89, 117, 89, 90, 117, 90, 91, 117, 91, 92, 117, 92, 93, 117, 93, 94, 117, 94, 95, 117, 95, 96, 117, 96, 97, 117, 97, 98, 117, 98, 99, 117, 99, 100, 117, 100, 101, 117, 101, 102, 117, 102, 103, 117, 103, 104, 117, 104, 105, 117, 105, 106, 117, 106, 107, 117, 107, 108, 117, 108, 109, 117, 109, 110, 117, 110, 111, 117, 111, 112, 117, 112, 113, 117, 113, 114, 117, 114, 115, 115, 116, 117];
 
 /// Draws `g` centred on `c`, about `2 * s` across.
 pub fn glyph(p: &Painter, g: Glyph, c: Pos2, s: f32, col: Color32) {
@@ -529,6 +542,35 @@ pub fn glyph(p: &Painter, g: Glyph, c: Pos2, s: f32, col: Color32) {
             let t = vec2(-a1.sin(), a1.cos()); // direction of travel at the end
             let n = vec2(a1.cos(), a1.sin());
             line(&[((e - t * 0.55 + n * 0.45).x, (e - t * 0.55 + n * 0.45).y), (e.x, e.y), ((e - t * 0.55 - n * 0.45).x, (e - t * 0.55 - n * 0.45).y)]);
+        }
+        Glyph::Undo => {
+            let pt = |x: f32, y: f32| c + vec2(-x, y) * s;
+            let line = |pts: &[(f32, f32)]| { p.add(Shape::line(pts.iter().map(|q| pt(q.0, q.1)).collect(), st)); };
+            // an almost-closed circle with an arrowhead at its end
+            let (r, a0, a1) = (0.8f32, 40.0f32.to_radians(), 320.0f32.to_radians());
+            let pts: Vec<Pos2> = (0..=20).map(|i| { let a = a0 + (a1 - a0) * i as f32 / 20.0; pt(r * a.cos(), r * a.sin()) }).collect();
+            p.add(Shape::line(pts, st));
+            let e = vec2(r * a1.cos(), r * a1.sin());
+            let t = vec2(-a1.sin(), a1.cos()); // direction of travel at the end
+            let n = vec2(a1.cos(), a1.sin());
+            line(&[((e - t * 0.55 + n * 0.45).x, (e - t * 0.55 + n * 0.45).y), (e.x, e.y), ((e - t * 0.55 - n * 0.45).x, (e - t * 0.55 - n * 0.45).y)]);
+        }
+        Glyph::Back => {
+            line(&[(0.95, 0.0), (-0.95, 0.0)]);
+            line(&[(-0.25, -0.7), (-0.95, 0.0), (-0.25, 0.7)]);
+        }
+        Glyph::Help => {
+            // the question mark of Font Awesome's circle-question (free set), without the circle: outline as triangles, plus the dot
+            let k = s * 1.9;
+            let mut m = eframe::egui::Mesh::default();
+            for q in QM {
+                m.colored_vertex(c + vec2(q.0, q.1) * k, col);
+            }
+            for t in QM_TRI.chunks(3) {
+                m.add_triangle(t[0] as u32, t[1] as u32, t[2] as u32);
+            }
+            p.add(Shape::mesh(m));
+            p.circle_filled(c + vec2(0.0, 0.375) * k, 0.125 * k, col);
         }
         Glyph::List => {
             for y in [-0.65f32, 0.0, 0.65] {

@@ -30,11 +30,13 @@ link dropped and why. It is a native Linux app (Rust, egui) that runs on Wayland
 - **Devices:** a searchable, filterable list of everything seen, split into yours and others, with an info box
   per device.
 - **BT Diagnostics:** press **Record** to capture Bluetooth traffic (or open a capture file made with `btmon -w`),
-  then see when each link dropped and why. A summary with a timeline of the drops and a card per device, a full
-  event timeline, a Library of your past recordings (analysed in the background, deletable), and a **System log**
-  tab that lists the Bluetooth problems BlueZ and the kernel logged over any time range (since your last
-  recording, this boot, the last few hours or days, or a custom range): less detail than a recording, but no
-  recording needed, so you can see what happened while you weren't looking. It tells
+  then see when each link dropped and why. One page for everything: tiles, a strip showing when the drops
+  happened, a compact card per device (click one for its details, or to show only that device in the event
+  table) and the event table. With nothing recording it shows the **system log**: the Bluetooth problems BlueZ
+  and the kernel logged over any time range (since your last recording, this boot, the last few hours or days,
+  or a custom range). That has less detail than a recording, but needs none, so you can see what happened while
+  you weren't looking. The **Library** button lists your past recordings (analysed in the background,
+  deletable) and opens any capture file. It tells
   radio-type drops (connection timeouts) from normal ones (a device going to sleep), and shows slow answers from
   the Bluetooth controller. Reports can be copied or saved.
 - **Vendor names** from a built-in MAC prefix list that you can update yourself (see below).
@@ -43,7 +45,7 @@ link dropped and why. It is a native Linux app (Rust, egui) that runs on Wayland
 |---|---|
 | ![Device info](docs/screenshots/radar-info.png) | ![Spectrum](docs/screenshots/spectrum.png) |
 | ![Devices](docs/screenshots/devices.png) | ![BT Diagnostics](docs/screenshots/diagnostics.png) |
-| ![Timeline](docs/screenshots/timeline.png) | ![Vendor list](docs/screenshots/vendor-list.png) |
+| ![Device details](docs/screenshots/diagnostics-device.png) | ![Vendor list](docs/screenshots/vendor-list.png) |
 
 *(All screenshots use the built-in demo data: invented networks, devices and a made-up Bluetooth capture.)*
 
@@ -84,8 +86,8 @@ the system D-Bus, raw Bluetooth sockets and the LAN, which the sandbox would hav
   download a file yourself and hand it to the app.
 - On your local network it **listens and probes**: it reads the ARP table, sends mDNS discovery queries, and
   pings devices the kernel hasn't talked to recently to see if they are still there.
-- By default it never triggers a Wi-Fi scan by itself (scans briefly disturb Bluetooth on chips that share an antenna).
-  Press **Rescan Wi-Fi** when you want fresh results.
+- It never triggers a Wi-Fi scan itself (scans briefly disturb Bluetooth on chips that share an antenna); it shows
+  what NetworkManager's own periodic scans find.
 - It doesn't change any system or adapter settings. The one thing that needs more rights is **Record**: it
   starts `btmon` as root through `pkexec` (your desktop's password prompt) to read the Bluetooth traffic, for the
   length you choose (Stop uses it again to end the recording early); nothing else runs privileged.
@@ -93,11 +95,11 @@ the system D-Bus, raw Bluetooth sockets and the LAN, which the sandbox would hav
   prefixes (`mine.txt`), and an imported vendor list if you made one.
 - Recordings are kept in `~/.local/share/airscope/captures/` (one folder each, with a summary and optional
   report). **A capture contains the addresses of nearby Bluetooth devices**, so think before sharing one; delete
-  it from the Library tab when you are done.
+  it from the Library when you are done.
 
 ## Updating the vendor list
 
-Airscope ships with about 40,000 MAC prefixes. New ones appear over time: click **Vendor list** in the header,
+Airscope ships with about 40,000 MAC prefixes. New ones appear over time: click **Vendor list** at the bottom of the sidebar,
 download one of the listed files in your browser, and drag it onto the dialog. It understands the IEEE
 `oui.txt` and `oui.csv` and Wireshark's `manuf`. To regenerate the built-in list for a release:
 `scripts/gen-oui.sh oui.txt`.

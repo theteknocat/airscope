@@ -65,7 +65,12 @@ pub fn field_width(ui: &egui::Ui, placeholder: &str) -> f32 {
 /// A field that opens the calendar. `value` is None until something is picked (`placeholder` shows meanwhile).
 /// `bad` outlines it in red. Returns true when the value changed.
 pub fn field(ui: &mut egui::Ui, id: egui::Id, value: &mut Option<i64>, placeholder: &str, bad: bool, now: i64) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(field_width(ui, placeholder), 36.0), Sense::click());
+    field_h(ui, id, value, placeholder, bad, now, 36.0)
+}
+
+/// `field` at another height.
+pub fn field_h(ui: &mut egui::Ui, id: egui::Id, value: &mut Option<i64>, placeholder: &str, bad: bool, now: i64, h: f32) -> bool {
+    let (r, resp) = ui.allocate_exact_size(vec2(field_width(ui, placeholder), h), Sense::click());
     let open_id = id.with("open");
     let ctx = ui.ctx().clone();
     let mut open: bool = ctx.data(|d| d.get_temp(open_id)).unwrap_or(false);

@@ -19,5 +19,5 @@ shot radar-info AIRSCOPE_SEL=AC:80:0A:3D:62:C0
 shot spectrum AIRSCOPE_SCREEN=spectrum
 shot devices AIRSCOPE_SCREEN=devices AIRSCOPE_EXPAND=1
 shot diagnostics AIRSCOPE_SCREEN=diag AIRSCOPE_SNOOP="$tmp/demo.snoop"
-shot timeline AIRSCOPE_SCREEN=diag AIRSCOPE_TAB=1 AIRSCOPE_SNOOP="$tmp/demo.snoop"
+shot diagnostics-device AIRSCOPE_SCREEN=diag AIRSCOPE_INFO=1 AIRSCOPE_SNOOP="$tmp/demo.snoop"
 shot vendor-list AIRSCOPE_VENDOR=1

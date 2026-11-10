@@ -214,6 +214,8 @@ struct App {
     lan_at: Option<Instant>,
     errs: Vec<String>,
     vendor_open: bool,
+    help_open: bool,
+    help_btn: Option<Rect>,
     popup_rects: Vec<Rect>, // where info boxes were drawn last frame: the wheel scrolls them instead of zooming the radar
     wheel: f32,             // wheel movement taken for an info box this frame
     shot_sent: bool, // AIRSCOPE_SHOT: screenshot already requested
@@ -352,6 +354,8 @@ impl App {
             shot_sent: false,
             popup_rects: vec![],
             wheel: 0.0,
+            help_open: std::env::var("AIRSCOPE_HELP").is_ok(), // debug aid
+            help_btn: None,
             vendor_open: std::env::var("AIRSCOPE_VENDOR").is_ok(), // debug aid
             vendor_path: String::new(),
             vendor_msg: None,
@@ -461,12 +465,26 @@ impl App {
             }
         }
         // legend
-        let mut y = rect.bottom() - 110.0;
+        let mut y = rect.bottom() - 128.0;
         for (c, l) in [(AMBER, "Wi-Fi"), (BLUE, "Bluetooth"), (GREEN, "LAN")] {
             dot(&p, pos2(rect.left() + 28.0, y), 5.0, c, 0.0);
             p.text(pos2(rect.left() + 46.0, y), Align2::LEFT_CENTER, l, FontId::proportional(13.0), DIM);
             y += 22.0;
         }
+        // vendor database: a button, not a destination
+        let r = Rect::from_min_size(pos2(rect.left() + 14.0, rect.bottom() - 56.0), vec2(rect.width() - 28.0, 34.0));
+        let resp = hit(ui, r, ui.scope_id().with("vendors"), Sense::click());
+        panel(&p, r, 9.0, if resp.hovered() { CYAN } else { alpha(BLUE, 0.6) });
+        icon_label(&p, r, Glyph::List, "Vendor list", 14.0);
+        if resp.clicked() {
+            self.vendor_open = !self.vendor_open;
+        }
+        resp.hint("Vendor list. Update the list that turns MAC addresses into manufacturer names.");
+    }
+
+    /// Screens that have an "About this screen" button (the rest explain themselves).
+    fn has_help(s: Screen) -> bool {
+        matches!(s, Screen::Diagnostics)
     }
 
     /// Dialog for importing a newer vendor list, drawn like the rest of the app: centred, dimmed backdrop.
@@ -645,34 +663,20 @@ impl App {
         let width = |lvl: usize| -> f32 { chips.iter().map(|(_, t, _)| p.layout_no_wrap(t[lvl].clone(), FontId::monospace(12.0), TEXT).size().x + 50.0).sum() };
         // chips shrink first (full text, count only, name only); if even names do not fit beside the full buttons, the buttons become icons
         let fit = |btn: f32| (0..3).rev().find(|&l| width(l) <= x - btn - left);
-        let (lvl, compact) = match fit(314.0) {
-            Some(l) => (l, false),
-            None => (fit(92.0).unwrap_or(0), true),
-        };
-        let (rw, vw) = if compact { (38.0, 38.0) } else { (150.0, 132.0) };
-        // rescan button
-        {
-            let r = Rect::from_min_size(pos2(x - rw, rect.center().y - 17.0), vec2(rw, 34.0));
-            let resp = hit(ui, r, ui.scope_id().with("rescan"), Sense::click());
-            panel(&p, r, 9.0, if resp.hovered() { CYAN } else { BLUE });
-            icon_label(&p, r, Glyph::Refresh, if compact { "" } else { "Rescan Wi-Fi" }, 14.0);
+        let help = Self::has_help(self.screen);
+        let lvl = fit(if help { 50.0 } else { 0.0 }).unwrap_or(0);
+        self.help_btn = None;
+        if help {
+            let r = Rect::from_min_size(pos2(x - 34.0, rect.center().y - 17.0), vec2(34.0, 34.0));
+            let resp = hit(ui, r, ui.scope_id().with("help"), Sense::click());
+            panel(&p, r, 17.0, if resp.hovered() || self.help_open { CYAN } else { BLUE });
+            glyph(&p, Glyph::Help, r.center(), 7.5, Color32::WHITE);
             if resp.clicked() {
-                self.h.lock().unwrap().rescan = true;
+                self.help_open = !self.help_open;
             }
-            resp.hint("Rescan Wi-Fi. Active scan. It briefly disturbs Bluetooth on the shared Wi-Fi/BT chip, so it only runs when you ask.");
-            x -= rw + 16.0;
-        }
-        // vendor database button
-        {
-            let r = Rect::from_min_size(pos2(x - vw, rect.center().y - 17.0), vec2(vw, 34.0));
-            let resp = hit(ui, r, ui.scope_id().with("vendors"), Sense::click());
-            panel(&p, r, 9.0, if resp.hovered() { CYAN } else { alpha(BLUE, 0.6) });
-            icon_label(&p, r, Glyph::List, if compact { "" } else { "Vendor list" }, 14.0);
-            if resp.clicked() {
-                self.vendor_open = !self.vendor_open;
-            }
-            resp.hint("Vendor list. Update the list that turns MAC addresses into manufacturer names.");
-            x -= vw + 16.0;
+            resp.hint("About this screen");
+            self.help_btn = Some(r);
+            x -= 34.0 + 16.0;
         }
         for (i, (c, txt, tip)) in chips.iter().enumerate().rev() {
             let g = p.layout_no_wrap(txt[lvl].clone(), FontId::monospace(12.0), TEXT);
@@ -2564,6 +2568,19 @@ impl eframe::App for App {
             }
         }
         self.vendor_window(ui.ctx());
+        if self.help_open {
+            let btn = self.help_btn.filter(|_| Self::has_help(self.screen));
+            match btn {
+                Some(b) => {
+                    let r = diag::Diag::help_box(ui.ctx(), b);
+                    let (esc, out) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !r.contains(q) && !b.contains(q))));
+                    if esc || out {
+                        self.help_open = false;
+                    }
+                }
+                None => self.help_open = false,
+            }
+        }
         self.debug_shot(ui.ctx(), t);
         // info boxes are shared by every screen: opening one fades it in, switching fades the old one out
         let dt = ui.input(|i| i.stable_dt).min(0.05);

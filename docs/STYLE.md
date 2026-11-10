@@ -8,7 +8,7 @@ How the app looks and behaves, so new screens and changes stay consistent. The c
 2. **Tooltips carry what the picture can't:** the name of an icon-only button, the full text of something shortened, and the current state of a toggle ("Showing Wi-Fi networks. Click to hide them."). Never a tooltip that only repeats the label. That something is clickable is shown by the pointing-hand cursor together with a visible hover reaction (glow, cyan border or popup), not by words: no "click for details" on radar nodes or cards. The hand cursor is not a desktop-app convention, so it is only ever used with that hover reaction.
 3. **Nothing moves under the pointer.** Feedback (copied, saved, failed) is shown on the control itself, not as a message that pushes the layout around.
 3a. **Nothing flickers.** A value, text or popup that updates by itself (a chip's "7s" counting up, a refreshed list) changes in place: no fade restarts, no blank frame, no relayout jump. Anything keyed to what it is (the widget asking), not to its current text.
-4. **Report, don't touch.** The app observes. Privileged work goes through the desktop's own password prompt (`pkexec`); our own code never runs as root. No active Wi-Fi scan unless the user presses Rescan (scans briefly disturb Bluetooth on the shared chip).
+4. **Report, don't touch.** The app observes. Privileged work goes through the desktop's own password prompt (`pkexec`); our own code never runs as root. No active Wi-Fi scan at all (scans briefly disturb Bluetooth on the shared chip); the app shows what NetworkManager's own scans find.
 5. **Honest numbers.** Show measured values (true dBm from nl80211) and say "unknown"/"(unnamed)" rather than inventing a value. A reading's source can change, so don't hide limits (the old percentage-based dBm tops out at −50).
 
 ## Colour meaning
@@ -45,7 +45,7 @@ Colour always has the same meaning on every screen: a Bluetooth thing is blue ev
 ## Layout
 
 - Window minimum 1000×640. Sidebar 210 px, header 70 px, page padding 18 px, gaps 12 px. Every screen keeps 18 px between its content and the sidebar, header, right edge and bottom (the radar tray and zoom control, the Spectrum cards and the Devices list included); check new screens against the same left/top/right edges. Scrolling lists run their scroll area into the 18 px right margin (`scroll_in_margin` on Diagnostics; the Devices list is inset inside its scroll area) so the floating scrollbar (egui draws its own and reserves no width) sits beside the cards, never over them, and nothing is subtracted from the content width for it.
-- Screen toolbar pattern: **row 1** = what you work on (search / file / record) with actions or status on the right; **row 2** = tabs on the left, filters on the right. One row each; don't wrap by default.
+- Screen toolbar pattern: **row 1** = what you work on (search / file / record) with actions or status on the right; **row 2** = tabs on the left, filters on the right (Diagnostics has no tabs: one page, with its filters in the event table's own toolbar). One row each; don't wrap by default.
 - Panels are rounded glass cards (`panel`): radius 12–14 for cards, 9–10 for buttons, 14 for pill chips. A panel's border colour is its meaning colour; hover turns the border cyan.
 - Anything that can be long gets a defined behaviour (below), never overflow into a neighbour.
 
@@ -56,12 +56,15 @@ Colour always has the same meaning on every screen: a Bluetooth thing is blue ev
 - **`toggle_chip`**: lamp-style filter chip (filled dot = on, ring = off), always with a state tooltip. Filters sit right of the tabs with no "SHOW" label.
 - **Legends**: a small `dot` (r≈4–5, meaning colour) then the label in `DIM`, like the sidebar legend and the drops strip. Not the colour's name in words.
 - **Icons** (`Glyph`): line icons, drawn, not fonts. Every button gets one; the icon changes to a tick or cross for the result of an action.
-- **Save report** always opens the desktop's own "save as" dialog (`picker::Pick::save`, via the file-chooser portal) with a suggested name, so it is an export to wherever the user picks; recordings keep their own report in the library already. The button shows a tick and the path when done, nothing if the dialog is cancelled.
-- **Count badge** (`view_tab` badge): a small solid cyan circle with the number to the right of a tab's name (the Library tab shows how many saved captures there are, the Devices tabs how many devices): a circle for one digit that grows into a pill as the number gets longer; hidden at 0. It is flat, with no glow: glow is for things that are live, active or hovered (lamps, selected tab, halos), not for static indicators.
+- **Export** (was "Save report"; download icon, tooltip "Export the report to a file") always opens the desktop's own "save as" dialog (`picker::Pick::save`, via the file-chooser portal) with a suggested name, so it is an export to wherever the user picks; recordings keep their own report in the library already. The button shows a tick and the path when done, nothing if the dialog is cancelled.
+- **Count badge** (`view_tab` badge): a small solid cyan circle with the number to the right of a tab's name (the Devices tabs show how many devices): a circle for one digit that grows into a pill as the number gets longer; hidden at 0. It is flat, with no glow: glow is for things that are live, active or hovered (lamps, selected tab, halos), not for static indicators.
 - **Destructive actions** (deleting a capture): an icon-only red button; clicking it turns that card's own line and buttons into "Delete this capture and its analysis? This can't be undone." with Cancel and a red Delete, in place, no dialog and no layout shift.
 - **Date and time picker** (`dtpick::field`): a glass field showing "Nov 9, 2026  18:30" (or a dim placeholder; red outline when the range is invalid) that opens a calendar card below it: month with `<` `>`, Monday-first grid, today ringed, selected day filled cyan, hour and minute steppers and a Now button. Changes apply at once; a click outside or Escape closes it. The end of a range may be "Now" (a chip beside the field resets it).
 - **Range dropdown** (System log): the same dropdown style as the recording length; canned ranges first (Since last recording, This boot, Last hour … Last 7 days), then Custom range.
-- **Empty state:** show the real layout as dimmed placeholders with a centred title saying why they are empty; point at the buttons that start things (cyan pulsing outline, arrow and "Start here"), shown for 30 s or until the pointer first enters them, then never again: the marker file `~/.local/share/airscope/seen-start-here` records it (delete it to test the pointer again). The placeholder matches the tab: stat tiles, strip and cards for Summary, a table skeleton with the real column headings for Timeline.
+- **Empty state:** show the real layout as dimmed placeholders with a centred title saying why they are empty; point at the buttons that start things (cyan pulsing outline, arrow and "Start here"), shown for 30 s or until the pointer first enters them, then never again: the marker file `~/.local/share/airscope/seen-start-here` records it (delete it to test the pointer again). Diagnostics shows the system log by default, so its placeholders are just the table skeleton with the real column headings and a title saying why.
+- **Toolbar buttons go icon-only** (tooltips keep the names) when the window is narrower than the buttons' real label widths plus a margin (measured from the text, not a fixed pixel width).
+- **Compact device card** (Diagnostics, `page::compact`): icon, name, one dim caption line, big count right; hand cursor and a cyan outline on hover. A click opens the **info box** (same chrome as the radar's device box: floating panel, no backdrop, closes on Esc or a click outside) with the full details and a "Show only this device" button; the filter then shows as an "Only: name" chip in the table toolbar that clears it.
+- **Library picker** (popover under the Library button, closes on Esc / outside click): "Open file…" as a smaller row on top, then one-line rows (date, length, size, drops); the whole row opens the capture and a dim "Click to open" shows on hover; a small red bin per row starts the inline delete confirmation. No "Copy path". Empty = only "Open file…" and "No saved captures".
 - **Status lamp** (`lamp`): coloured dot with short word (REC, LIVE).
 
 ## Interaction
@@ -79,14 +82,15 @@ Colour always has the same meaning on every screen: a Bluetooth thing is blue ev
 Shrink the least important information first, never drop it, and keep it reachable by hover.
 
 1. Header status chips: full text (`WI-FI 12 APs · 7s`) → count (`WI-FI 12`) → name only (`WI-FI`); always a tooltip with the full text; no hand cursor.
-2. Header buttons ("Vendor list", "Rescan Wi-Fi") become icon-only with tooltips when even name-only chips don't fit.
+2. The header holds only the status chips and, on screens that need one, the round "?" button ("About this screen", same spot on every screen, hidden where a screen explains itself). "Vendor list" is a button at the bottom of the sidebar.
+   Diagnostics tiles line up across sources: problems, bursts, covered, data packets; what the system log can't fill is a ghost tile ("Needs a recording", click = Record glows).
 3. Diagnostics row 1: Record/Stop/Open/Copy/Save become icon-only below about 930 px of content width; the file name stays inline.
 4. Long names are cut **in the middle** (`fit_middle`: `Game C…oller`, `bt11…snoop`) with the full name in the hover; long status text is cut at the end.
 5. Side panels give way before graphs do (Spectrum legend is 22% of the width, 150–300 px).
 
 ## Behaviour conventions
 
-- Time-based views: newest first for event lists; the timeline table has Time / Since start / Device / Event headings and wraps the event text.
+- Time-based views: newest first for event lists; the event table has Time / Since start / Device / Event headings and wraps the event text.
 - Large files are read in chunks and drawn virtualised; the UI never blocks on data.
 - Radar data is latched to the sweep and frozen while a group is open or a drag is active (see `CLAUDE.md`).
 - Copy/Save results are shown on the buttons; saved reports and captures live under `~/.local/share/airscope/`.
