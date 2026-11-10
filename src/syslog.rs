@@ -107,6 +107,18 @@ fn journal(args: &[&str], kernel: bool) -> Result<Vec<Entry>, String> {
     Ok(String::from_utf8_lossy(&out.stdout).lines().take(400_000).filter_map(|l| parse_line(l, kernel)).collect())
 }
 
+/// When the journal's oldest Bluetooth entry was logged (unix seconds): reads just the first line and stops.
+pub fn oldest_entry() -> Option<f64> {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let mut child = Command::new("/usr/bin/journalctl").args(["-u", "bluetooth.service", "--since", "@0", "-o", "short-unix", "--no-pager", "-q"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut line = String::new();
+    BufReader::new(child.stdout.take()?).read_line(&mut line).ok()?;
+    let _ = child.kill();
+    let _ = child.wait();
+    line.split_once(' ')?.0.parse().ok()
+}
+
 /// Bluetooth problems between two moments (unix seconds), oldest first.
 pub fn read(since: i64, until: i64) -> Result<Vec<Entry>, String> {
     let (s, u) = (format!("@{since}"), format!("@{until}"));
@@ -121,22 +133,25 @@ pub fn boot_time() -> Option<i64> {
     std::fs::read_to_string("/proc/stat").ok()?.lines().find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())
 }
 
-/// Groups of lines no more than `gap` seconds apart that hold at least two lines (a lone reconnect isn't a burst).
-pub fn bursts(entries: &[Entry], gap: f64) -> usize {
-    let mut n = 0;
-    let mut size = 0;
-    let mut last = f64::MIN;
+/// Groups of lines no more than `gap` seconds apart that hold at least two lines (a lone reconnect isn't a burst):
+/// (first moment, last moment, lines), unix seconds.
+pub fn burst_spans(entries: &[Entry], gap: f64) -> Vec<(f64, f64, usize)> {
+    let mut out: Vec<(f64, f64, usize)> = vec![];
     for e in entries {
-        if e.unix - last > gap {
-            if size >= 2 {
-                n += 1;
+        match out.last_mut() {
+            Some(b) if e.unix - b.1 <= gap => {
+                b.1 = e.unix;
+                b.2 += 1;
             }
-            size = 0;
+            _ => out.push((e.unix, e.unix, 1)),
         }
-        size += 1;
-        last = e.unix;
     }
-    n + usize::from(size >= 2)
+    out.retain(|b| b.2 >= 2);
+    out
+}
+
+pub fn bursts(entries: &[Entry], gap: f64) -> usize {
+    burst_spans(entries, gap).len()
 }
 
 #[cfg(test)]

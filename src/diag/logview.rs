@@ -26,7 +26,7 @@ const PICKS: [(&str, Pick); 8] = [
 
 /// What a result was fetched for: the dropdown choice and, for a custom range, its start and end.
 type Key = (usize, Option<i64>, Option<i64>);
-type Job = Arc<Mutex<Option<Result<Vec<Entry>, String>>>>;
+type Job = Arc<Mutex<Option<Result<(Vec<Entry>, Option<f64>), String>>>>;
 
 #[derive(Default)]
 pub struct LogState {
@@ -34,6 +34,8 @@ pub struct LogState {
     start: Option<i64>,
     end: Option<i64>,
     entries: Vec<Entry>,
+    /// When the journal's oldest Bluetooth entry was logged.
+    oldest: Option<f64>,
     err: Option<String>,
     shown: Option<Key>,
     window: Option<(i64, i64)>,
@@ -43,6 +45,11 @@ pub struct LogState {
 
 fn now_unix() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// "Nov 9, 2026  18:42" for reports.
+fn short_full(unix: i64) -> String {
+    format!("{}  {}", snoop::date(unix as f64), &snoop::clock(unix as f64)[..5])
 }
 
 /// "Nov 9, 18:42" (this year's dates need no year).
@@ -92,8 +99,9 @@ impl Diag {
                 let key = *key;
                 self.log.job = None;
                 match res {
-                    Ok(v) => {
+                    Ok((v, oldest)) => {
                         self.log.entries = v;
+                        self.log.oldest = oldest;
                         self.log.err = None;
                     }
                     Err(e) => {
@@ -113,7 +121,7 @@ impl Diag {
                 let job: Job = Arc::new(Mutex::new(None));
                 let out = job.clone();
                 std::thread::spawn(move || {
-                    let r = syslog::read(s, u);
+                    let r = syslog::read(s, u).map(|v| (v, syslog::oldest_entry()));
                     if let Ok(mut g) = out.lock() {
                         *g = Some(r);
                     }
@@ -133,8 +141,11 @@ impl Diag {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
             ui.spacing_mut().interact_size.y = 36.0; // the dropdown matches the buttons beside it
-            let label = if ci == 0 { self.last_recording_end().map_or("Since last recording".to_string(), |e| format!("Since last recording · {}", short(e))) } else { PICKS[ci].0.to_string() };
-            egui::ComboBox::from_id_salt("log_range").selected_text(label).width(260.0).show_ui(ui, |ui| {
+            let label = if ci == 0 { self.last_recording_end().map_or("Since last recording".to_string(), |e| format!("Since last recording · {}", short(e))) } else if matches!(pick, Pick::Custom) { "Custom".to_string() } else { PICKS[ci].0.to_string() };
+            // the dropdown is only as wide as its label (just "Custom" when the date fields follow)
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let lw = ui.painter().layout_no_wrap(label.clone(), font, Color32::WHITE).size().x;
+            egui::ComboBox::from_id_salt("log_range").selected_text(label).width(if matches!(pick, Pick::Custom) { lw + 44.0 } else { 260.0 }).show_ui(ui, |ui| {
                 for (i, (l, p)) in PICKS.iter().enumerate() {
                     let off = matches!(p, Pick::SinceRecording) && !have_rec;
                     ui.add_enabled_ui(!off, |ui| ui.selectable_value(&mut chosen, i, if off { format!("{l} (no recordings yet)") } else { l.to_string() }));
@@ -151,7 +162,7 @@ impl Diag {
             if action_button(ui, Some(Glyph::Refresh), "", BLUE, 0.0, self.log.job.is_none(), 0.0).hint("Read the log again").clicked() {
                 self.log.reload = true;
             }
-            if let Some((s, u)) = self.log.window {
+            if let (Some((s, u)), false) = (self.log.window, matches!(pick, Pick::Custom)) {
                 let end = if matches!(pick, Pick::Custom) && self.log.end.is_some() { short(u) } else { "now".into() };
                 ui.label(RichText::new(format!("{} to {}", short(s), end)).size(13.0).color(DIM));
             }
@@ -187,7 +198,24 @@ impl Diag {
             tile(ui, tw, "BURSTS", &burst_n.to_string(), if burst_n > 0 { AMBER } else { GREEN });
             tile(ui, tw, "LAST PROBLEM", &last.map_or("-".to_string(), |u| if multi_day { short(u) } else { snoop::clock(u as f64)[..5].to_string() }), if last.is_some() { AMBER } else { DIM });
         });
+        let who = |w: &Who| self.log_who(w, names);
         ui.add_space(14.0);
+        // when the problems happened across the range (the same strip as for a capture), then how far back the log goes
+        let spec = StripSpec { first: ws as f64, total: (we - ws) as f64, title: "PROBLEMS OVER TIME", legend: ("symptom", "link problem"), what: "problems" };
+        let ticks: Vec<Tick> = self.log.entries.iter().filter(|e| e.sev != Sev::Info).map(|e| Tick { t: e.unix - ws as f64, unix: e.unix, radio: e.sev == Sev::Problem, who: who(&e.who), detail: Some(e.text.clone()) }).collect();
+        let spans: Vec<(f64, f64, usize)> = syslog::burst_spans(&self.log.entries, 120.0).into_iter().map(|(a, b, n)| (a - ws as f64, b - ws as f64, n)).collect();
+        super::strip(ui, w, &spec, &ticks, &spans, &self.tip);
+        ui.add_space(12.0);
+        if let Some(o) = self.log.oldest {
+            // dim normally; amber when the log doesn't reach back to the start of the chosen range
+            let short_log = o > ws as f64 + 60.0;
+            let (lr, lresp) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+            ui.painter().text(pos2(lr.left() + 16.0, lr.center().y), Align2::LEFT_CENTER, format!("Oldest log entry: {}  {}", snoop::date(o), snoop::clock(o)), FontId::proportional(13.0), if short_log { AMBER } else { DIM });
+            if short_log {
+                lresp.hint("The log does not go back to the start of this range, so earlier problems can't be shown.");
+            }
+        }
+        ui.add_space(4.0);
 
         let shown: Vec<usize> = (0..self.log.entries.len()).rev().filter(|&i| !self.problems_only || self.log.entries[i].sev != Sev::Info).collect();
         if shown.is_empty() {
@@ -208,16 +236,6 @@ impl Diag {
         ui.painter().line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.25)));
         let row_h = 34.0;
         let entries = &self.log.entries;
-        let who = |w: &Who| -> String {
-            match w {
-                Who::Mac(m) => {
-                    let name = names.get(m).map(|n| n.0.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Device ..{}", &m[12..]));
-                    if self.addrs { format!("{name} ({m})") } else { name }
-                }
-                Who::Name(n) => n.clone(),
-                Who::None => "(not stated)".into(),
-            }
-        };
         super::scroll_in_margin(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, vp| {
                 let (rect, _) = ui.allocate_exact_size(vec2(w, row_h * shown.len() as f32), Sense::hover());
@@ -255,6 +273,47 @@ impl Diag {
                 }
             });
         });
+    }
+
+    fn log_who(&self, w: &Who, names: &Names) -> String {
+        match w {
+            Who::Mac(m) => {
+                let name = names.get(m).map(|n| n.0.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Device ..{}", &m[12..]));
+                if self.addrs { format!("{name} ({m})") } else { name }
+            }
+            Who::Name(n) => n.clone(),
+            Who::None => "(not stated)".into(),
+        }
+    }
+
+    /// The shown range and its events as Markdown text (for Copy and Save).
+    pub(super) fn log_report(&self, names: &Names) -> String {
+        let mut r = String::from("# Bluetooth system log report\n\n");
+        if let Some((s, u)) = self.log.window {
+            r += &format!("Range: {} to {}\n", short_full(s), short_full(u));
+        }
+        if let Some(o) = self.log.oldest {
+            r += &format!("Oldest log entry: {}  {}\n", snoop::date(o), snoop::clock(o));
+        }
+        let n = |sev: Sev| self.log.entries.iter().filter(|e| e.sev == sev).count();
+        r += &format!("\nLink problems: {}  \u{00b7}  Symptoms: {}  \u{00b7}  Bursts: {}\n\n## Events\n\n```text\n", n(Sev::Problem), n(Sev::Symptom), syslog::bursts(&self.log.entries, 120.0));
+        for e in self.log.entries.iter().filter(|e| !self.problems_only || e.sev != Sev::Info) {
+            r += &format!("{} {}  {}  {}\n", snoop::date(e.unix), snoop::clock(e.unix), self.log_who(&e.who, names), e.text);
+        }
+        r += "```\n\nReporting only: this lists what BlueZ and the kernel logged; it does not say what to change.\n";
+        if !self.addrs {
+            r += "Device addresses are left out.\n";
+        }
+        r
+    }
+
+    /// Suggested file name for the log report, from its range.
+    pub(super) fn log_report_name(&self) -> String {
+        let stamp = |x: i64| format!("{}_{}", snoop::date_iso(x as f64), snoop::clock(x as f64)[..5].replace(':', ""));
+        match self.log.window {
+            Some((s, u)) => format!("system-log-{}-{}.md", stamp(s), stamp(u)),
+            None => "system-log.md".into(),
+        }
     }
 
     /// A centred title over ghost table rows: nothing to show (yet), and why.

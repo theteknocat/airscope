@@ -78,6 +78,8 @@ pub struct Diag {
     cta: Option<Rect>,
     /// The System log tab.
     log: logview::LogState,
+    /// A "save report as" dialog that is open, and whether it is for the System log (else the open capture).
+    save_pick: Option<(Pick, bool)>,
     /// Library session folder waiting for the delete confirmation.
     del_pending: Option<PathBuf>,
     /// The "Start here" pointer: when it first showed, and when it began fading (30 s, or the first hover over the buttons; once per run).
@@ -91,7 +93,7 @@ pub struct Diag {
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, cta: None, log: Default::default(), del_pending: None, cta_since: None, cta_off: None, cta_seen: None, bg: None, tip: Default::default() };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, cta: None, log: Default::default(), save_pick: None, del_pending: None, cta_since: None, cta_off: None, cta_seen: None, bg: None, tip: Default::default() };
         if !d.path.is_empty() {
             d.load();
         } else if let Some(r) = Recording::adopt() {
@@ -244,23 +246,21 @@ impl Diag {
         r
     }
 
-    fn save(&mut self, s: &Snoop, names: &Names) {
-        // a capture in the library keeps its report next to it; any other capture's report goes to the shared reports folder
-        let file = match capture::session_dir_of(Path::new(&self.clean_path())) {
-            Some(dir) => dir.join(capture::REPORT_FILE),
-            None => {
-                let base = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).map(PathBuf::from).or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local/share")));
-                let Some(base) = base else { return };
-                let first = Self::first_unix(s);
-                let stem = self.shown_name().trim_end_matches(".snoop").to_string();
-                base.join("airscope/reports").join(format!("{stem}-{}.md", snoop::date_iso(first)))
-            }
-        };
-        let res = match file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&file, self.report(s, names))) {
-            Ok(()) => {
-                self.sessions_at = None;
-                Ok(format!("Saved to {}", file.display().to_string().replacen(&std::env::var("HOME").unwrap_or_default(), "~", 1)))
-            }
+    /// Opens the desktop's save dialog for the report (the capture's, or the System log's).
+    fn begin_save(&mut self, log: bool) {
+        if self.save_pick.is_some() {
+            return;
+        }
+        let name = if log { self.log_report_name() } else { format!("{}-report.md", self.shown_name().trim_end_matches(".snoop")) };
+        self.save_pick = Some((Pick::save("Save report as", &name), log));
+    }
+
+    /// Writes the report where the user chose, and says so on the Save button.
+    fn finish_save(&mut self, file: PathBuf, log: bool, s: Option<&Snoop>, names: &Names) {
+        let text = if log { Some(self.log_report(names)) } else { s.map(|s| self.report(s, names)) };
+        let Some(text) = text else { return };
+        let res = match std::fs::write(&file, text) {
+            Ok(()) => Ok(format!("Saved to {}", file.display().to_string().replacen(&std::env::var("HOME").unwrap_or_default(), "~", 1))),
             Err(e) => Err(format!("Could not save: {e}")),
         };
         self.flash = Some((Instant::now(), 1, res));
@@ -297,7 +297,9 @@ impl Diag {
             tile(ui, tw, "DROP BURSTS", &bursts.len().to_string(), if bursts.is_empty() { GREEN } else { AMBER });
         });
         ui.add_space(14.0);
-        strip(ui, w, s, bursts, &|a| self.who(a, names), &self.tip);
+        let spec = StripSpec { first: Self::first_unix(s), total: s.duration(), title: "DROPS OVER TIME", legend: ("other", "radio-type drop"), what: "link drops" };
+        let ticks: Vec<Tick> = s.drops().map(|e| Tick { t: e.t, unix: e.unix, radio: matches!(e.kind, Kind::Disconnected { reason, .. } if crate::hci::reason(reason).2), who: self.who(&e.addr, names), detail: None }).collect();
+        strip(ui, w, &spec, &ticks, bursts, &self.tip);
         ui.add_space(14.0);
         let stats = &self.stats;
         let cols = if w >= 860.0 { 2 } else { 1 };
@@ -513,7 +515,7 @@ impl Diag {
 
     /// Open capture's name, loading progress, LIVE lamp and the latest status message.
     fn name_row(&mut self, ui: &mut egui::Ui) {
-        let name = snoop::pretty_stamp(&self.shown_name());
+        let name = if self.tab == 3 { String::new() } else { snoop::pretty_stamp(&self.shown_name()) }; // the open capture's name would sit beside the log's own report buttons
         let reserve = 20.0 + if self.pos < self.total { 90.0 } else { 0.0 } + if self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6)) { 80.0 } else { 0.0 };
         if name.is_empty() && self.rec.is_none() && self.err.is_none() && (self.tab != 2 || self.sessions.is_empty()) {
             // nothing opened: the "Start here" pointer is drawn by the empty state instead of a label
@@ -552,7 +554,6 @@ impl Diag {
     /// Nothing opened yet: the real screen as dimmed placeholders (so the result's shape is visible), with a card in the
     /// middle holding the two ways to begin, drawn large, and a link to the Library.
     fn empty_view(&mut self, ui: &mut egui::Ui) {
-        let top = ui.cursor().top();
         let w = ui.available_width();
         let gap = 12.0;
         let tw = (w - gap * 3.0) / 4.0;
@@ -714,6 +715,14 @@ impl Diag {
         }
         self.pump();
         let s = self.snoop.take();
+        if let Some(res) = self.save_pick.as_ref().and_then(|(p, _)| p.poll()) {
+            let log = self.save_pick.take().map_or(false, |x| x.1);
+            match res {
+                Ok(Some(path)) => self.finish_save(path, log, s.as_ref(), names),
+                Ok(None) => {} // cancelled
+                Err(e) => self.flash = Some((Instant::now(), 1, Err(e))),
+            }
+        }
         if let Some(s) = &s {
             if self.key != s.records {
                 self.stats = s.per_device();
@@ -750,8 +759,9 @@ impl Diag {
                 // the left group gets what the Copy/Save buttons leave, and its texts are cut short instead of running into them
                 // Narrow window: the buttons shrink to icons (tooltips keep the names); the file name is cut in the middle if it still does not fit
                 let avail = ui.available_width();
-                let stacked = s.is_some() && avail < 930.0;
-                let left_w = (avail - if s.is_none() { 0.0 } else if stacked { 100.0 } else { 330.0 }).max(200.0);
+                let reports = s.is_some() || self.tab == 3; // Copy / Save report: for the open capture, or for the System log tab
+                let stacked = reports && avail < 930.0;
+                let left_w = (avail - if !reports { 0.0 } else if stacked { 100.0 } else { 330.0 }).max(200.0);
                 ui.allocate_ui_with_layout(vec2(left_w, 34.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 if self.rec.is_some() {
@@ -788,7 +798,7 @@ impl Diag {
                 }
                 self.name_row(ui);
                 });
-                if let Some(s) = &s {
+                if reports {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
                         // right to left: Save is added first, so it sits on the right
@@ -816,11 +826,20 @@ impl Diag {
                                 None => r,
                             };
                             if r.clicked() {
-                                if idx == 1 {
-                                    self.save(s, names);
-                                } else {
-                                    ui.ctx().copy_text(self.report(s, names));
-                                    self.flash = Some((Instant::now(), 0, Ok("Report copied to the clipboard".into())));
+                                if self.tab == 3 {
+                                    if idx == 1 {
+                                        self.begin_save(true);
+                                    } else {
+                                        ui.ctx().copy_text(self.log_report(names));
+                                        self.flash = Some((Instant::now(), 0, Ok("Report copied to the clipboard".into())));
+                                    }
+                                } else if let Some(s) = &s {
+                                    if idx == 1 {
+                                        self.begin_save(false);
+                                    } else {
+                                        ui.ctx().copy_text(self.report(s, names));
+                                        self.flash = Some((Instant::now(), 0, Ok("Report copied to the clipboard".into())));
+                                    }
                                 }
                             }
                         }
@@ -889,19 +908,39 @@ fn tile(ui: &mut egui::Ui, w: f32, label: &str, value: &str, col: Color32) {
     lcd(p, pos2(r.left() + 18.0, r.top() + 49.0), Align2::LEFT_CENTER, value, 26.0, col);
 }
 
-/// When the drops happened across the capture: one tick per drop (red = radio-type reason, amber = other), bursts shaded.
-fn strip(ui: &mut egui::Ui, w: f32, s: &Snoop, bursts: &[(f64, f64, usize)], who: &dyn Fn(&snoop::Addr) -> String, tip: &std::cell::RefCell<Option<crate::TipC>>) {
-    let first = Diag::first_unix(s);
-    let total = s.duration().max(1.0);
+/// What a time strip is drawn for: where it starts (unix seconds) and how long it runs, its title and legend, and what to
+/// call a group of ticks ("link drops", "problems").
+pub struct StripSpec {
+    pub first: f64,
+    pub total: f64,
+    pub title: &'static str,
+    pub legend: (&'static str, &'static str),
+    pub what: &'static str,
+}
+
+/// One mark on the strip: seconds from its start, its moment, red or amber, who it is about, an extra line for the popup.
+pub struct Tick {
+    pub t: f64,
+    pub unix: f64,
+    pub radio: bool,
+    pub who: String,
+    pub detail: Option<String>,
+}
+
+/// When the events happened across a span: one tick per event (red = a real link problem, amber = other), bursts
+/// shaded. Used for a capture's drops and for the system log's problems.
+fn strip(ui: &mut egui::Ui, w: f32, spec: &StripSpec, ticks: &[Tick], bursts: &[(f64, f64, usize)], tip: &std::cell::RefCell<Option<crate::TipC>>) {
+    let first = spec.first;
+    let total = spec.total.max(1.0);
     let crosses = snoop::date(first) != snoop::date(first + total); // spans midnight: dates are shown under some times
     let extra = if crosses { 14.0 } else { 0.0 };
     let (r, resp) = ui.allocate_exact_size(vec2(w, 96.0 + extra), Sense::hover());
     let p = ui.painter();
     panel(p, r, 12.0, BLUE);
-    p.text(pos2(r.left() + 18.0, r.top() + 18.0), Align2::LEFT_CENTER, "DROPS OVER TIME", FontId::proportional(12.0), DIM);
+    p.text(pos2(r.left() + 18.0, r.top() + 18.0), Align2::LEFT_CENTER, spec.title, FontId::proportional(12.0), DIM);
     // legend: a coloured dot and a short label, like the sidebar legend (right to left)
     let mut lx = r.right() - 18.0;
-    for (col, label) in [(AMBER, "other"), (RED, "radio-type drop")] {
+    for (col, label) in [(AMBER, spec.legend.0), (RED, spec.legend.1)] {
         let g = p.layout_no_wrap(label.to_string(), FontId::proportional(11.5), DIM);
         let wd = g.size().x;
         p.galley(pos2(lx - wd, r.top() + 18.0 - g.size().y / 2.0), g, DIM);
@@ -928,9 +967,9 @@ fn strip(ui: &mut egui::Ui, w: f32, s: &Snoop, bursts: &[(f64, f64, usize)], who
         p.rect_filled(Rect::from_min_max(pos2(x(*t0) - 3.0, a.top()), pos2((x(*t1) + 3.0).max(x(*t0) + 3.0), a.bottom())), 3.0, alpha(RED, 0.14));
     }
     // Drops that fall within a few pixels of each other are drawn as one (wider) tick; hovering a tick lists what is in it.
-    let radio = |e: &snoop::Ev| matches!(e.kind, Kind::Disconnected { reason, .. } if crate::hci::reason(reason).2);
-    let mut groups: Vec<(f32, f32, Vec<&snoop::Ev>)> = vec![];
-    for e in s.drops() {
+    let radio = |e: &Tick| e.radio;
+    let mut groups: Vec<(f32, f32, Vec<&Tick>)> = vec![];
+    for e in ticks {
         let px = x(e.t);
         match groups.last_mut() {
             Some(g) if px - g.1 <= 6.0 => {
@@ -960,17 +999,17 @@ fn strip(ui: &mut egui::Ui, w: f32, s: &Snoop, bursts: &[(f64, f64, usize)], who
         let g = &groups[i];
         let cx = (g.0 + g.1) / 2.0;
         let col = if g.2.iter().any(|e| radio(e)) { RED } else { AMBER };
-        let full = |e: &snoop::Ev| format!("{} {}", snoop::date(e.unix), snoop::clock(e.unix));
+        let full = |e: &Tick| format!("{} {}", snoop::date(e.unix), snoop::clock(e.unix));
         let (title, lines) = if g.2.len() == 1 {
-            (who(&g.2[0].addr), vec![full(g.2[0])])
+            (g.2[0].who.clone(), { let mut l = vec![full(g.2[0])]; l.extend(g.2[0].detail.clone()); l })
         } else {
             let day = snoop::date(g.2[0].unix);
             let one_day = g.2.iter().all(|e| snoop::date(e.unix) == day);
-            let mut lines: Vec<String> = g.2.iter().take(10).map(|e| format!("{}  \u{00b7}  {}", if one_day { snoop::clock(e.unix) } else { full(e) }, who(&e.addr))).collect();
+            let mut lines: Vec<String> = g.2.iter().take(10).map(|e| format!("{}  \u{00b7}  {}", if one_day { snoop::clock(e.unix) } else { full(e) }, e.who)).collect();
             if g.2.len() > 10 {
                 lines.push(format!("and {} more", g.2.len() - 10));
             }
-            (if one_day { format!("{} link drops \u{00b7} {day}", g.2.len()) } else { format!("{} link drops", g.2.len()) }, lines)
+            (if one_day { format!("{} {} \u{00b7} {day}", g.2.len(), spec.what) } else { format!("{} {}", g.2.len(), spec.what) }, lines)
         };
         *tip.borrow_mut() = Some(crate::TipC { anchor: pos2(cx, a.top()), col, title, sub: lines, key: None, hint: None, side: None });
     }
@@ -1005,6 +1044,11 @@ fn strip(ui: &mut egui::Ui, w: f32, s: &Snoop, bursts: &[(f64, f64, usize)], who
         let dt = snoop::date(*u);
         let new_day = dt != day;
         day = dt.clone();
+        if step >= 86400.0 {
+            // whole days: the date is the label (no time of day to show)
+            put(*gx, Align2::CENTER_TOP, dt.split(',').next().unwrap_or("").to_string(), None);
+            continue;
+        }
         let text = if step < 60.0 { snoop::clock(*u) } else { snoop::clock(*u)[..5].to_string() };
         put(*gx, Align2::CENTER_TOP, text, (crosses && new_day).then_some(dt));
     }

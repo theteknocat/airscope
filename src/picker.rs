@@ -10,11 +10,21 @@ use zbus::zvariant::{OwnedValue, Value};
 pub struct Pick(Receiver<Result<Option<PathBuf>, String>>);
 
 impl Pick {
+    /// The desktop's "open a file" dialog.
     pub fn start(title: &str) -> Pick {
+        Self::spawn("OpenFile", title, None)
+    }
+
+    /// The desktop's "save as" dialog, with `name` suggested as the file name; the result is where to write.
+    pub fn save(title: &str, name: &str) -> Pick {
+        Self::spawn("SaveFile", title, Some(name.to_string()))
+    }
+
+    fn spawn(method: &'static str, title: &str, name: Option<String>) -> Pick {
         let (tx, rx) = channel();
         let title = title.to_string();
         std::thread::spawn(move || {
-            let _ = tx.send(run(&title));
+            let _ = tx.send(run(method, &title, name.as_deref()));
         });
         Pick(rx)
     }
@@ -33,7 +43,7 @@ fn s<E: std::fmt::Display>(e: E) -> String {
     format!("No file chooser available ({e}). Drag the file onto the window instead.")
 }
 
-fn run(title: &str) -> Result<Option<PathBuf>, String> {
+fn run(method: &str, title: &str, name: Option<&str>) -> Result<Option<PathBuf>, String> {
     let conn = zbus::blocking::Connection::session().map_err(s)?;
     let me = conn.unique_name().map(|n| n.as_str().trim_start_matches(':').replace('.', "_")).ok_or("no D-Bus name")?;
     let token = format!("airscope{}", std::process::id());
@@ -43,7 +53,10 @@ fn run(title: &str) -> Result<Option<PathBuf>, String> {
     let mut replies = zbus::blocking::MessageIterator::for_match_rule(rule, &conn, Some(4)).map_err(s)?;
     let mut opts: HashMap<&str, Value> = HashMap::new();
     opts.insert("handle_token", Value::from(token.as_str()));
-    conn.call_method(Some("org.freedesktop.portal.Desktop"), "/org/freedesktop/portal/desktop", Some("org.freedesktop.portal.FileChooser"), "OpenFile", &("", title, opts)).map_err(s)?;
+    if let Some(n) = name {
+        opts.insert("current_name", Value::from(n));
+    }
+    conn.call_method(Some("org.freedesktop.portal.Desktop"), "/org/freedesktop/portal/desktop", Some("org.freedesktop.portal.FileChooser"), method, &("", title, opts)).map_err(s)?;
     let msg = replies.next().ok_or("The file chooser closed unexpectedly.")?.map_err(s)?;
     let (code, res): (u32, HashMap<String, OwnedValue>) = msg.body().deserialize().map_err(s)?;
     if code != 0 {

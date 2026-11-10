@@ -41,10 +41,31 @@ pub fn show(unix: i64) -> String {
     format!("{}  {:02}:{:02}", crate::snoop::date(unix as f64), tm.tm_hour, tm.tm_min)
 }
 
+/// Width a field needs for the widest date and time it can show (and the placeholder): measured once, with the widest
+/// month name and digits, so a field never has more room than it needs and never clips.
+pub fn field_width(ui: &egui::Ui, placeholder: &str) -> f32 {
+    let key = egui::Id::new(("dt_field_w", placeholder));
+    if let Some(w) = ui.ctx().data(|d| d.get_temp::<f32>(key)) {
+        return w;
+    }
+    const SHORT: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let font = FontId::proportional(14.0);
+    let measure = |s: String| ui.painter().layout_no_wrap(s, font.clone(), Color32::WHITE).size().x;
+    let mut widest = measure(placeholder.to_string());
+    for m in SHORT {
+        for d in '0'..='9' {
+            widest = widest.max(measure(format!("{m} {d}{d}, 2{d}{d}{d}  {d}{d}:{d}{d}")));
+        }
+    }
+    let w = (widest + 14.0 + 34.0).ceil(); // left padding, and room for the arrow on the right
+    ui.ctx().data_mut(|dt| dt.insert_temp(key, w));
+    w
+}
+
 /// A field that opens the calendar. `value` is None until something is picked (`placeholder` shows meanwhile).
 /// `bad` outlines it in red. Returns true when the value changed.
 pub fn field(ui: &mut egui::Ui, id: egui::Id, value: &mut Option<i64>, placeholder: &str, bad: bool, now: i64) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(196.0, 36.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(field_width(ui, placeholder), 36.0), Sense::click());
     let open_id = id.with("open");
     let ctx = ui.ctx().clone();
     let mut open: bool = ctx.data(|d| d.get_temp(open_id)).unwrap_or(false);
@@ -66,7 +87,9 @@ pub fn field(ui: &mut egui::Ui, id: egui::Id, value: &mut Option<i64>, placehold
         None => (placeholder.to_string(), DIM),
     };
     p.text(pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, txt, FontId::proportional(14.0), col);
-    p.text(pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, "v", FontId::monospace(11.0), DIM);
+    let c = pos2(r.right() - 18.0, r.center().y);
+    p.line_segment([c + vec2(-4.5, -2.0), c + vec2(0.0, 2.5)], Stroke::new(1.5, DIM)); // a small down arrow
+    p.line_segment([c + vec2(0.0, 2.5), c + vec2(4.5, -2.0)], Stroke::new(1.5, DIM));
     let _ = ui.interact(r, id.with("hand"), Sense::hover()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let mut changed = false;
     if open {
