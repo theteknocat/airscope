@@ -14,6 +14,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod logview;
+
 /// How far a scroll area reaches into the page's right margin, so its floating scrollbar sits beside the content, not over it.
 const SCROLL_MARGIN: f32 = 18.0;
 
@@ -74,6 +76,8 @@ pub struct Diag {
     sessions_at: Option<Instant>,
     /// Rectangle around the Record and Open buttons (set each frame while drawing the toolbar; the empty state highlights it).
     cta: Option<Rect>,
+    /// The System log tab.
+    log: logview::LogState,
     /// Library session folder waiting for the delete confirmation.
     del_pending: Option<PathBuf>,
     /// The "Start here" pointer: when it first showed, and when it began fading (30 s, or the first hover over the buttons; once per run).
@@ -87,7 +91,7 @@ pub struct Diag {
 
 impl Diag {
     pub fn new() -> Self {
-        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, cta: None, del_pending: None, cta_since: None, cta_off: None, cta_seen: None, bg: None, tip: Default::default() };
+        let mut d = Diag { path: std::env::var("AIRSCOPE_SNOOP").unwrap_or_default(), snoop: None, err: None, pos: 0, total: 0, stats: vec![], bursts: vec![], key: u64::MAX, tl: vec![], tl_key: (0, false, u64::MAX), ev_px: vec![], line_h: 0.0, checked: Instant::now(), tab: std::env::var("AIRSCOPE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0), addrs: false, problems_only: true, flash: None, pick: None, rec: None, cap_idx: 1, rec_msg: None, follow: None, grew: None, finalize: false, summarised: false, sessions: vec![], sessions_at: None, cta: None, log: Default::default(), del_pending: None, cta_since: None, cta_off: None, cta_seen: None, bg: None, tip: Default::default() };
         if !d.path.is_empty() {
             d.load();
         } else if let Some(r) = Recording::adopt() {
@@ -827,7 +831,7 @@ impl Diag {
             // row 2: which view (tabs, left) and what to show in it (toggle chips, right)
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                for (i, l) in ["Summary", "Timeline", "Library"].iter().enumerate() {
+                for (i, l) in ["Summary", "Timeline", "Library", "System log"].iter().enumerate() {
                     if view_tab(ui, l, self.tab == i as u8, if i == 2 { self.sessions.len() } else { 0 }) {
                         self.tab = i as u8;
                     }
@@ -835,7 +839,7 @@ impl Diag {
                 if self.tab != 2 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        if self.tab > 0 && toggle_chip(ui, "Problems only", self.problems_only, AMBER, if self.problems_only { "Showing only drops and slow answers. Click to show every event." } else { "Showing every event. Click to show only drops and slow answers." }) {
+                        if self.tab > 0 && toggle_chip(ui, "Problems only", self.problems_only, AMBER, match (self.tab == 3, self.problems_only) { (false, true) => "Showing only drops and slow answers. Click to show every event.", (false, false) => "Showing every event. Click to show only drops and slow answers.", (true, true) => "Showing only problems. Click to include routine events, such as a keyboard reconnecting.", (true, false) => "Showing routine events too. Click to show only problems." }) {
                             self.problems_only = !self.problems_only;
                         }
                         if toggle_chip(ui, "Device addresses", self.addrs, CYAN, if self.addrs { "Showing full device addresses. Click to hide them." } else { "Addresses are hidden. Click to show the full device addresses." }) {
@@ -850,6 +854,10 @@ impl Diag {
             }
             if self.tab == 2 {
                 self.library_view(ui);
+                return;
+            }
+            if self.tab == 3 {
+                self.log_view(ui, names);
                 return;
             }
             let Some(s) = &s else {

@@ -3,6 +3,7 @@ mod demo;
 mod bluez;
 mod capture;
 mod diag;
+mod dtpick;
 mod fx;
 mod hci;
 mod net;
@@ -10,6 +11,7 @@ mod nl80211;
 mod nm;
 mod picker;
 mod snoop;
+mod syslog;
 
 use data::{hash64, BtLink, Dev, Handle, Icon, Kind};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};

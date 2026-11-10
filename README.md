@@ -31,7 +31,10 @@ link dropped and why. It is a native Linux app (Rust, egui) that runs on Wayland
   per device.
 - **BT Diagnostics:** press **Record** to capture Bluetooth traffic (or open a capture file made with `btmon -w`),
   then see when each link dropped and why. A summary with a timeline of the drops and a card per device, a full
-  event timeline, and a Library of your past recordings (analysed in the background, deletable). It tells
+  event timeline, a Library of your past recordings (analysed in the background, deletable), and a **System log**
+  tab that lists the Bluetooth problems BlueZ and the kernel logged over any time range (since your last
+  recording, this boot, the last few hours or days, or a custom range): less detail than a recording, but no
+  recording needed, so you can see what happened while you weren't looking. It tells
   radio-type drops (connection timeouts) from normal ones (a device going to sleep), and shows slow answers from
   the Bluetooth controller. Reports can be copied or saved.
 - **Vendor names** from a built-in MAC prefix list that you can update yourself (see below).
