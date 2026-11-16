@@ -137,7 +137,6 @@ pub struct Shared {
     pub lan_at: Option<Instant>,
     pub errs: HashMap<&'static str, String>,
     pub rescan: bool,
-    pub auto_rescan_secs: u64,
 }
 
 pub type Handle = Arc<Mutex<Shared>>;
@@ -357,19 +356,21 @@ pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
     d
 }
 
+/// ponytail: fixed 60 s; each scan briefly disturbs Bluetooth on the shared chip, make it a setting if that matters.
+const AUTO_RESCAN_SECS: u64 = 60;
+
 fn wifi_loop(h: Handle, oui: Arc<Oui>) {
     let mut last_scan = Instant::now();
     // The kernel only keeps a scan result for about 30 s, so remember the last real dBm of each access point.
     let mut real_seen: std::collections::HashMap<String, (f32, Instant)> = std::collections::HashMap::new();
     let mut bus = None;
     loop {
-        let (req, auto) = {
+        let req = {
             let mut s = h.lock().unwrap();
-            let r = s.rescan;
-            s.rescan = false;
-            (r, s.auto_rescan_secs)
+            std::mem::take(&mut s.rescan)
         };
-        if req || (auto > 0 && last_scan.elapsed().as_secs() >= auto) {
+        // NetworkManager 1.58 sets wpa_supplicant bgscan to once a day while the signal is good, so ask for a scan ourselves.
+        if req || last_scan.elapsed().as_secs() >= AUTO_RESCAN_SECS {
             if bus.is_none() {
                 bus = crate::nm::connect();
             }
