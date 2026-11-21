@@ -457,7 +457,7 @@ impl App {
                 let _ = std::fs::create_dir_all(dir);
             }
             let s: String = self.over.iter().map(|(k, (a, d))| format!("{}\t{}\t{}\n", k, a, d)).collect();
-            let _ = std::fs::write(p, s);
+            let _ = data::write_atomic(&p, s);
         }
     }
 

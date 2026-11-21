@@ -259,7 +259,7 @@ impl Oui {
         let dest = user_oui_path().ok_or("HOME is not set")?;
         std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
         let tsv: String = list.iter().map(|(k, v)| format!("{:06X}\t{}\n", k, v)).collect();
-        std::fs::write(&dest, tsv).map_err(|e| format!("Can't save {}: {}", dest.display(), e))?;
+        write_atomic(&dest, tsv).map_err(|e| format!("Can't save {}: {}", dest.display(), e))?;
         self.reload();
         Ok(list.len())
     }
@@ -997,8 +997,29 @@ pub fn spawn() -> Handle {
     h
 }
 
+/// Writes to `<path>.tmp` then renames over `path`, so a full disk or a crash never leaves a half-written file.
+pub fn write_atomic(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, contents).and_then(|_| std::fs::rename(&tmp, path)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn atomic_write_replaces_and_leaves_no_tmp() {
+        let dir = std::env::temp_dir().join(format!("airscope-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("p.tsv");
+        write_atomic(&f, "a").unwrap();
+        write_atomic(&f, "b").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "b");
+        assert!(!dir.join("p.tmp").exists());
+        assert!(write_atomic(&dir.join("no/such/dir/p.tsv"), "x").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
 
     #[test]
