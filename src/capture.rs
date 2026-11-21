@@ -12,7 +12,7 @@ pub const CAPTURE_FILE: &str = "capture.snoop";
 pub const REPORT_FILE: &str = "report.md";
 const BTMON: &str = "/usr/bin/btmon";
 const TIMEOUT: &str = "/usr/bin/timeout";
-const KILL: &str = "/usr/bin/kill";
+const PKILL: &str = "/usr/bin/pkill";
 const PKEXEC: &str = "/usr/bin/pkexec";
 
 pub fn captures_dir() -> Option<PathBuf> {
@@ -60,7 +60,7 @@ impl Recording {
     /// Starts `btmon -w` as root for at most `cap`, after the desktop's password prompt. The capture file is created
     /// here first so it stays owned by the user (btmon, running as root, then only writes into it).
     pub fn start(cap: Duration) -> Result<Recording, String> {
-        for bin in [PKEXEC, TIMEOUT, BTMON] {
+        for bin in [PKEXEC, TIMEOUT, BTMON, PKILL] {
             if !Path::new(bin).exists() {
                 return Err(format!("{bin} was not found on this system."));
             }
@@ -131,7 +131,8 @@ impl Recording {
     /// again; before the first prompt has been answered the waiting pkexec is simply cancelled.
     pub fn stop(&mut self) -> Result<(), String> {
         match find_btmon(&self.file) {
-            Some(pid) => Command::new(PKEXEC).arg(KILL).arg("-TERM").arg(pid.to_string()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| format!("Could not start the password prompt: {e}")),
+            // match by command line at kill time, not by a pid that could be reused while the password prompt is open
+            Some(_) => Command::new(PKEXEC).args([PKILL, "-TERM", "-x", "-f"]).arg(format!("{BTMON} -w {}", regex_escape(&self.file.to_string_lossy()))).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| format!("Could not start the password prompt: {e}")),
             None => match self.child.as_mut() {
                 Some(c) => c.kill().map_err(|e| format!("Could not cancel: {e}")),
                 None => Err("The capture has already ended.".into()),
@@ -157,6 +158,11 @@ fn btmon_files() -> Vec<(u32, PathBuf)> {
         }
     }
     out
+}
+
+/// Backslash every character that is not a plain path character, so `pkill -f` matches the text literally.
+fn regex_escape(s: &str) -> String {
+    s.chars().flat_map(|c| if c.is_alphanumeric() || "/_-".contains(c) { vec![c] } else { vec!['\\', c] }).collect()
 }
 
 /// Process id of the btmon writing to `file`.
@@ -277,5 +283,6 @@ mod tests {
     #[test]
     fn finds_nothing_for_an_unused_file() {
         assert!(find_btmon(Path::new("/nonexistent/capture.snoop")).is_none());
+        assert_eq!(regex_escape("/a b/c.snoop"), "/a\\ b/c\\.snoop");
     }
 }
