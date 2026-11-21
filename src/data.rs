@@ -926,7 +926,7 @@ pub fn lan_dev(ip: &str, dev: &str, mac: &str, state: &str, online: bool, is_gw:
 }
 
 fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
-    let mut names: HashMap<String, String> = HashMap::new();
+    let mut names: HashMap<(String, String), String> = HashMap::new(); // keyed by (ip, mac): a new device on a reused IP gets looked up again
     loop {
         let gw = net::gateway().map(|g| g.to_string()).unwrap_or_default();
         let mut v = vec![];
@@ -950,7 +950,7 @@ fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
             for n in &neigh {
                 let (ip, dev, mac, state) = (n.ip.to_string(), n.dev.as_str(), n.mac.clone(), n.state);
                 let ip = ip.as_str();
-                let dns = names.entry(ip.to_string()).or_insert_with(|| net::reverse_name(n.ip).unwrap_or_default()).clone();
+                let dns = names.entry((ip.to_string(), mac.clone())).or_insert_with(|| net::reverse_name(n.ip).unwrap_or_default()).clone();
                 let (mhost, svcs) = mm.get(ip).cloned().unwrap_or_default();
                 let d = lan_dev(ip, dev, &mac, state, state != "STALE" || answered.contains(ip), ip == gw, &dns, mhost, svcs, &oui);
                 v.push(d);
