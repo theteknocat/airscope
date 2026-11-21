@@ -10,12 +10,13 @@ link dropped and why. It is a native Linux app (Rust, egui) that runs on Wayland
 
 ![Airscope radar](docs/screenshots/radar.png)
 
-> ### 🤖 Fully vibe coded
-> **Every line of this project was written by AI.** I built Airscope entirely by describing what I wanted to
-> [Claude Code](https://claude.com/claude-code) (Anthropic's AI coding tool) and testing the result by using it.
-> I'm being upfront about that so anyone reading or reviewing the code knows what they are looking at. It works
-> well for me, but it has not had a professional audit, and some of the code will look like what it is. Reviews,
-> bug reports and pull requests are very welcome.
+> ### 🤖 AI Disclosure
+> **I built Airscope with AI, and every line of the code was written by [Claude Code](https://claude.com/claude-code)**
+> (Anthropic's AI coding tool). It wasn't one big prompt, though. I decide what the app does and how it should look and
+> feel, check each piece as it's built, test it on my own machine and my own network, and decide what stays. There are
+> some unit tests for the parsing code, but what it hasn't had is a review by a human Rust developer, and I'm not one
+> myself, so some of the code will probably look like what it is.
+> Reviews, bug reports and pull requests are very welcome. More on [how I work with AI](https://github.com/theteknocat/theteknocat/blob/main/AI.md).
 
 ## What it does
 
@@ -34,11 +35,11 @@ link dropped and why. It is a native Linux app (Rust, egui) that runs on Wayland
   happened, a compact card per device (click one for its details, or to show only that device in the event
   table) and the event table. With nothing recording it shows the **system log**: the Bluetooth problems BlueZ
   and the kernel logged over any time range (since your last recording, this boot, the last few hours or days,
-  or a custom range). That has less detail than a recording, but needs none, so you can see what happened while
-  you weren't looking. The **Library** button lists your past recordings (analysed in the background,
-  deletable) and opens any capture file. It tells
-  radio-type drops (connection timeouts) from normal ones (a device going to sleep), and shows slow answers from
-  the Bluetooth controller. Reports can be copied or exported. The **?** button explains how the system log differs from a recording.
+  or a custom range). That has less detail than a recording, but it needs no recording, so you can see what
+  happened while you weren't looking. The **Library** button lists your past recordings (analysed in the
+  background, and deletable) and opens any capture file. Airscope tells radio-type drops (connection timeouts)
+  from normal ones (a device going to sleep), and shows slow answers from the Bluetooth controller. Reports can
+  be copied or exported, and the **?** button explains how the system log differs from a recording.
 - **Vendor names** from a built-in MAC prefix list that you can update yourself (see below).
 
 | | |
@@ -78,8 +79,9 @@ target/release/airscope
 | Recording Bluetooth traffic (BT Diagnostics) | `btmon` (BlueZ) and polkit's `pkexec`: recording asks for your password through the desktop's own prompt. Opening an existing capture needs neither |
 | LAN devices | Nothing extra: ARP table, mDNS and a ping |
 
-Without NetworkManager the Wi-Fi part shows a message and the rest keeps working. There is deliberately no Flatpak: the app needs
-the system D-Bus, raw Bluetooth sockets and the LAN, which the sandbox would have to be opened up for anyway.
+Without NetworkManager the Wi-Fi part shows a message and the rest keeps working. There is deliberately no Flatpak,
+since the app needs the system D-Bus, raw Bluetooth sockets and the LAN, and I'd have to open the sandbox up for all
+of that anyway.
 
 ## Privacy and what it touches
 
@@ -87,11 +89,12 @@ the system D-Bus, raw Bluetooth sockets and the LAN, which the sandbox would hav
   download a file yourself and hand it to the app.
 - On your local network it **listens and probes**: it reads the ARP table, sends mDNS discovery queries, and
   pings devices the kernel hasn't talked to recently to see if they are still there.
-- It never triggers a Wi-Fi scan itself (scans briefly disturb Bluetooth on chips that share an antenna); it shows
-  what NetworkManager's own periodic scans find.
-- It doesn't change any system or adapter settings. The one thing that needs more rights is **Record**: it
-  starts `btmon` as root through `pkexec` (your desktop's password prompt) to read the Bluetooth traffic, for the
-  length you choose (Stop uses it again to end the recording early); nothing else runs privileged.
+- It asks NetworkManager for a fresh Wi-Fi scan about once a minute, because newer versions only scan in the
+  background roughly once a day when your signal is good. A scan briefly disturbs Bluetooth on chips that share an
+  antenna with Wi-Fi, which is worth knowing if you're chasing drops.
+- It doesn't change any system or adapter settings. The one thing that needs more rights is **Record**, which
+  starts `btmon` as root through `pkexec` (your desktop's password prompt) to read the Bluetooth traffic for the
+  length you choose. Stop uses `pkexec` again to end the recording early, and nothing else runs privileged.
 - It stores a little in `~/.config/airscope/`: dragged device positions, an optional list of your own SSID
   prefixes (`mine.txt`), and an imported vendor list if you made one.
 - Recordings are kept in `~/.local/share/airscope/captures/` (one folder each, with a summary and optional
@@ -123,6 +126,7 @@ Bluetooth capture from `scripts/make-demo-capture.py`).
 - Tested on one machine (Bazzite / KDE Plasma, Wayland, an Intel AX200). Other hardware may behave differently.
 - Only tested with a single Bluetooth adapter. If you use more than one (for example a USB Bluetooth dongle alongside a built-in one), the link details may not cover the extra adapter. Please open an issue if you want that supported.
 - Wireless dongles with their own proprietary radios (Logitech Unifying, Steam Controller and similar) are not shown.
+- Bluetooth Low Energy devices show up in the lists, but the live view gives them no link details or drop history, because the kernel only lets an unprivileged program see classic Bluetooth connections. A recording from BT Diagnostics still captures their traffic, and everything I use here has been classic Bluetooth, so I haven't tested how much of it reads well for Low Energy.
 - BT Diagnostics reports what the capture shows (when and how links ended); it can point at a likely cause but
   it can't prove one. It was built while chasing intermittent drops on one machine, so treat the reasons it
   highlights as hints. Recording captures Bluetooth traffic only.
