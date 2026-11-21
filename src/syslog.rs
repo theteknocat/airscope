@@ -99,11 +99,12 @@ fn parse_line(line: &str, kernel: bool) -> Option<Entry> {
 }
 
 fn journal(args: &[&str], kernel: bool) -> Result<Vec<Entry>, String> {
-    let out = Command::new("/usr/bin/journalctl").args(args).args(["-o", "short-unix", "--no-pager", "-q"]).output().map_err(|e| format!("Cannot run journalctl: {e}"))?;
+    let out = Command::new("/usr/bin/journalctl").args(args).args(["-o", "short-unix", "--no-pager", "-q", "-r"]).output().map_err(|e| format!("Cannot run journalctl: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!("The system log could not be read ({}). Your user may need to be in the systemd-journal group.", err.trim().lines().next().unwrap_or("journalctl failed")));
     }
+    // -r gives newest first, so the cap drops the oldest lines; `read` sorts the result
     Ok(String::from_utf8_lossy(&out.stdout).lines().take(400_000).filter_map(|l| parse_line(l, kernel)).collect())
 }
 
