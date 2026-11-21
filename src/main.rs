@@ -2715,12 +2715,19 @@ fn main() -> eframe::Result {
     // once without it (jagged edges, but it runs). AIRSCOPE_MSAA=<n> sets the sample count (0 = off, for testing).
     let fallback = std::env::var_os("AIRSCOPE_FALLBACK").is_some();
     let samples: u16 = if fallback { 0 } else { std::env::var("AIRSCOPE_MSAA").ok().and_then(|v| v.parse().ok()).unwrap_or(4) };
-    let run = |samples| eframe::run_native("Airscope", window_options(samples), Box::new(|cc| Ok(Box::new(App::new(cc)))));
+    // set once the window and graphics config exist: a failure after that is a crash while running, not a start-up problem
+    let started = std::sync::atomic::AtomicBool::new(false);
+    let run = |samples| eframe::run_native("Airscope", window_options(samples), Box::new(|cc| {
+        started.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(Box::new(App::new(cc)))
+    }));
     if samples == 0 {
         return run(0);
     }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(samples))) {
         Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) if started.load(std::sync::atomic::Ordering::Relaxed) => Err(e),
+        Err(p) if started.load(std::sync::atomic::Ordering::Relaxed) => std::panic::resume_unwind(p),
         failed => {
             eprintln!("airscope: could not start with {}x multisampling ({}); restarting without it", samples, match &failed { Ok(Err(e)) => e.to_string(), _ => "panic".to_string() });
             use std::os::unix::process::CommandExt;
