@@ -14,8 +14,10 @@ link dropped and why. It is a native Linux app (Rust, egui) that runs on Wayland
 > **I built Airscope with AI, and every line of the code was written by [Claude Code](https://claude.com/claude-code)**
 > (Anthropic's AI coding tool). It wasn't one big prompt, though. I decide what the app does and how it should look and
 > feel, check each piece as it's built, test it on my own machine and my own network, and decide what stays. There are
-> some unit tests for the parsing code, but what it hasn't had is a review by a human Rust developer, and I'm not one
-> myself, so some of the code will probably look like what it is.
+> some unit tests for the parsing code, and I've also had Claude audit the code (it found seven small problems, which I
+> either fixed or wrote up as limits, and the [audit log](docs/ponytail-audit-2026-11-20.md) lists each one). That audit
+> didn't cover all of it, though, and what it hasn't had is a review by a human Rust developer, and I'm not one myself,
+> so some of the code will probably look like what it is.
 > Reviews, bug reports and pull requests are very welcome. More on [how I work with AI](https://github.com/theteknocat/theteknocat/blob/main/AI.md).
 
 ## What it does
