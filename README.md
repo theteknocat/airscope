@@ -124,7 +124,7 @@ Bluetooth capture from `scripts/make-demo-capture.py`).
 - Wi-Fi needs NetworkManager. Other managers (iwd or wpa_supplicant alone) are not supported yet.
 - Only 2.4 GHz is drawn on the spectrum; 5 and 6 GHz networks appear on the radar and in the list.
 - Tested on one machine (Bazzite / KDE Plasma, Wayland, an Intel AX200). Other hardware may behave differently.
-- Only tested with a single Bluetooth adapter. If you use more than one (for example a USB Bluetooth dongle alongside a built-in one), the link details may not cover the extra adapter. Please open an issue if you want that supported.
+- Only tested with a single Bluetooth adapter. If you use more than one (for example a USB Bluetooth dongle alongside a built-in one), the link details may not cover the extra adapter. Please open an issue if you want that supported. BT Diagnostics makes the same assumption when it reads a capture, so a recording that includes two adapters can attribute a drop to the wrong device.
 - Wireless dongles with their own proprietary radios (Logitech Unifying, Steam Controller and similar) are not shown.
 - Bluetooth Low Energy devices show up in the lists, but the live view gives them no link details or drop history, because the kernel only lets an unprivileged program see classic Bluetooth connections. A recording from BT Diagnostics still captures their traffic, and everything I use here has been classic Bluetooth, so I haven't tested how much of it reads well for Low Energy.
 - BT Diagnostics reports what the capture shows (when and how links ended); it can point at a likely cause but
