@@ -109,7 +109,7 @@ pub fn gateway() -> Option<Ipv4Addr> {
         .skip(1)
         .filter_map(|l| {
             let f: Vec<&str> = l.split_whitespace().collect();
-            (f.len() > 6 && f[1] == "00000000").then(|| (f[6].parse::<u32>().unwrap_or(u32::MAX), u32::from_str_radix(f[2], 16).ok()))
+            (f.len() > 6 && f[1] == "00000000" && f[2] != "00000000").then(|| (f[6].parse::<u32>().unwrap_or(u32::MAX), u32::from_str_radix(f[2], 16).ok()))
         })
         .min_by_key(|(m, _)| *m)
         .and_then(|(_, g)| g)
