@@ -4,10 +4,17 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use zbus::zvariant::{OwnedValue, Value};
 
-pub struct Pick(Receiver<Result<Option<PathBuf>, String>>);
+/// The dialog's D-Bus connection and request path, filled in by its thread, so `cancel` can close it.
+type Req = std::sync::Arc<std::sync::Mutex<Option<(zbus::blocking::Connection, String)>>>;
+
+pub struct Pick {
+    rx: Receiver<Result<Option<PathBuf>, String>>,
+    tx: Sender<Result<Option<PathBuf>, String>>, // lets `cancel` answer for a portal that sends no reply after Close
+    req: Req,
+}
 
 impl Pick {
     /// The desktop's "open a file" dialog.
@@ -23,15 +30,30 @@ impl Pick {
     fn spawn(method: &'static str, title: &str, name: Option<String>) -> Pick {
         let (tx, rx) = channel();
         let title = title.to_string();
+        let req = Req::default();
+        let theirs = req.clone();
+        let (tx2, tx_thread) = (tx.clone(), tx);
         std::thread::spawn(move || {
-            let _ = tx.send(run(method, &title, name.as_deref()));
+            let _ = tx_thread.send(run(method, &title, name.as_deref(), &theirs));
         });
-        Pick(rx)
+        Pick { rx, tx: tx2, req }
+    }
+
+    /// Closes the dialog and reports it as cancelled. False if the portal could not be reached.
+    /// shortcut: the portal sends no reply after Close, so the dialog's thread stays blocked on its socket for the
+    /// rest of the run (one idle thread per cancelled dialog); upgrade if dialogs ever get cancelled in bulk.
+    pub fn cancel(&self) -> bool {
+        let Some((conn, path)) = self.req.lock().ok().and_then(|g| g.clone()) else { return false };
+        let ok = conn.call_method(Some("org.freedesktop.portal.Desktop"), path.as_str(), Some("org.freedesktop.portal.Request"), "Close", &()).is_ok();
+        if ok {
+            let _ = self.tx.send(Ok(None));
+        }
+        ok
     }
 
     /// None while the dialog is still open; Some(Ok(None)) when it was cancelled.
     pub fn poll(&self) -> Option<Result<Option<PathBuf>, String>> {
-        match self.0.try_recv() {
+        match self.rx.try_recv() {
             Ok(r) => Some(r),
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => Some(Err("The file chooser closed unexpectedly.".into())),
@@ -43,11 +65,15 @@ fn s<E: std::fmt::Display>(e: E) -> String {
     format!("No file chooser available ({e}). Drag the file onto the window instead.")
 }
 
-fn run(method: &str, title: &str, name: Option<&str>) -> Result<Option<PathBuf>, String> {
+fn run(method: &str, title: &str, name: Option<&str>, req: &Req) -> Result<Option<PathBuf>, String> {
     let conn = zbus::blocking::Connection::session().map_err(s)?;
     let me = conn.unique_name().map(|n| n.as_str().trim_start_matches(':').replace('.', "_")).ok_or("no D-Bus name")?;
-    let token = format!("airscope{}", std::process::id());
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0); // one request name per dialog
+    let token = format!("airscope{}_{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let path = format!("/org/freedesktop/portal/desktop/request/{me}/{token}");
+    if let Ok(mut g) = req.lock() {
+        *g = Some((conn.clone(), path.clone()));
+    }
     // listen for the answer before asking, so it cannot be missed
     let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface("org.freedesktop.portal.Request").map_err(s)?.member("Response").map_err(s)?.path(path.as_str()).map_err(s)?.build();
     let mut replies = zbus::blocking::MessageIterator::for_match_rule(rule, &conn, Some(4)).map_err(s)?;

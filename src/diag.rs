@@ -265,6 +265,21 @@ impl Diag {
         r
     }
 
+    /// A file dialog (open or save) is waiting for an answer.
+    pub fn dialog_open(&self) -> bool {
+        self.pick.is_some() || self.save_pick.is_some()
+    }
+
+    /// Closes any open file dialog (it then reports a cancel); one the portal can't reach is just forgotten.
+    pub fn cancel_dialogs(&mut self) {
+        if self.pick.as_ref().map_or(false, |p| !p.cancel()) {
+            self.pick = None;
+        }
+        if self.save_pick.as_ref().map_or(false, |(p, _)| !p.cancel()) {
+            self.save_pick = None;
+        }
+    }
+
     /// Opens the desktop's save dialog for the report (the capture's, or the System log's).
     fn begin_save(&mut self, log: bool) {
         if self.save_pick.is_some() {

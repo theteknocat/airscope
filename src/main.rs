@@ -536,6 +536,27 @@ impl App {
     }
 
     /// Dialog for importing a newer vendor list, drawn like the rest of the app: centred, dimmed backdrop.
+    /// Desktop file dialogs are not attached to our window (Wayland gives no handle to attach them with), so while one
+    /// is open the whole window is dimmed and ignores clicks, or the app could be used, or a screen left, meanwhile.
+    fn dialog_scrim(&mut self, ctx: &egui::Context) {
+        let screen = ctx.content_rect();
+        let mut stop = false;
+        egui::Area::new(egui::Id::new("dialog_scrim")).order(egui::Order::Tooltip).fixed_pos(screen.min).show(ctx, |ui| {
+            let (sr, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
+            ui.painter().rect_filled(sr, 0.0, alpha(BG, 0.72));
+            ui.painter().text(sr.center(), Align2::CENTER_CENTER, "Waiting for the file dialog…", FontId::proportional(16.0), TEXT);
+            // closes the dialog like its own Cancel button does
+            stop = ui.put(Rect::from_center_size(sr.center() + vec2(0.0, 48.0), vec2(150.0, 36.0)), |ui: &mut egui::Ui| action_button(ui, None, "Cancel", BLUE, 0.0, true, 150.0)).clicked();
+        });
+        if stop {
+            // a dialog the portal can't reach is just forgotten, so a lost one can't lock the window
+            if self.vendor_pick.as_ref().map_or(false, |p| !p.cancel()) {
+                self.vendor_pick = None;
+            }
+            self.diag.cancel_dialogs();
+        }
+    }
+
     fn vendor_window(&mut self, ctx: &egui::Context) {
         if !self.vendor_open {
             return;
@@ -557,7 +578,7 @@ impl App {
             self.vendor_path = path;
             self.import_vendors(&oui);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.vendor_pick.is_none() {
             self.vendor_open = false;
         }
         let screen = ctx.content_rect();
@@ -2616,6 +2637,9 @@ impl eframe::App for App {
             }
         }
         self.vendor_window(ui.ctx());
+        if self.vendor_pick.is_some() || self.diag.dialog_open() {
+            self.dialog_scrim(ui.ctx());
+        }
         if self.help_open {
             let btn = self.help_btn.filter(|_| Self::has_help(self.screen));
             match btn {
