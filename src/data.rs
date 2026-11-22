@@ -214,6 +214,7 @@ pub fn parse_oui(text: &str) -> Vec<(u32, String)> {
 pub struct Oui {
     map: std::sync::RwLock<HashMap<u32, String>>,
     counts: std::sync::RwLock<[usize; 3]>, // prefixes added by: built-in, system, user layer
+    user: Option<std::path::PathBuf>, // where the user's imported list lives (a field so tests can point it elsewhere)
 }
 
 static OUI: std::sync::OnceLock<Arc<Oui>> = std::sync::OnceLock::new();
@@ -225,14 +226,17 @@ pub fn oui() -> Option<Arc<Oui>> {
 
 impl Oui {
     pub fn load() -> Self {
-        let o = Oui { map: Default::default(), counts: Default::default() };
+        Self::at(user_oui_path())
+    }
+    fn at(user: Option<std::path::PathBuf>) -> Self {
+        let o = Oui { map: Default::default(), counts: Default::default(), user };
         o.reload();
         o
     }
     pub fn reload(&self) {
         let mut m = HashMap::new();
         let mut c = [0usize; 3];
-        let layers = [Some(BUILT_IN_OUI.to_string()), std::fs::read_to_string("/usr/share/hwdata/oui.txt").ok(), user_oui_path().and_then(|p| std::fs::read_to_string(p).ok())];
+        let layers = [Some(BUILT_IN_OUI.to_string()), std::fs::read_to_string("/usr/share/hwdata/oui.txt").ok(), self.user.as_ref().and_then(|p| std::fs::read_to_string(p).ok())];
         for (i, text) in layers.iter().enumerate() {
             if let Some(t) = text {
                 for (k, v) in parse_oui(t) {
@@ -256,7 +260,7 @@ impl Oui {
         if list.is_empty() {
             return Err("No vendor entries found. Expected the IEEE oui.txt / oui.csv or a Wireshark manuf file.".into());
         }
-        let dest = user_oui_path().ok_or("HOME is not set")?;
+        let dest = self.user.clone().ok_or("HOME is not set")?;
         std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
         let tsv: String = list.iter().map(|(k, v)| format!("{:06X}\t{}\n", k, v)).collect();
         write_atomic(&dest, tsv).map_err(|e| format!("Can't save {}: {}", dest.display(), e))?;
@@ -459,7 +463,7 @@ pub fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
     let mut d = Dev::new(&b.mac, Kind::Bt);
     let (alias, name, icon, class, modalias) = (b.alias.clone(), b.name.clone(), b.icon.clone(), b.class, b.modalias.clone());
     let (paired, trusted, conn, batt) = (b.paired, b.trusted, b.connected, b.battery);
-    let mut uuids = b.services.clone();
+    let uuids = b.services.clone();
     let title = if !alias.is_empty() { alias } else if !name.is_empty() { name } else { mac.to_string() };
     let lname = title.to_lowercase();
     d.icon = if icon.contains("keyboard") || lname.contains("keyboard") {
@@ -503,7 +507,6 @@ pub fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
         d.details.push(("Battery".into(), format!("{}%", b)));
     }
     if !uuids.is_empty() {
-        uuids.dedup();
         d.details.push(("Services".into(), uuids.join(", ")));
     }
     d.why = format!(
@@ -571,9 +574,7 @@ fn events_loop(ev: Events) {
 
 /// "HH:MM:SS" in local time.
 fn clock(t: SystemTime) -> String {
-    let secs = t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as libc::time_t).unwrap_or(0);
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&secs, &mut tm) };
+    let tm = crate::snoop::local(t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0));
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
@@ -1116,10 +1117,9 @@ mod tests {
     fn oui_import() {
         let dir = std::env::temp_dir().join(format!("airscope-oui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        unsafe { std::env::set_var("HOME", &dir) }; // keep the user's real config untouched
         let src = dir.join("new.txt");
         std::fs::write(&src, "04-AB-CD   (hex)\t\tBrand New Vendor Inc\n").unwrap();
-        let o = Oui::load();
+        let o = Oui::at(Some(dir.join("config/oui.tsv"))); // not the user's real config
         assert_eq!(o.vendor("04:AB:CD:00:00:01"), "Unknown vendor");
         assert_eq!(o.import(src.to_str().unwrap()), Ok(1));
         assert_eq!(o.vendor("04:AB:CD:00:00:01"), "Brand New Vendor Inc");

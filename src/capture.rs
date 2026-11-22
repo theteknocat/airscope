@@ -32,9 +32,7 @@ fn now_unix() -> u64 {
 
 /// "YYYY-MM-DD_HH-MM-SS" in local time.
 fn stamp() -> String {
-    let secs = now_unix() as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&secs, &mut tm) };
+    let tm = crate::snoop::local(now_unix() as i64);
     format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 

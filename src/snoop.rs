@@ -320,11 +320,17 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
     Some(v[v.len() / 2])
 }
 
-/// "HH:MM:SS" local time for a Unix time in seconds.
-pub fn clock(unix: f64) -> String {
+/// Local time, broken down, for a Unix time in seconds. The one place the app asks libc for it.
+pub fn local(unix: i64) -> libc::tm {
     let secs = unix as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&secs, &mut tm) };
+    tm
+}
+
+/// "HH:MM:SS" local time for a Unix time in seconds.
+pub fn clock(unix: f64) -> String {
+    let tm = local(unix as i64);
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
@@ -332,17 +338,13 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Au
 
 /// "Nov 8, 2026": local date for a Unix time in seconds, as shown everywhere in the app.
 pub fn date(unix: f64) -> String {
-    let secs = unix as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&secs, &mut tm) };
+    let tm = local(unix as i64);
     format!("{} {}, {}", MONTHS[(tm.tm_mon as usize).min(11)], tm.tm_mday, tm.tm_year + 1900)
 }
 
 /// "2026-11-08": the same date for file names (no spaces or commas).
 pub fn date_iso(unix: f64) -> String {
-    let secs = unix as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&secs, &mut tm) };
+    let tm = local(unix as i64);
     format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
 }
 

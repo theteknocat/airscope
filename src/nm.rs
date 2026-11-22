@@ -43,7 +43,8 @@ pub fn channel(freq: u32) -> u32 {
         2484 => 14,
         2400..=2483 => (freq - 2407) / 5,
         5000..=5924 => (freq - 5000) / 5,
-        5925..=7125 => (freq - 5950) / 5, // 6 GHz
+        5935 => 2, // 6 GHz channel 2 sits below the 5950 base the others count from
+        5950..=7125 => (freq - 5950) / 5, // 6 GHz
         _ => 0,
     }
 }
@@ -125,6 +126,8 @@ mod tests {
         assert_eq!(channel(5180), 36);
         assert_eq!(channel(5785), 157);
         assert_eq!(channel(5955), 1);
+        assert_eq!(channel(5935), 2);
+        assert_eq!(channel(5930), 0); // not a channel: must not wrap round to a huge number
     }
 
     #[test]

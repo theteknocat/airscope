@@ -2,16 +2,10 @@
 //! minute steppers. Drawn with the app's own panel/lcd styling; local time via libc (no date library).
 
 use crate::fx::*;
+use crate::snoop::local;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-fn local(unix: i64) -> libc::tm {
-    let secs = unix as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    tm
-}
 
 /// Local date and time to unix seconds (months 0-11; out-of-range days roll over like mktime).
 pub fn make_unix(y: i32, m0: i32, d: i32, h: i32, mi: i32) -> i64 {

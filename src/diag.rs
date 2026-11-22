@@ -826,10 +826,7 @@ fn strip(ui: &mut egui::Ui, w: f32, spec: &StripSpec, ticks: &[Tick], bursts: &[
 
 /// Seconds east of UTC for local time at `unix`.
 fn utc_offset(unix: f64) -> f64 {
-    let secs = unix as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    tm.tm_gmtoff as f64
+    snoop::local(unix as i64).tm_gmtoff as f64
 }
 
 fn card_h(d: &snoop::DevStat) -> f32 {

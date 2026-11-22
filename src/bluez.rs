@@ -41,7 +41,8 @@ pub fn devices(conn: &Connection) -> Option<Vec<BtDev>> {
         let Some(addr) = get::<String>(p, "Address") else { continue };
         let battery = ifaces.get("org.bluez.Battery1").and_then(|b| get::<u8>(b, "Percentage")).map(|v| v as i32);
         let mut services: Vec<String> = get::<Vec<String>>(p, "UUIDs").unwrap_or_default().iter().filter_map(|u| uuid_name(u)).map(|s| s.to_string()).collect();
-        services.dedup();
+        let mut seen = std::collections::HashSet::new();
+        services.retain(|s| seen.insert(s.clone())); // keeps the order; two UUIDs share the name "Human Interface Device"
         out.push(BtDev {
             mac: addr.to_uppercase(),
             name: get(p, "Name").unwrap_or_default(),
