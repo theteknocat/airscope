@@ -1,0 +1,26 @@
+# Ponytail audit, 2026-11-22 (follow-up, round 3: main.rs)
+
+This is the fourth pass of the audit, run with Claude Code using the ponytail audit skill, picking up from the "Not read" list in `ponytail-audit-2026-11-22.md`. Scope for this round: `src/main.rs`, which is the app itself, with most of its length being drawing code. I concentrated on the parts that decide things (the radar's latching, grouping, dragging and position saving, the tray, the Wi-Fi model behind the Spectrum screen, the Devices list and the frame loop) and read the pure drawing code much more lightly. As before, nothing here was run on hardware other than my own machine, and the findings come from reading the code unless I say otherwise.
+
+## Findings
+
+1. **The window redraws every frame on every screen** (`src/main.rs`, minor, skipped). The frame loop calls `ui.ctx().request_repaint()` unconditionally, so the app keeps redrawing as fast as the display allows even on screens where nothing is moving, such as Devices or a Diagnostics page that's just sitting there. Only the radar actually needs that, for the sweep. I measured the build I've had running while testing: about 15% of one CPU core over a 5 second sample, and 17% averaged over 49 minutes, with about 100 MB of memory. I don't know which screen it was left on, so the number is a rough guide and not a measurement of one screen. **Skipped.** The display here runs at 60 Hz, so the app draws about 60 frames a second. Capping it at 30 would roughly halve the idle load but make the radar sweep and the fades less smooth, and 15% of one core doesn't bother me, so I'd rather keep it smooth. On a laptop, or if someone minds the battery or fan, that could be worth revisiting, and a cap is a one-line change (ask for the next frame after 33 ms, not straight away).
+
+2. **Stray lint attributes and a misplaced doc comment** (`src/main.rs`, minor, fixed). Three functions carry `#[allow(clippy::too_many_arguments)]` they don't need (`node_rad` takes one argument, `trouble_halo` six, `battery_icon` three), and the doc comment that describes the Wi-Fi hill shape ("Footprint of a 20 MHz Wi-Fi channel…") sits above `mac_bytes` instead of `hill`, so it describes the wrong function. Nothing breaks, but both mislead whoever reads them next. **Fixed.** Each attribute now sits on a function that really has too many arguments (`node_widget`, `tip`, `popup`, and `meter`, which `cargo clippy` showed me I'd missed), and the doc comment is above `hill`. Code quality and legibility matter to me, so I fix this kind of thing even when nothing is broken. Clippy isn't run in CI, and running it now also turned up the same lint in `src/data.rs` (`lan_dev`) and `src/fx.rs` (`action_button_h`), which belong to other scopes, and finding 3 below.
+
+3. **`cargo clippy` refuses to build the project** (`src/main.rs`, minor, fixed). `0.7071` is written out twice where the radar's distance labels are placed, and clippy treats that as an error because it's an approximation of `std::f32::consts::FRAC_1_SQRT_2`. Normal builds are fine, so only someone running clippy is affected. Clippy also reports 144 warnings, mostly style (for example `map_or(false, …)` that could be shorter), and I haven't gone through those. **Fixed.** Both places now use `FRAC_1_SQRT_2`, and `cargo clippy` builds and reports 143 warnings and no errors. The labels sit at the same spots as before to within a hair.
+
+## Looked at and left alone
+
+- **The radar's latching, grouping and drag code.** Group keys are inherited by overlap and made unique, the open-group layout can't be handed an empty group, the drag failsafe clears a drag that outlives the mouse button, and a saved drag position is clamped before it's written.
+- **The `unwrap`s on sorting floats** (`radar`, `nets`). They only fail on a NaN. The app can't produce one, because drags are clamped and signals come from whole numbers, so it would take a hand-edited `positions.tsv`, which the 2026-11-20 audit already left alone.
+- **Index and subtraction spots** (the Spectrum tooltip's `ov.len() - same` and `under.len() - 1 - names.len()`, the tile's `others.len() - room`, `fit_middle`, `mac_bytes`). Each is bounded by how its list is built, and `mac_bytes` is only ever given device ids, which are plain ASCII.
+- **The per-device maps** (`offs`, `sdist`, `appear`, `label_a`, `last_world`, `over`). They are never pruned, but they only grow by the number of distinct devices seen, which is a few hundred bytes each, so it's not worth the code.
+
+## Not read
+
+Most of the drawing inside `spectrum()` (I read its legend and hover parts), `popup()`, `nav()`, `header()`, `vendor_window()` and the body of `node_widget()`. Also `src/fx.rs`, `src/diag.rs`, `src/diag/page.rs` and `src/demo.rs`.
+
+## Verdict
+
+Three findings, all minor, and nothing that could lose data or break a setup. Two are fixed (the misplaced lint attributes and doc comment, and the constant that stopped clippy building) and one is skipped on purpose (redrawing 60 times a second, which I like for the smoothness). The radar's grouping, dragging and position-saving code held up well. What's left to read is most of the drawing inside `spectrum()` and `popup()`, plus `fx.rs`, `diag.rs`, `diag/page.rs` and `demo.rs`.

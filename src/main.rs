@@ -17,7 +17,7 @@ use data::{hash64, BtLink, Dev, Handle, Icon, Kind};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use fx::*;
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::TAU;
+use std::f32::consts::{FRAC_1_SQRT_2, TAU};
 use std::time::Instant;
 
 const DMAX: f32 = 80.0;
@@ -105,7 +105,6 @@ fn min_px(d: &Dev) -> f32 {
     PC_R + 6.0 + node_rad(d)
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Visual radius of a device's dot/orb.
 fn node_rad(d: &Dev) -> f32 {
     if d.known {
@@ -115,7 +114,6 @@ fn node_rad(d: &Dev) -> f32 {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Pulsing halo for a device with a problem: red for a real problem, amber for an early warning.
 fn trouble_halo(p: &egui::Painter, pos: Pos2, rad: f32, sev: f32, t: f32, col: Color32) {
     let pulse = (t * 4.0).sin() * 0.5 + 0.5;
@@ -123,6 +121,7 @@ fn trouble_halo(p: &egui::Painter, pos: Pos2, rad: f32, sev: f32, t: f32, col: C
     p.circle_stroke(pos, rad + 7.0 + pulse * 3.0, Stroke::new(1.5 + sev, alpha(col, 0.5 + 0.4 * pulse)));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn node_widget(ui: &egui::Ui, p: &egui::Painter, d: &Dev, n: &N, ni: usize, pos: Pos2, t: f32, sw: f32, sel: bool, label: f32, interactive: bool, can_drag: bool, scale: f32, c: Pos2, big: f32, ev: &mut Ev) {
     let col = if n.dim { shade(kind_col(d.kind), 0.5) } else { kind_col(d.kind) };
     let diff = (sw - n.ang).rem_euclid(TAU);
@@ -909,7 +908,7 @@ impl App {
             let r = rmap(d, big);
             p.circle_stroke(c, r, Stroke::new(3.0, add(CYAN, 0.025)));
             p.circle_stroke(c, r, Stroke::new(1.0, alpha(CYAN, 0.2)));
-            p.text(pos2(c.x + r * 0.7071 + 4.0, c.y - r * 0.7071 - 2.0), Align2::LEFT_BOTTOM, lbl, FontId::monospace(10.0), alpha(CYAN, 0.6));
+            p.text(pos2(c.x + r * FRAC_1_SQRT_2 + 4.0, c.y - r * FRAC_1_SQRT_2 - 2.0), Align2::LEFT_BOTTOM, lbl, FontId::monospace(10.0), alpha(CYAN, 0.6));
         }
         p.circle_stroke(c, ro, Stroke::new(1.5, alpha(CYAN, 0.3)));
         let mut m = egui::Mesh::default();
@@ -2276,6 +2275,7 @@ struct Pop {
 }
 
 /// Multi-line hover box above `anchor`.
+#[allow(clippy::too_many_arguments)]
 fn tip(p: &egui::Painter, anchor: Pos2, bounds: Rect, title: &str, lines: &[String], hint: Option<&str>, col: Color32, side: Option<f32>) {
     let g0 = p.layout(title.to_string(), FontId::proportional(14.0), Color32::WHITE, 312.0);
     let gs: Vec<_> = lines.iter().map(|l| p.layout(l.clone(), FontId::proportional(12.0), TEXT, 312.0)).collect();
@@ -2326,7 +2326,7 @@ impl Net {
     }
 }
 
-/// Footprint of a 20 MHz Wi-Fi channel: 1 at the centre, 0 at ±11 MHz.
+/// The six bytes of a MAC address at the start of a device id (None if the id doesn't start with one).
 fn mac_bytes(s: &str) -> Option<[u8; 6]> {
     let v: Vec<u8> = s[..s.len().min(17)].split(':').filter_map(|x| u8::from_str_radix(x, 16).ok()).collect();
     v.try_into().ok()
@@ -2344,6 +2344,7 @@ fn same_device(a: [u8; 6], b: [u8; 6]) -> bool {
     (tail(a) - tail(b)).abs() <= 8 || low(a) == low(b)
 }
 
+/// Footprint of a 20 MHz Wi-Fi channel: 1 at the centre, 0 at ±11 MHz.
 fn hill(dx: f32) -> f32 {
     if dx.abs() >= 11.0 {
         0.0
@@ -2352,7 +2353,6 @@ fn hill(dx: f32) -> f32 {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Battery icon with the percentage inside. The number has a dark outline so it reads on any fill colour.
 fn battery_icon(p: &egui::Painter, r: Rect, pct: i32) {
     let pct = pct.clamp(0, 100);
@@ -2373,6 +2373,7 @@ fn battery_icon(p: &egui::Painter, r: Rect, pct: i32) {
 }
 
 /// One labelled indicator row: caption, segmented bar, value.
+#[allow(clippy::too_many_arguments)]
 fn meter(p: &egui::Painter, x0: f32, x1: f32, y: f32, label: &str, frac: f32, col: Color32, value: &str) {
     p.text(pos2(x0, y + 4.5), Align2::LEFT_CENTER, label, FontId::monospace(10.5), alpha(CYAN, 0.8));
     led_bar(p, Rect::from_min_size(pos2(x0 + 64.0, y), vec2(x1 - x0 - 64.0 - 112.0, 9.0)), frac.clamp(0.0, 1.0), col, 20);
@@ -2422,6 +2423,7 @@ fn scrollbar(p: &egui::Painter, track: Rect, scroll: f32, max: f32, view: f32, c
 
 /// Info box for one device. Returns the screen rects it covers (the wheel belongs to whatever box the mouse is over).
 /// A device with a problem gets an ISSUE button by its name; it opens an inner box with the diagnosis.
+#[allow(clippy::too_many_arguments)]
 fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut bool, col: Color32, a: f32, uid: u64, wheel: f32) -> Vec<Rect> {
     let w = 380.0;
     let lp = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("popup_measure")));
