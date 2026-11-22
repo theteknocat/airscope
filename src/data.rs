@@ -586,7 +586,7 @@ fn wifi_context(wifi: &[Dev]) -> String {
         Some(s) => format!(
             "{} 2.4 GHz Wi-Fi network(s) above -75 dBm share the band; the strongest is {} (ch {}, {:.0} dBm). Other common sources: microwave ovens, cordless phones, USB 3 devices and other Bluetooth gear.",
             near.len(),
-            if s.name.is_empty() { "(hidden)" } else { &s.name },
+            s.name,
             s.chan.unwrap_or(0),
             s.dbm.unwrap_or(0.0)
         ),

@@ -153,8 +153,8 @@ impl Diag {
             } else {
                 self.log.shown = Some(want); // nothing to read yet (custom range without a start)
                 self.log.entries.clear();
-                        self.log.ver += 1;
-                        self.log_px.clear();
+                self.log.ver += 1;
+                self.log_px.clear();
                 self.log.window = None;
             }
         }
@@ -188,10 +188,10 @@ impl Diag {
                 ui.label(RichText::new("to").color(DIM));
                 crate::dtpick::field_h(ui, egui::Id::new("log_start"), &mut self.log.start, "Start (required)", bad_range, now, h);
             }
-            let label = if ci == 0 { "Since last recording".to_string() } else if matches!(pick, Pick::Custom) { "Custom".to_string() } else { PICKS[ci].0.to_string() };
+            let label = if matches!(pick, Pick::Custom) { "Custom".to_string() } else { PICKS[ci].0.to_string() };
             let font = egui::TextStyle::Button.resolve(ui.style());
             let lw = ui.painter().layout_no_wrap(label.clone(), font, Color32::WHITE).size().x;
-            egui::ComboBox::from_id_salt("log_range").selected_text(label).width(if matches!(pick, Pick::Custom) { lw + 44.0 } else { lw + 44.0 }).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("log_range").selected_text(label).width(lw + 44.0).show_ui(ui, |ui| {
                 for (i, (l, p)) in PICKS.iter().enumerate() {
                     let off = matches!(p, Pick::SinceRecording) && !have_rec;
                     ui.add_enabled_ui(!off, |ui| ui.selectable_value(&mut chosen, i, if off { format!("{l} (no recordings yet)") } else { l.to_string() }));
