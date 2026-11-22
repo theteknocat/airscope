@@ -2,3 +2,4 @@ target/
 dist/
 target-appimage/
 packaging/.cache/
+SESSION.md

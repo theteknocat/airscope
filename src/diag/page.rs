@@ -36,6 +36,19 @@ pub(super) struct LogDev {
     last: Option<f64>,
 }
 
+impl LogDev {
+    /// Card colour: red if the log shows link problems for it, amber for symptoms only, blue for neither.
+    fn accent(&self) -> Color32 {
+        if self.problems > 0 {
+            RED
+        } else if self.symptoms > 0 {
+            AMBER
+        } else {
+            BLUE
+        }
+    }
+}
+
 /// Everything above the table, for either source.
 struct View {
     tiles: Vec<(&'static str, String, Color32)>,
@@ -59,6 +72,19 @@ pub(super) struct Row {
 /// Table column positions: time, since start, device, event.
 fn cols(since: bool) -> (f32, f32, f32, f32) {
     if since { (16.0, 196.0, 212.0, 436.0) } else { (16.0, 0.0, 160.0, 400.0) }
+}
+
+/// The table's heading row, painted into `hr`: the column titles in `col` (SINCE START only when `since`) over a rule in `rule`.
+fn heading_row(p: &egui::Painter, hr: Rect, since: bool, col: Color32, rule: Color32) {
+    let (x_time, x_off, x_dev, x_msg) = cols(since);
+    let hf = FontId::proportional(11.5);
+    for (x, title, right) in [(x_time, "TIME", false), (x_off, "SINCE START", true), (x_dev, "DEVICE", false), (x_msg, "EVENT", false)] {
+        if right && !since {
+            continue;
+        }
+        p.text(pos2(hr.left() + x, hr.center().y), if right { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER }, title, hf.clone(), col);
+    }
+    p.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, rule));
 }
 
 fn log_key(w: &Who) -> String {
@@ -98,7 +124,7 @@ fn compact(ui: &mut egui::Ui, c: &Card, on: bool, w: f32) -> egui::Response {
         let l = crate::fit_middle(p, l, cf.clone(), avail);
         p.text(pos2(r.left() + 62.0, r.top() + 50.0 + i as f32 * 16.0), Align2::LEFT_CENTER, l, cf.clone(), DIM);
     }
-    lcd(p, pos2(r.right() - 18.0, r.top() + 27.0), Align2::RIGHT_CENTER, &c.big, 26.0, if c.accent == BLUE { GREEN } else { c.accent });
+    lcd(p, pos2(r.right() - 18.0, r.top() + 27.0), Align2::RIGHT_CENTER, &c.big, 26.0, number_colour(c.accent));
     p.text(pos2(r.right() - 18.0, r.top() + 50.0), Align2::RIGHT_CENTER, c.label, FontId::proportional(10.5), DIM);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -126,15 +152,7 @@ fn table(ui: &mut egui::Ui, w: f32, idx: &[usize], px: &[f32], line_h: f32, sinc
     let dev_w = x_msg - x_dev - 14.0;
     let msg_w = (w - x_msg - 14.0).max(160.0);
     let (hr, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
-    let p = ui.painter();
-    let hf = FontId::proportional(11.5);
-    p.text(pos2(hr.left() + x_time, hr.center().y), Align2::LEFT_CENTER, "TIME", hf.clone(), DIM);
-    if since {
-        p.text(pos2(hr.left() + x_off, hr.center().y), Align2::RIGHT_CENTER, "SINCE START", hf.clone(), DIM);
-    }
-    p.text(pos2(hr.left() + x_dev, hr.center().y), Align2::LEFT_CENTER, "DEVICE", hf.clone(), DIM);
-    p.text(pos2(hr.left() + x_msg, hr.center().y), Align2::LEFT_CENTER, "EVENT", hf, DIM);
-    p.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.25)));
+    heading_row(ui.painter(), hr, since, DIM, alpha(CYAN, 0.25));
     let lines = |px: f32| if px <= msg_w - 2.0 { 1.0 } else { (px * 1.08 / msg_w).ceil() };
     let height = |i: usize| lines(px.get(i).copied().unwrap_or(0.0)) * line_h + 18.0;
     let total: f32 = idx.iter().map(|&i| height(i)).sum();
@@ -186,15 +204,7 @@ pub(super) fn placeholder(ui: &mut egui::Ui, w: f32, title: &str, col: Color32, 
     ui.add_space(8.0);
     let (x_time, x_off, x_dev, x_msg) = cols(since);
     let (hr, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
-    let hf = FontId::proportional(11.5);
-    let hc = alpha(DIM, 0.7);
-    for (x, t, right) in [(x_time, "TIME", false), (x_off, "SINCE START", true), (x_dev, "DEVICE", false), (x_msg, "EVENT", false)] {
-        if right && !since {
-            continue;
-        }
-        ui.painter().text(pos2(hr.left() + x, hr.center().y), if right { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER }, t, hf.clone(), hc);
-    }
-    ui.painter().line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, alpha(CYAN, 0.15)));
+    heading_row(ui.painter(), hr, since, alpha(DIM, 0.7), alpha(CYAN, 0.15));
     let bar = alpha(Color32::WHITE, 0.06);
     for k in 0..8 {
         let (rr, _) = ui.allocate_exact_size(vec2(w, 36.0), Sense::hover());
@@ -303,22 +313,19 @@ impl Diag {
             ("COVERED", dur(s.duration()), CYAN),
             ("DATA PACKETS", s.acl.to_string(), BLUE),
         ];
-        let spec = StripSpec { first: Self::first_unix(s), total: s.duration(), title: "DROPS OVER TIME", legend: ("other", "radio-type drop"), what: "link drops" };
+        let spec = StripSpec { first: s.first_unix(), total: s.duration(), title: "DROPS OVER TIME", legend: ("other", "radio-type drop"), what: "link drops" };
         let ticks = s.drops().map(|e| Tick { t: e.t, unix: e.unix, radio: matches!(e.kind, Kind::Disconnected { reason, .. } if crate::hci::reason(reason).2), who: self.who(&e.addr, names), detail: None }).collect();
         let cards = self
             .stats
             .iter()
-            .map(|d| {
-                let radio = d.reasons.iter().any(|(c, _)| crate::hci::reason(*c).2);
-                Card {
-                    key: mac(&d.addr),
-                    name: self.who(&d.addr, names),
-                    ic: names.get(&mac(&d.addr)).map_or(Icon::Bluetooth, |n| n.1),
-                    accent: if radio { RED } else if d.drops > 0 { AMBER } else { BLUE },
-                    big: d.drops.to_string(),
-                    label: "DROPS",
-                    caption: format!("{} connects  \u{00b7}  {} packets", d.connects, d.tx + d.rx),
-                }
+            .map(|d| Card {
+                key: mac(&d.addr),
+                name: self.who(&d.addr, names),
+                ic: names.get(&mac(&d.addr)).map_or(Icon::Bluetooth, |n| n.1),
+                accent: drop_accent(d),
+                big: d.drops.to_string(),
+                label: "DROPS",
+                caption: format!("{} connects  \u{00b7}  {} packets", d.connects, d.tx + d.rx),
             })
             .collect();
         View { tiles, spec, ticks, bursts: self.bursts.clone(), cards }
@@ -345,7 +352,7 @@ impl Diag {
                 key: d.key.clone(),
                 name: d.name.clone(),
                 ic: d.ic,
-                accent: if d.problems > 0 { RED } else if d.symptoms > 0 { AMBER } else { BLUE },
+                accent: d.accent(),
                 big: (d.problems + d.symptoms).to_string(),
                 label: "PROBLEMS",
                 caption: {
@@ -651,9 +658,7 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
         let r = Rect::from_min_size(pos2(x, y), vec2(w, h));
         let mut pressed = false;
         let filtered = self.dev_filter.as_ref() == Some(&key);
-        egui::Area::new(egui::Id::new("diag_info")).order(egui::Order::Foreground).fade_in(false).fixed_pos(r.min).show(ctx, |ui| {
-            let (_, _) = ui.allocate_exact_size(r.size(), Sense::click());
-            let p = ui.painter_at(r.expand(40.0));
+        popover(ctx, egui::Id::new("diag_info"), r, 1.0, |ui, p| {
             match &what {
                 What::Cap(d) => {
                     let name = self.who(&d.addr, names);
@@ -662,15 +667,7 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
                     card_at(&p, r, d, &name, ic);
                 }
                 What::Log(d, recent) => {
-                    let accent = if d.problems > 0 { RED } else if d.symptoms > 0 { AMBER } else { BLUE };
-                    panel(&p, r, 14.0, accent);
-                    let c = pos2(r.left() + 36.0, r.top() + 38.0);
-                    orb(&p, c, 17.0, BLUE, 0.0);
-                    icon(&p, d.ic, c, 8.5, shade(BLUE, 0.12));
-                    p.text(pos2(r.left() + 68.0, r.top() + 28.0), Align2::LEFT_CENTER, &d.name, FontId::proportional(17.0), Color32::WHITE);
-                    p.text(pos2(r.left() + 68.0, r.top() + 50.0), Align2::LEFT_CENTER, "from the system log", FontId::proportional(12.0), DIM);
-                    lcd(&p, pos2(r.right() - 20.0, r.top() + 30.0), Align2::RIGHT_CENTER, &(d.problems + d.symptoms).to_string(), 30.0, if accent == BLUE { GREEN } else { accent });
-                    p.text(pos2(r.right() - 20.0, r.top() + 54.0), Align2::RIGHT_CENTER, "PROBLEMS", FontId::proportional(11.0), DIM);
+                    card_head(&p, r, d.ic, &d.name, "from the system log", ((d.problems + d.symptoms).to_string(), "PROBLEMS"), d.accent());
                     let mut yy = r.top() + 78.0;
                     for (l, v) in [("Link problems", d.problems.to_string()), ("Symptoms", d.symptoms.to_string()), ("Reconnects", d.reconnects.to_string()), ("Last problem", d.last.map_or("none".to_string(), |u| logview::short(u as i64)))] {
                         p.text(pos2(r.left() + 20.0, yy + 8.0), Align2::LEFT_CENTER, l, FontId::proportional(12.5), DIM);
@@ -743,9 +740,7 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
         self.lib_rect = Some(r);
         let (mut open, mut del, mut ask, mut pick) = (None::<PathBuf>, None::<PathBuf>, None::<PathBuf>, false);
         let mut cancel = false;
-        egui::Area::new(egui::Id::new("diag_library")).order(egui::Order::Foreground).fade_in(false).fixed_pos(r.min).show(ctx, |ui| {
-            let (_, _) = ui.allocate_exact_size(r.size(), Sense::click());
-            let p = ui.painter_at(r.expand(40.0));
+        popover(ctx, egui::Id::new("diag_library"), r, 1.0, |ui, p| {
             panel(&p, r, 14.0, BLUE);
             let inner = r.shrink(pad);
             // "Open file…": a smaller row, so it stays at hand above a long list
@@ -819,13 +814,12 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
                     }
                     let bh = bresp.as_ref().is_some_and(|b| b.hovered());
                     glyph(&p, Glyph::Trash, bin.center(), 6.5, if recording { alpha(DIM, 0.5) } else if bh { RED } else { alpha(RED, 0.65) });
+                    // a recording in progress has no delete button (`bresp` is None)
                     if let Some(b) = bresp {
                         let b = b.hint("Delete this capture");
                         if b.clicked() {
                             ask = Some(sess.dir.clone());
                         }
-                    } else {
-                        // can't delete a recording in progress
                     }
                     if resp.clicked() && !bh {
                         open = Some(sess.capture.clone());
@@ -883,9 +877,7 @@ impl Diag {
         let (row_h, pad) = (30.0, 20.0);
         let h = pad + 22.0 + 14.0 + 30.0 + rows.len() as f32 * row_h + 18.0 + bullets.len() as f32 * 24.0 + pad;
         let r = Rect::from_min_size(pos2((btn.right() - w).max(10.0), btn.bottom() + 8.0), vec2(w, h));
-        egui::Area::new(egui::Id::new("diag_help")).order(egui::Order::Foreground).fade_in(false).fixed_pos(r.min).show(ctx, |ui| {
-            let (_, _) = ui.allocate_exact_size(r.size(), Sense::click());
-            let p = ui.painter_at(r.expand(40.0));
+        popover(ctx, egui::Id::new("diag_help"), r, 1.0, |_, p| {
             panel(&p, r, 14.0, BLUE);
             let (l, rt) = (r.left() + pad, r.right() - pad);
             let (c1, c2) = (r.left() + 310.0, r.left() + 470.0);

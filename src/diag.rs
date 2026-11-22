@@ -213,7 +213,7 @@ impl Diag {
     /// The summary as plain text lines, used both on screen and in the saved report.
     fn summary(&self, s: &Snoop, names: &Names) -> Vec<(egui::Color32, String)> {
         let mut out: Vec<(egui::Color32, String)> = vec![];
-        let first = s.first_us.map_or(0.0, |f| (f - 0x00dc_ddb3_0f2f_8000i64) as f64 / 1e6);
+        let first = s.first_unix();
         out.push((TEXT, format!("{} records, {} data packets, spanning {} ({} {} to {})", s.records, s.acl, dur(s.duration()), snoop::date(first), snoop::clock(first), snoop::clock(first + s.duration()))));
         let drops = s.drops().count();
         out.push((if drops > 0 { RED } else { TEXT }, format!("{drops} link drops in total")));
@@ -312,10 +312,6 @@ impl Diag {
         }
     }
 
-    fn first_unix(s: &Snoop) -> f64 {
-        s.first_us.map_or(0.0, |f| (f - 0x00dc_ddb3_0f2f_8000i64) as f64 / 1e6)
-    }
-
     /// Opens a capture file (and forgets the device filter and info box of the one before).
     fn open_path(&mut self, path: String) {
         self.path = path;
@@ -403,6 +399,20 @@ impl Diag {
         }
     }
 
+    /// The Record and Open buttons' area grown by a margin: where the pulsing outline sits, and what counts as pointing at them.
+    fn pulse_area(b: Rect) -> Rect {
+        b.expand2(vec2(10.0, 7.0))
+    }
+
+    /// Draws the glow and pulsing outline round the Record and Open buttons (`b`) at `fade` (0 to 1) and returns the outline's rectangle.
+    fn pulse_outline(ui: &egui::Ui, b: Rect, fade: f32) -> Rect {
+        let pulse = 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 2.4).sin();
+        let hr = Self::pulse_area(b);
+        glow_rect_r(ui.painter(), hr, 14.0, 14.0, CYAN, (0.25 + 0.2 * pulse) * fade);
+        ui.painter().rect_stroke(hr, 14.0, Stroke::new(1.6, alpha(CYAN, (0.55 + 0.35 * pulse) * fade)), egui::StrokeKind::Outside);
+        hr
+    }
+
     /// The "Start here" pointer: a pulsing outline round the Record and Open buttons with an arrow and label, shown for
     /// 30 s or until the pointer first enters them (once per run). Not while a recording is starting.
     fn start_here(&mut self, ui: &mut egui::Ui) {
@@ -416,7 +426,7 @@ impl Diag {
         // highlight the toolbar buttons and point at them: shown for 30 s, or until the pointer first enters them
         if let Some(b) = self.cta {
             let since = *self.cta_since.get_or_insert_with(Instant::now);
-            let hot = ui.input(|i| i.pointer.hover_pos()).is_some_and(|q| b.expand2(vec2(10.0, 7.0)).contains(q));
+            let hot = ui.input(|i| i.pointer.hover_pos()).is_some_and(|q| Self::pulse_area(b).contains(q));
             if self.cta_off.is_none() && (hot || since.elapsed() > Duration::from_secs(30)) {
                 self.cta_off = Some(Instant::now());
                 if let Some(m) = &marker {
@@ -429,10 +439,7 @@ impl Diag {
             let fade = self.cta_off.map_or(1.0, |t| 1.0 - (t.elapsed().as_secs_f32() / 0.5).min(1.0));
             if fade > 0.0 {
                 let p = ui.painter().clone();
-                let pulse = 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 2.4).sin();
-                let hr = b.expand2(vec2(10.0, 7.0));
-                glow_rect_r(&p, hr, 14.0, 14.0, CYAN, (0.25 + 0.2 * pulse) * fade);
-                p.rect_stroke(hr, 14.0, Stroke::new(1.6, alpha(CYAN, (0.55 + 0.35 * pulse) * fade)), egui::StrokeKind::Outside);
+                let hr = Self::pulse_outline(ui, b, fade);
                 let (ax, ay) = (hr.right() + 22.0, hr.center().y);
                 let st = Stroke::new(2.0, alpha(CYAN, fade));
                 p.line_segment([pos2(ax, ay), pos2(ax + 22.0, ay)], st);
@@ -642,11 +649,7 @@ impl Diag {
             if age > 3.5 || self.rec.is_some() {
                 self.rec_pulse = None;
             } else {
-                let fade = (3.5 - age).min(1.0);
-                let pulse = 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 2.4).sin();
-                let hr = b.expand2(vec2(10.0, 7.0));
-                glow_rect_r(ui.painter(), hr, 14.0, 14.0, CYAN, (0.25 + 0.2 * pulse) * fade);
-                ui.painter().rect_stroke(hr, 14.0, Stroke::new(1.6, alpha(CYAN, (0.55 + 0.35 * pulse) * fade)), egui::StrokeKind::Outside);
+                Self::pulse_outline(ui, b, (3.5 - age).min(1.0));
                 ui.ctx().request_repaint();
             }
         }
@@ -833,18 +836,38 @@ fn card_h(d: &snoop::DevStat) -> f32 {
     78.0 + 22.0 * d.reasons.len().max(1) as f32 + 10.0 + 66.0 + if d.exits > 0 { 66.0 } else { 0.0 } + 14.0
 }
 
-/// The full per-device card, painted into `r` (the info box gives it extra room below for its button).
-fn card_at(p: &egui::Painter, r: Rect, d: &snoop::DevStat, name: &str, ic: Icon) {
-    let radio = d.reasons.iter().any(|(c, _)| crate::hci::reason(*c).2);
-    let accent = if radio { RED } else if d.drops > 0 { AMBER } else { BLUE };
+/// Accent colour of a capture device's card: red if any drop had a radio-type reason, amber for other drops, blue for none.
+fn drop_accent(d: &snoop::DevStat) -> Color32 {
+    if d.reasons.iter().any(|(c, _)| crate::hci::reason(*c).2) {
+        RED
+    } else if d.drops > 0 {
+        AMBER
+    } else {
+        BLUE
+    }
+}
+
+/// Colour of a card's big number: its accent, except that a blue card (nothing wrong) shows its number green.
+fn number_colour(accent: Color32) -> Color32 {
+    if accent == BLUE { GREEN } else { accent }
+}
+
+/// The top of a device card, on a panel in `accent`: orb and icon, name, a caption line, and the big number with its label.
+fn card_head(p: &egui::Painter, r: Rect, ic: Icon, name: &str, caption: &str, big: (String, &str), accent: Color32) {
     panel(p, r, 14.0, accent);
     let c = pos2(r.left() + 36.0, r.top() + 38.0);
     orb(p, c, 17.0, BLUE, 0.0);
     icon(p, ic, c, 8.5, shade(BLUE, 0.12));
     p.text(pos2(r.left() + 68.0, r.top() + 28.0), Align2::LEFT_CENTER, name, FontId::proportional(17.0), Color32::WHITE);
-    p.text(pos2(r.left() + 68.0, r.top() + 50.0), Align2::LEFT_CENTER, format!("{} connects  ·  {} data packets sent, {} received", d.connects, d.tx, d.rx), FontId::proportional(12.0), DIM);
-    lcd(p, pos2(r.right() - 20.0, r.top() + 30.0), Align2::RIGHT_CENTER, &d.drops.to_string(), 30.0, if radio { RED } else if d.drops > 0 { AMBER } else { GREEN });
-    p.text(pos2(r.right() - 20.0, r.top() + 54.0), Align2::RIGHT_CENTER, "DROPS", FontId::proportional(11.0), DIM);
+    p.text(pos2(r.left() + 68.0, r.top() + 50.0), Align2::LEFT_CENTER, caption, FontId::proportional(12.0), DIM);
+    lcd(p, pos2(r.right() - 20.0, r.top() + 30.0), Align2::RIGHT_CENTER, &big.0, 30.0, number_colour(accent));
+    p.text(pos2(r.right() - 20.0, r.top() + 54.0), Align2::RIGHT_CENTER, big.1, FontId::proportional(11.0), DIM);
+}
+
+/// The full per-device card, painted into `r` (the info box gives it extra room below for its button).
+fn card_at(p: &egui::Painter, r: Rect, d: &snoop::DevStat, name: &str, ic: Icon) {
+    let caption = format!("{} connects  ·  {} data packets sent, {} received", d.connects, d.tx, d.rx);
+    card_head(p, r, ic, name, &caption, (d.drops.to_string(), "DROPS"), drop_accent(d));
     let mut y = r.top() + 78.0;
     if d.reasons.is_empty() {
         p.text(pos2(r.left() + 20.0, y + 8.0), Align2::LEFT_CENTER, "no drops", FontId::proportional(13.5), GREEN);

@@ -219,9 +219,7 @@ fn help_panel(ctx: &egui::Context, btn: Rect, title: &str, rows: &[(Mark, &str, 
     let laid: Vec<_> = rows.iter().map(|(_, h, d)| (lay(h, 14.0, Color32::WHITE), lay(d, 12.5, DIM))).collect();
     let h = pad + 22.0 + 14.0 + laid.iter().map(|(a, b)| a.size().y + b.size().y + 16.0).sum::<f32>() + pad - 6.0;
     let r = Rect::from_min_size(pos2((btn.right() - w).max(10.0), btn.bottom() + 8.0), vec2(w, h));
-    egui::Area::new(egui::Id::new("screen_help")).order(egui::Order::Foreground).fade_in(false).fixed_pos(r.min).show(ctx, |ui| {
-        let (_, _) = ui.allocate_exact_size(r.size(), Sense::click());
-        let p = ui.painter_at(r.expand(40.0));
+    popover(ctx, egui::Id::new("screen_help"), r, 1.0, |_, p| {
         panel(&p, r, 14.0, BLUE);
         lcd(&p, pos2(r.left() + pad, r.top() + pad + 11.0), Align2::LEFT_CENTER, title, 16.0, CYAN);
         let mut y = r.top() + pad + 22.0 + 14.0;
@@ -2487,10 +2485,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
     });
 
     let mut chip_clicked = false;
-    egui::Area::new(egui::Id::new(("popup", uid))).order(egui::Order::Foreground).fade_in(false).fixed_pos(r.min).show(ctx, |ui| {
-        ui.set_opacity(a);
-        let (_, _) = ui.allocate_exact_size(r.size(), Sense::click());
-        let p = ui.painter_at(r.expand(40.0));
+    popover(ctx, egui::Id::new(("popup", uid)), r, a, |ui, p| {
         panel(&p, r, 16.0, col);
         // header
         let ic = pos2(r.left() + 42.0, r.top() + 44.0);
@@ -2579,10 +2574,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         }
         ctx.data_mut(|dt| dt.insert_temp(open_id, issue_open));
         if issue_open {
-            egui::Area::new(egui::Id::new(("popup_issue", uid))).order(egui::Order::Foreground).fade_in(false).fixed_pos(ir.min).show(ctx, |ui| {
-                ui.set_opacity(a);
-                let (_, _) = ui.allocate_exact_size(ir.size(), Sense::click());
-                let p = ui.painter_at(ir.expand(40.0));
+            popover(ctx, egui::Id::new(("popup_issue", uid)), ir, a, |_, p| {
                 p.rect_filled(ir.expand(2.0), 16.0, alpha(BG, 0.5));
                 panel(&p, ir, 14.0, acc);
                 lcd(&p, pos2(ir.left() + 22.0, ir.top() + 24.0), Align2::LEFT_CENTER, "WHAT'S HAPPENING", 13.0, acc);

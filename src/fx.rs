@@ -3,7 +3,7 @@
 use crate::Hint;
 use crate::data::Icon;
 use eframe::egui::epaint::PathStroke;
-use eframe::egui::{pos2, vec2, Align2, Color32, CursorIcon, FontId, Mesh, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
+use eframe::egui::{pos2, vec2, Align2, Area, Color32, Context, CursorIcon, FontId, Id, InnerResponse, Mesh, Order, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
 use std::f32::consts::{PI, TAU};
 
 pub const BG: Color32 = Color32::from_rgb(5, 9, 18);
@@ -106,6 +106,17 @@ fn glass_band(p: &Painter, rect: Rect, rad: f32, y0: f32, y1: f32, f: impl Fn(f3
         m.add_triangle(a + 1, a + 3, a + 2);
     }
     p.add(Shape::mesh(m));
+}
+
+/// A floating box at `r`, above everything else, that swallows clicks so they don't reach what is behind it.
+/// `add` gets the box's `Ui` and a painter that reaches 40 px past its edge (for glows); `opacity` fades the whole box.
+pub fn popover<R>(ctx: &Context, id: Id, r: Rect, opacity: f32, add: impl FnOnce(&mut Ui, Painter) -> R) -> InnerResponse<R> {
+    Area::new(id).order(Order::Foreground).fade_in(false).fixed_pos(r.min).show(ctx, |ui| {
+        ui.set_opacity(opacity);
+        ui.allocate_exact_size(r.size(), Sense::click());
+        let p = ui.painter_at(r.expand(40.0));
+        add(ui, p)
+    })
 }
 
 /// Raised glass panel: drop shadow, vertical gradient, soft specular sheen over the top, shaded bottom, and a rim

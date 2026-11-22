@@ -115,6 +115,11 @@ impl Snoop {
         self.first_us.map_or(0.0, |f| (self.last_us - f) as f64 / 1e6)
     }
 
+    /// When the first record was written, in Unix seconds (0 for a capture with no records yet).
+    pub fn first_unix(&self) -> f64 {
+        self.first_us.map_or(0.0, |f| (f - BTSNOOP_EPOCH_US) as f64 / 1e6)
+    }
+
     fn push(&mut self, t: f64, unix: f64, addr: Addr, kind: Kind) -> usize {
         self.events.push(Ev { t, unix, addr, kind });
         self.events.len() - 1
