@@ -1,6 +1,6 @@
 # Airscope — project notes
 
-Native Linux GUI (Rust, egui/eframe 0.37, glow) visualising Wi-Fi / Bluetooth / LAN around peter-pc as a radar. Repo: private `theteknocat/airscope`, branch `main`. Build `cargo build --release`; binary `target/release/airscope`. Plan: `docs/PLAN.md`. **Style and UI conventions: `docs/STYLE.md` — read before changing any screen** (visual over text, colour meaning, dates `MMM d, YYYY`, tooltips, responsive rules).
+Native Linux GUI (Rust, egui/eframe 0.37, glow) visualising Wi-Fi / Bluetooth / LAN around peter-pc as a radar. Repo: public `theteknocat/airscope`, branch `main`. Build `cargo build --release`; binary `target/release/airscope`. Plan: `docs/PLAN.md`. **Style and UI conventions: `docs/STYLE.md` — read before changing any screen** (visual over text, colour meaning, dates `MMM d, YYYY`, tooltips, responsive rules).
 
 ## Layout
 - `src/data.rs` — collectors on threads publishing to `Arc<Mutex<Shared>>`: Wi-Fi via `nm.rs`, BlueZ device list via `bluez.rs`, LAN (neighbours via `net.rs`, mDNS via `mdns-sd` crate, stale devices pinged), OUI vendors (`Oui`: built-in `src/oui.tsv` < system `/usr/share/hwdata/oui.txt` < user `~/.config/airscope/oui.tsv`; `parse_oui` reads IEEE txt/csv, Wireshark manuf, plain TSV; sidebar "Vendor list" button opens an import window — drop a file or paste a path; `AIRSCOPE_VENDOR=1` opens it at start). Regenerate built-in list: `scripts/gen-oui.sh [oui.txt]`. `Dev` (id = BSSID/MAC), `BtLink`.
