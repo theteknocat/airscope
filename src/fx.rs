@@ -460,6 +460,7 @@ pub fn action_button(ui: &mut Ui, icon: Option<Glyph>, label: &str, accent: Colo
 }
 
 /// `action_button` at another height (28 for the smaller controls of the page header).
+#[allow(clippy::too_many_arguments)]
 pub fn action_button_h(ui: &mut Ui, icon: Option<Glyph>, label: &str, accent: Color32, flash: f32, on: bool, min_w: f32, h: f32) -> eframe::egui::Response {
     let small = h < 32.0;
     let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(if small { 13.0 } else { 14.0 }), if on { Color32::WHITE } else { DIM });

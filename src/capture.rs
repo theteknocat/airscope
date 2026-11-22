@@ -111,7 +111,7 @@ impl Recording {
         match child.try_wait() {
             Ok(None) => Outcome::Running,
             Ok(Some(st)) => {
-                if std::fs::metadata(&self.file).map_or(false, |m| m.len() > 16) || st.success() {
+                if std::fs::metadata(&self.file).is_ok_and(|m| m.len() > 16) || st.success() {
                     return Outcome::Finished;
                 }
                 let _ = std::fs::remove_dir_all(&self.dir); // nothing was recorded: do not leave an empty session
@@ -146,7 +146,7 @@ fn btmon_files() -> Vec<(u32, PathBuf)> {
         let Some(pid) = ent.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
         let Ok(cmd) = std::fs::read(ent.path().join("cmdline")) else { continue };
         let args: Vec<&[u8]> = cmd.split(|b| *b == 0).collect();
-        if !args.first().map_or(false, |a| a.ends_with(b"btmon")) {
+        if !args.first().is_some_and(|a| a.ends_with(b"btmon")) {
             continue;
         }
         if let Some(w) = args.iter().position(|a| *a == b"-w") {
@@ -182,7 +182,6 @@ pub struct Session {
     pub name: String,
     pub capture: PathBuf,
     pub size: u64,
-    pub report: bool,
     pub summary: Option<Summary>,
 }
 
@@ -248,7 +247,7 @@ pub fn list_in(root: &Path) -> Vec<Session> {
             let dir = e.path();
             let capture = dir.join(CAPTURE_FILE);
             let size = std::fs::metadata(&capture).ok()?.len();
-            Some(Session { name: e.file_name().to_string_lossy().into_owned(), report: dir.join(REPORT_FILE).exists(), summary: read_summary(&dir), dir, capture, size })
+            Some(Session { name: e.file_name().to_string_lossy().into_owned(), summary: read_summary(&dir), dir, capture, size })
         })
         .collect();
     out.sort_by(|a, b| b.name.cmp(&a.name));

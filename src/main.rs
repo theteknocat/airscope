@@ -549,7 +549,7 @@ impl App {
         });
         if stop {
             // a dialog the portal can't reach is just forgotten, so a lost one can't lock the window
-            if self.vendor_pick.as_ref().map_or(false, |p| !p.cancel()) {
+            if self.vendor_pick.as_ref().is_some_and(|p| !p.cancel()) {
                 self.vendor_pick = None;
             }
             self.diag.cancel_dialogs();
@@ -642,7 +642,7 @@ impl App {
             for (i, (name, file, url)) in links.iter().enumerate() {
                 p.text(pos2(l + 38.0, y + 12.0), Align2::LEFT_CENTER, format!("{}  ·  {}", name, file), FontId::proportional(13.5), TEXT);
                 p.text(pos2(l + 38.0, y + 32.0), Align2::LEFT_CENTER, *url, FontId::monospace(11.5), DIM);
-                let copied = self.vendor_copied.map_or(false, |(j, t)| j == i && t.elapsed().as_secs_f32() < 1.6);
+                let copied = self.vendor_copied.is_some_and(|(j, t)| j == i && t.elapsed().as_secs_f32() < 1.6);
                 let b = Rect::from_min_size(pos2(rr - 112.0, y + 8.0), vec2(112.0, 32.0));
                 if pill(ui, b, &format!("copy{}", i), if copied { "Opened" } else { "Open link" }, if copied { GREEN } else { BLUE }) {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(*url));
@@ -838,13 +838,13 @@ impl App {
         let in_reach = |q: Pos2| (q - c_now).length() <= reach;
         let ok_id = egui::Id::new("radar_pan_ok");
         if bg.drag_started() {
-            let ok = bg.interact_pointer_pos().map_or(false, in_reach);
+            let ok = bg.interact_pointer_pos().is_some_and(in_reach);
             ui.ctx().data_mut(|d| d.insert_temp(ok_id, ok));
         }
         let pan_ok = ui.ctx().data(|d| d.get_temp::<bool>(ok_id)).unwrap_or(false);
         if bg.dragged() && pan_ok {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing); // closed hand only while dragging
-        } else if bg.hovered() && bg.hover_pos().map_or(false, in_reach) {
+        } else if bg.hovered() && bg.hover_pos().is_some_and(in_reach) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab); // open hand over the radar (an orb under the pointer shows the pointing hand)
         }
         let pointer = ui.input(|i| i.pointer.hover_pos());
@@ -855,7 +855,7 @@ impl App {
             self.pan += bg.drag_delta();
             self.reset_view = false; // taking over cancels a running reset
         }
-        if bg.double_clicked() && bg.interact_pointer_pos().map_or(false, in_reach) {
+        if bg.double_clicked() && bg.interact_pointer_pos().is_some_and(in_reach) {
             self.reset_view = true;
         }
         if self.reset_view {
@@ -1188,7 +1188,7 @@ impl App {
         }
         self.formed.retain(|key| groups.iter().any(|g| &g.key == key));
         let iconshown: Vec<bool> = groups.iter().enumerate().map(|(gi, g)| !g.open && (arrived[gi] || self.formed.contains(&g.key))).collect();
-        let vis1: Vec<bool> = (0..cnt).map(|i| !in_open[i] && !group_of[i].map_or(false, |gi| iconshown[gi] && settled[i])).collect();
+        let vis1: Vec<bool> = (0..cnt).map(|i| !in_open[i] && !group_of[i].is_some_and(|gi| iconshown[gi] && settled[i])).collect();
         let closing: Vec<bool> = groups.iter().enumerate().map(|(gi, g)| !g.open && !iconshown[gi] && self.halo.get(&g.key).copied().unwrap_or(0.0) >= 0.01).collect();
         for (gi, g) in groups.iter().enumerate() {
             if !iconshown[gi] {
@@ -1264,7 +1264,7 @@ impl App {
 
         // --- layer 1: everything that is not part of an open group
         for (ni, n) in nodes.iter().enumerate() {
-            if !vis1[ni] || group_of[ni].map_or(false, |gi| closing[gi]) || !view.contains(disp[ni]) {
+            if !vis1[ni] || group_of[ni].is_some_and(|gi| closing[gi]) || !view.contains(disp[ni]) {
                 continue;
             }
             let d = &self.latched[n.i];
@@ -1336,7 +1336,7 @@ impl App {
             for (ni, n) in nodes.iter().enumerate() {
                 if ni != di && group_of[ni].is_none() {
                     let d = (n.pos - q).length();
-                    if d < GROUP_PX * 1.15 && best.map_or(true, |b| d < b.0) {
+                    if d < GROUP_PX * 1.15 && best.is_none_or(|b| d < b.0) {
                         best = Some((d, disp[ni]));
                     }
                 }
@@ -1344,7 +1344,7 @@ impl App {
             for (gi, g) in groups.iter().enumerate() {
                 if iconshown[gi] {
                     let d = (g.center - q).length();
-                    if d < GROUP_PX * 1.15 && best.map_or(true, |b| d < b.0) {
+                    if d < GROUP_PX * 1.15 && best.is_none_or(|b| d < b.0) {
                         best = Some((d, g.center));
                     }
                 }
@@ -1533,7 +1533,7 @@ impl App {
         let max = (content - view.height()).max(0.0);
         let sid = egui::Id::new("tray_scroll");
         let mut scroll: f32 = ui.ctx().data(|d| d.get_temp(sid)).unwrap_or(0.0);
-        if max > 0.0 && ui.input(|i| i.pointer.hover_pos()).map_or(false, |q| view.contains(q)) {
+        if max > 0.0 && ui.input(|i| i.pointer.hover_pos()).is_some_and(|q| view.contains(q)) {
             scroll -= ui.input(|i| i.smooth_scroll_delta.y);
         }
         scroll = scroll.clamp(0.0, max);
@@ -1705,7 +1705,7 @@ impl App {
         let fx = |f: f32| gx0 + (f - 2399.0) / 87.0 * gw;
         let frame = Rect::from_min_max(pos2(l, rect.top() + 18.0), pos2(gx1 + 24.0, base + tail));
         panel(&p, frame, 14.0, CYAN);
-        let n24 = nets.iter().filter(|n| !n.hidden || n.aps > 0).map(|n| n.aps.max(1) as usize).sum::<usize>();
+        let n24 = nets.iter().filter(|n| !n.hidden || n.aps > 0).map(|n| n.aps.max(1)).sum::<usize>();
         lcd(&p, pos2(frame.center().x, rect.top() + 36.0), Align2::CENTER_CENTER, &format!("2.4 GHZ WI-FI NETWORKS WITHIN RANGE: {}", n24), 12.0, AMBER);
         // gridlines + axes
         for (dbm, lbl) in [(-80.0, "-80"), (-60.0, "-60"), (-40.0, "-40"), (-20.0, "-20")] {
@@ -1765,7 +1765,7 @@ impl App {
         let lmax = (nets.len() as f32 - max_rows as f32).max(0.0) * 24.0;
         let lid = egui::Id::new("spectrum_legend_scroll");
         let mut loff: f32 = ui.ctx().data(|d| d.get_temp(lid)).unwrap_or(0.0);
-        if lmax > 0.0 && ptr.map_or(false, |q| lview.contains(q)) {
+        if lmax > 0.0 && ptr.is_some_and(|q| lview.contains(q)) {
             loff -= ui.input(|i| i.smooth_scroll_delta.y);
         }
         loff = loff.clamp(0.0, lmax);
@@ -1841,7 +1841,7 @@ impl App {
             let col = col_of(n);
             let g = p.layout_no_wrap(shown.clone(), FontId::proportional(11.5), Color32::WHITE);
             p.rect_filled(*r, 6.0, Color32::from_rgba_unmultiplied(6, 12, 26, 190));
-            p.rect_stroke(*r, 6.0, Stroke::new(1.0, alpha(col, if hover.map_or(true, |h| h == *i) { 0.9 } else { 0.3 })), StrokeKind::Inside);
+            p.rect_stroke(*r, 6.0, Stroke::new(1.0, alpha(col, if hover.is_none_or(|h| h == *i) { 0.9 } else { 0.3 })), StrokeKind::Inside);
             p.galley(r.center() - g.size() / 2.0, g, Color32::WHITE);
         }
         // Bluetooth channels aligned under the same frequency axis
@@ -1877,7 +1877,7 @@ impl App {
             if let (Some(i), Some(q)) = (bt_hover, ptr) {
                 let l = &self.links[i];
                 let n = l.afh.as_ref().map_or(79, |m| m.iter().filter(|x| **x).count());
-                let hot = (0..79).filter(|&c| l.afh.as_ref().map_or(true, |m| m[c]) && crowd(c) > 0.5).count();
+                let hot = (0..79).filter(|&c| l.afh.as_ref().is_none_or(|m| m[c]) && crowd(c) > 0.5).count();
                 let mut lines = vec![match &l.afh {
                     Some(_) => format!("Adaptive frequency hopping: uses {} of the 79 channels and steers around the {} it found noisy or blocked.", n, 79 - n),
                     None => "No AFH (adaptive frequency hopping): this device can't avoid busy channels, so it hops across all 79, including every one Wi-Fi is using. It is the most exposed to Wi-Fi interference.".to_string(),
@@ -2401,7 +2401,7 @@ fn fit_middle(p: &egui::Painter, text: &str, font: FontId, max_w: f32) -> String
     }
     let ch: Vec<char> = text.chars().collect();
     for keep in (2..ch.len()).rev() {
-        let (head, tail) = ((keep + 1) / 2, keep / 2);
+        let (head, tail) = (keep.div_ceil(2), keep / 2);
         let s: String = ch[..head].iter().chain(std::iter::once(&'…')).chain(ch[ch.len() - tail..].iter()).collect();
         if width(&s) <= max_w {
             return s;
@@ -2571,7 +2571,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
 
     // inner box: the ISSUE button toggles it; a click anywhere outside it closes it
     if has_issue {
-        let outside = ctx.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !ir.contains(q) && !chip.contains(q)));
+        let outside = ctx.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|q| !ir.contains(q) && !chip.contains(q)));
         if chip_clicked {
             issue_open = !issue_open;
         } else if outside {
@@ -2650,7 +2650,7 @@ impl eframe::App for App {
                         Screen::Spectrum => help_panel(ui.ctx(), b, "SPECTRUM", &SPECTRUM_HELP),
                         _ => diag::Diag::help_box(ui.ctx(), b),
                     };
-                    let (esc, out) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !r.contains(q) && !b.contains(q))));
+                    let (esc, out) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|q| !r.contains(q) && !b.contains(q))));
                     if esc || out {
                         self.help_open = false;
                     }
@@ -2661,7 +2661,7 @@ impl eframe::App for App {
         self.debug_shot(ui.ctx(), t);
         // info boxes are shared by every screen: opening one fades it in, switching fades the old one out
         let dt = ui.input(|i| i.stable_dt).min(0.05);
-        let want: Option<String> = if self.screen == Screen::Radar { self.sel.clone().filter(|id| self.radar_anchor.as_ref().map_or(false, |(i, _)| i == id)) } else { self.sel.clone() };
+        let want: Option<String> = if self.screen == Screen::Radar { self.sel.clone().filter(|id| self.radar_anchor.as_ref().is_some_and(|(i, _)| i == id)) } else { self.sel.clone() };
         if let Some(id) = &want {
             if !self.pops.iter().any(|p| &p.id == id) {
                 if let Some(d) = self.devs.iter().find(|d| &d.id == id).cloned() {
@@ -2698,7 +2698,7 @@ impl eframe::App for App {
         }
         // a click anywhere outside the info boxes closes the open one (a click on a device already switched
         // or toggled the selection above, which is why an unchanged selection means "a click on nothing")
-        let outside = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !self.popup_rects.iter().any(|r| r.contains(q))));
+        let outside = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|q| !self.popup_rects.iter().any(|r| r.contains(q))));
         if outside && self.sel.is_some() && self.sel == sel_before {
             self.sel = None;
         }
@@ -2709,7 +2709,7 @@ impl eframe::App for App {
         }
         // tooltips fade too
         if let Some(w) = self.tip_want.take() {
-            if self.tip_last.as_ref().map_or(true, |l| match (l.key, w.key) { (Some(a), Some(b)) => a != b, _ => l.title != w.title }) {
+            if self.tip_last.as_ref().is_none_or(|l| match (l.key, w.key) { (Some(a), Some(b)) => a != b, _ => l.title != w.title }) {
                 self.tip_a = self.tip_a.min(0.2);
             }
             self.tip_last = Some(w);

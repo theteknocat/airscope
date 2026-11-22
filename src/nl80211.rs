@@ -24,7 +24,7 @@ fn attr(buf: &mut Vec<u8>, ty: u16, data: &[u8]) {
     buf.extend(((4 + data.len()) as u16).to_ne_bytes());
     buf.extend(ty.to_ne_bytes());
     buf.extend(data);
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }

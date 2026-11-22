@@ -427,8 +427,8 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
         if self.tl_key != tkey {
             let f = self.dev_filter.clone();
             self.tl = match (s, cap) {
-                (Some(s), true) => (0..n).rev().filter(|&i| (Self::problem(&s.events[i]) || !self.problems_only) && f.as_ref().map_or(true, |k| mac(&s.events[i].addr) == *k)).collect(),
-                _ => (0..n).rev().filter(|&i| { let e = &self.log.entries[i]; (!self.problems_only || e.sev != Sev::Info) && f.as_ref().map_or(true, |k| log_key(&e.who) == *k) }).collect(),
+                (Some(s), true) => (0..n).rev().filter(|&i| (Self::problem(&s.events[i]) || !self.problems_only) && f.as_ref().is_none_or(|k| mac(&s.events[i].addr) == *k)).collect(),
+                _ => (0..n).rev().filter(|&i| { let e = &self.log.entries[i]; (!self.problems_only || e.sev != Sev::Info) && f.as_ref().is_none_or(|k| log_key(&e.who) == *k) }).collect(),
             };
             self.tl_key = tkey;
         }
@@ -609,7 +609,7 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
         // the info box: closes on Esc or a click outside it (a click on a card already switched it above)
         if self.info.is_some() {
             let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-            let outside = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().map_or(false, |q| !self.info_rect.map_or(false, |r| r.contains(q))));
+            let outside = ui.input(|i| i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|q| !self.info_rect.is_some_and(|r| r.contains(q))));
             if esc || (outside && self.info == before) {
                 self.info = None;
             }
@@ -706,13 +706,13 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
     /// Re-reads the Library list now and then and finishes the analysis of captures nobody has opened (e.g. one that
     /// ended while the app was closed), one at a time.
     fn library_tick(&mut self) {
-        if self.bg.as_ref().map_or(false, |(_, d)| d.load(std::sync::atomic::Ordering::Relaxed)) {
+        if self.bg.as_ref().is_some_and(|(_, d)| d.load(std::sync::atomic::Ordering::Relaxed)) {
             self.bg = None;
             self.sessions_at = None;
         }
         if self.bg.is_none() {
             let open = PathBuf::from(self.clean_path());
-            let live = |c: &PathBuf| self.rec.as_ref().map_or(false, |r| &r.file == c) || *c == open || std::fs::metadata(c).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(true, |e| e < Duration::from_secs(10));
+            let live = |c: &PathBuf| self.rec.as_ref().is_some_and(|r| &r.file == c) || *c == open || std::fs::metadata(c).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_none_or(|e| e < Duration::from_secs(10));
             if let Some(s) = self.sessions.iter().find(|s| capture::needs_analysis(s) && !live(&s.capture)) {
                 let (dir, cap) = (s.dir.clone(), s.capture.clone());
                 let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -770,7 +770,7 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
             lui.spacing_mut().item_spacing.y = 0.0;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut lui, |ui| {
                 for sess in &self.sessions {
-                    let recording = self.rec.as_ref().map_or(false, |x| x.file == sess.capture);
+                    let recording = self.rec.as_ref().is_some_and(|x| x.file == sess.capture);
                     let asking = self.del_pending.as_ref() == Some(&sess.dir);
                     let (rr, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), if asking { Sense::hover() } else { Sense::click() });
                     let resp = if asking { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand) };
@@ -791,33 +791,33 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
                     let (detail, dcol) = match &sess.summary {
                         _ if recording => ("recording now".to_string(), RED),
                         Some(x) => (format!("{}  \u{00b7}  {}  \u{00b7}  {} drops", dur(x.duration), size_str(sess.size), x.drops), if x.drops > 0 { AMBER } else { DIM }),
-                        None if self.bg.as_ref().map_or(false, |(c, _)| *c == sess.capture) => (format!("{}  \u{00b7}  analysing\u{2026}", size_str(sess.size)), DIM),
+                        None if self.bg.as_ref().is_some_and(|(c, _)| *c == sess.capture) => (format!("{}  \u{00b7}  analysing\u{2026}", size_str(sess.size)), DIM),
                         None => (format!("{}  \u{00b7}  not analysed yet", size_str(sess.size)), DIM),
                     };
                     p.text(pos2(rr.left() + 14.0 + gw + 16.0, rr.center().y), Align2::LEFT_CENTER, detail, FontId::proportional(12.5), dcol);
                     if asking {
-                        let ch = cresp.as_ref().map_or(false, |c| c.hovered());
+                        let ch = cresp.as_ref().is_some_and(|c| c.hovered());
                         p.rect_filled(canc, 8.0, alpha(Color32::WHITE, if ch { 0.14 } else { 0.06 }));
                         glyph(&p, Glyph::Undo, canc.center(), 6.5, if ch { Color32::WHITE } else { DIM });
-                        let bh = bresp.as_ref().map_or(false, |b| b.hovered());
+                        let bh = bresp.as_ref().is_some_and(|b| b.hovered());
                         p.rect_filled(conf, 8.0, alpha(RED, if bh { 0.35 } else { 0.18 }));
                         glyph(&p, Glyph::Trash, pos2(conf.left() + 14.0, conf.center().y), 6.5, RED);
                         p.text(pos2(conf.left() + 28.0, conf.center().y), Align2::LEFT_CENTER, "Confirm", FontId::proportional(12.5), RED);
                         if let Some(b) = bresp.clone() {
                             b.hint("Delete this capture");
                         }
-                        if bresp.as_ref().map_or(false, |b| b.clicked()) {
+                        if bresp.as_ref().is_some_and(|b| b.clicked()) {
                             del = Some(sess.dir.clone());
                         }
-                        if cresp.as_ref().map_or(false, |c| c.clicked()) {
+                        if cresp.as_ref().is_some_and(|c| c.clicked()) {
                             cancel = true;
                         }
                         continue;
                     }
-                    if hot && bresp.as_ref().map_or(true, |b| !b.hovered()) {
+                    if hot && bresp.as_ref().is_none_or(|b| !b.hovered()) {
                         p.text(pos2(bin.left() - 8.0, rr.center().y), Align2::RIGHT_CENTER, "Click to open", FontId::proportional(12.0), alpha(TEXT, 0.55));
                     }
-                    let bh = bresp.as_ref().map_or(false, |b| b.hovered());
+                    let bh = bresp.as_ref().is_some_and(|b| b.hovered());
                     glyph(&p, Glyph::Trash, bin.center(), 6.5, if recording { alpha(DIM, 0.5) } else if bh { RED } else { alpha(RED, 0.65) });
                     if let Some(b) = bresp {
                         let b = b.hint("Delete this capture");
@@ -852,7 +852,7 @@ pub(super) fn header(ui: &mut egui::Ui, sub: &str, left: impl FnOnce(&mut egui::
             let cap = dir.join(capture::CAPTURE_FILE);
             match capture::delete_session(&dir) {
                 Ok(()) => {
-                    if PathBuf::from(self.clean_path()) == cap {
+                    if self.clean_path() == cap {
                         self.close_capture(); // it was the open capture
                     }
                     self.rec_msg = Some((false, "Capture deleted".into()));
@@ -869,7 +869,7 @@ impl Diag {
     /// The "About this screen" box under the header's help button. Returns its rectangle (for outside-click closing).
     pub fn help_box(ctx: &egui::Context, btn: Rect) -> Rect {
         let w = 640.0f32;
-        let rows: [(&str, (bool, &str), (bool, &str)); 5] = [
+        let rows = [
             ("Looks back in time", (true, "days, from the journal"), (false, "only while it runs")),
             ("Reason for each drop", (false, ""), (true, "")),
             ("Packet timing and silence before a drop", (false, ""), (true, "")),

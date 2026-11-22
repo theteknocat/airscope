@@ -215,7 +215,7 @@ impl Snoop {
 
     /// True for a sniff exit the controller answered late or not at all.
     pub fn slow_exit(e: &Ev) -> bool {
-        matches!(e.kind, Kind::SniffExit { wait } if wait.map_or(true, |w| w > SLOW_EXIT_S))
+        matches!(e.kind, Kind::SniffExit { wait } if wait.is_none_or(|w| w > SLOW_EXIT_S))
     }
 
     /// Whether a slow or unanswered sniff exit for the same device came shortly before this drop (the cards count this
@@ -270,7 +270,7 @@ impl Snoop {
             for e in &mine {
                 if Self::slow_exit(e) {
                     last_slow = Some(e.t);
-                } else if matches!(e.kind, Kind::Disconnected { .. }) && last_slow.map_or(false, |t| e.t - t <= STALL_WINDOW_S) {
+                } else if matches!(e.kind, Kind::Disconnected { .. }) && last_slow.is_some_and(|t| e.t - t <= STALL_WINDOW_S) {
                     after_stall += 1;
                 }
             }
@@ -350,7 +350,7 @@ pub fn date_iso(unix: f64) -> String {
 
 /// A library session folder name "2026-11-08_18-12-25" as "Nov 8, 2026  18:12:25"; other names come back unchanged.
 pub fn pretty_stamp(name: &str) -> String {
-    let p: Vec<&str> = name.split(|c| c == '-' || c == '_').collect();
+    let p: Vec<&str> = name.split(['-', '_']).collect();
     let n: Vec<Option<usize>> = p.iter().map(|x| x.parse().ok()).collect();
     match (p.len(), n.as_slice()) {
         (6, [Some(y), Some(m), Some(d), Some(h), Some(mi), Some(se)]) if (1..=12).contains(m) => format!("{} {}, {}  {:02}:{:02}:{:02}", MONTHS[m - 1], d, y, h, mi, se),

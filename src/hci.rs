@@ -106,8 +106,7 @@ pub fn connections() -> Vec<Conn> {
         if unsafe { libc::ioctl(fd.as_raw_fd(), HCIGETCONNLIST as _, &mut req as *mut ConnList) } < 0 {
             continue;
         }
-        for i in 0..(req.conn_num as usize).min(16) {
-            let c = req.info[i];
+        for c in req.info.iter().take(req.conn_num as usize) {
             if c.kind == 1 {
                 out.push(Conn { dev, handle: c.handle, mac: mac_str(c.bdaddr) });
             }

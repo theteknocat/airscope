@@ -144,7 +144,7 @@ pub type Handle = Arc<Mutex<Shared>>;
 // ---------- helpers ----------
 
 pub fn parse_mac(mac: &str) -> Option<[u8; 6]> {
-    let p: Vec<&str> = mac.split(|c| c == ':' || c == '-').collect();
+    let p: Vec<&str> = mac.split([':', '-']).collect();
     if p.len() != 6 {
         return None;
     }
@@ -333,7 +333,7 @@ pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
             ("SSID".into(), if hidden { "(hidden)".into() } else { ssid.clone() }),
             ("BSSID".into(), bssid.clone()),
             ("Vendor".into(), vendor),
-            ("Band / channel".into(), format!("{} / ch {} ({} MHz)", band, chan.map(|c| c.to_string()).unwrap_or("?".into()), freq.unwrap_or(0))),
+            ("Band / channel".into(), format!("{} / ch {} ({} MHz)", band, ap.chan, ap.freq)),
             ("Rate".into(), format!("{} Mbit/s", ap.rate_kbps / 1000)),
             ("Signal".into(), format!("{}%  (about {:.0} dBm{})", pct, dbm, if pct >= 100.0 { " or stronger; the scale saturates" } else { "" })),
             ("Distance (rough)".into(), format!("about {:.1} m, estimated from signal only", dist)),
@@ -388,7 +388,7 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
         if bus.is_none() {
             bus = crate::nm::connect();
         }
-        let aps = bus.as_ref().and_then(|c| crate::nm::access_points(c));
+        let aps = bus.as_ref().and_then(crate::nm::access_points);
         if aps.is_none() {
             bus = None; // reconnect next time
         }
@@ -579,7 +579,7 @@ fn clock(t: SystemTime) -> String {
 }
 
 fn wifi_context(wifi: &[Dev]) -> String {
-    let mut near: Vec<&Dev> = wifi.iter().filter(|w| w.freq.map_or(false, |f| f < 3000) && w.dbm.map_or(false, |d| d > -75.0)).collect();
+    let mut near: Vec<&Dev> = wifi.iter().filter(|w| w.freq.is_some_and(|f| f < 3000) && w.dbm.is_some_and(|d| d > -75.0)).collect();
     near.sort_by(|a, b| b.dbm.partial_cmp(&a.dbm).unwrap_or(std::cmp::Ordering::Equal));
     match near.first() {
         None => "No strong 2.4 GHz Wi-Fi network is visible, so Wi-Fi is an unlikely cause here.".into(),
@@ -613,7 +613,7 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev], 
     let mut rows: Vec<(String, String)> = vec![]; // supporting evidence
 
     // red: link lost for a radio-type reason
-    let bad: Vec<&DevEvent> = ev.iter().filter(|e| age(e) < TROUBLE_WINDOW_SECS && ev_code(e).map_or(false, |c| crate::hci::reason(c).2)).collect();
+    let bad: Vec<&DevEvent> = ev.iter().filter(|e| age(e) < TROUBLE_WINDOW_SECS && ev_code(e).is_some_and(|c| crate::hci::reason(c).2)).collect();
     if let Some(last) = bad.last() {
         let code = ev_code(last).unwrap_or(0);
         let (name, meaning, _) = crate::hci::reason(code);
@@ -645,7 +645,7 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev], 
         for (id, name, pev) in peers.iter().filter(|(id, _, _)| *id != d.id) {
             let hit = pev.iter().any(|q| {
                 matches!(q.kind, EvKind::Disconnected(c) if crate::hci::reason(c).2)
-                    && q.at.duration_since(e.at).or_else(|x| e.at.duration_since(q.at).map_err(|_| x)).map_or(false, |g| g <= SHARED_DROP)
+                    && q.at.duration_since(e.at).or_else(|x| e.at.duration_since(q.at).map_err(|_| x)).is_ok_and(|g| g <= SHARED_DROP)
             });
             if hit && !shared.iter().any(|(n, _)| n == name) {
                 shared.push((if name.is_empty() { id.clone() } else { name.clone() }, e.at));
@@ -760,7 +760,7 @@ fn bt_loop(h: Handle, oui: Arc<Oui>, events: Events) {
         if bus.is_none() {
             bus = crate::bluez::connect();
         }
-        let listing = bus.as_ref().and_then(|c| crate::bluez::devices(c));
+        let listing = bus.as_ref().and_then(crate::bluez::devices);
         if listing.is_none() {
             bus = None; // reconnect next time (BlueZ may have restarted)
         }
@@ -782,7 +782,7 @@ fn bt_loop(h: Handle, oui: Arc<Oui>, events: Events) {
         }
         // forget old readings, then explain any problems (drop reasons, link history, Wi-Fi around)
         for hs in hist.values_mut() {
-            while hs.front().map_or(false, |x| x.at.elapsed().as_secs() > HISTORY_SECS) {
+            while hs.front().is_some_and(|x| x.at.elapsed().as_secs() > HISTORY_SECS) {
                 hs.pop_front();
             }
         }
@@ -901,6 +901,7 @@ fn classify(vendor: &str, host: &str, svcs: &[String], gw: bool) -> (Icon, &'sta
 }
 
 /// One LAN neighbour as a device (shared by the live collector and the demo data).
+#[allow(clippy::too_many_arguments)]
 pub fn lan_dev(ip: &str, dev: &str, mac: &str, state: &str, online: bool, is_gw: bool, dns: &str, mhost: String, svcs: Vec<String>, oui: &Oui) -> Dev {
     let host = if !mhost.is_empty() { mhost } else { dns.to_string() };
     let vendor = oui.vendor(mac);

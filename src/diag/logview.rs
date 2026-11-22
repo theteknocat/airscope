@@ -69,7 +69,7 @@ impl Diag {
     fn last_recording_end(&self) -> Option<i64> {
         self.sessions
             .iter()
-            .find(|s| !self.rec.as_ref().map_or(false, |r| r.file == s.capture))
+            .find(|s| !self.rec.as_ref().is_some_and(|r| r.file == s.capture))
             .and_then(|s| std::fs::metadata(&s.capture).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
     }
@@ -97,7 +97,7 @@ impl Diag {
         }
         let ci = *self.log.choice.get_or_insert(if have_rec { 0 } else { 4 });
         let pick = PICKS[ci].1;
-        let bad_range = matches!(pick, Pick::Custom) && self.log.start.map_or(false, |s| s >= self.log.end.unwrap_or(now));
+        let bad_range = matches!(pick, Pick::Custom) && self.log.start.is_some_and(|s| s >= self.log.end.unwrap_or(now));
 
         // finished read?
         if let Some((key, job)) = &self.log.job {
@@ -131,7 +131,7 @@ impl Diag {
         let live = !bad_range && window.is_some() && (!matches!(pick, Pick::Custom) || self.log.end.is_none());
         if live {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
-            if self.log.job.is_none() && self.log.shown == Some(want) && self.log.last_read.map_or(false, |t| t.elapsed().as_secs() >= 10) {
+            if self.log.job.is_none() && self.log.shown == Some(want) && self.log.last_read.is_some_and(|t| t.elapsed().as_secs() >= 10) {
                 self.log.reload = true;
                 self.log.poll = true;
             }

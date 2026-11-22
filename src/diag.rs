@@ -272,10 +272,10 @@ impl Diag {
 
     /// Closes any open file dialog (it then reports a cancel); one the portal can't reach is just forgotten.
     pub fn cancel_dialogs(&mut self) {
-        if self.pick.as_ref().map_or(false, |p| !p.cancel()) {
+        if self.pick.as_ref().is_some_and(|p| !p.cancel()) {
             self.pick = None;
         }
-        if self.save_pick.as_ref().map_or(false, |(p, _)| !p.cancel()) {
+        if self.save_pick.as_ref().is_some_and(|(p, _)| !p.cancel()) {
             self.save_pick = None;
         }
     }
@@ -344,9 +344,9 @@ impl Diag {
         let name = snoop::pretty_stamp(&self.shown_name());
         let sub = if self.rec.is_some() { "Live recording" } else { "Recording" };
         let loading = (self.pos < self.total).then(|| self.pos * 100 / self.total);
-        let live = self.rec.is_some() && self.grew.map_or(false, |t| t.elapsed() < Duration::from_secs(6));
+        let live = self.rec.is_some() && self.grew.is_some_and(|t| t.elapsed() < Duration::from_secs(6));
         if let Some((err, m)) = self.rec_msg.clone() {
-            if self.msg_seen.as_ref().map_or(true, |(s, _)| *s != m) {
+            if self.msg_seen.as_ref().is_none_or(|(s, _)| *s != m) {
                 self.msg_seen = Some((m.clone(), Instant::now()));
             }
             let age = self.msg_seen.as_ref().map_or(0.0, |(_, t)| t.elapsed().as_secs_f32());
@@ -410,13 +410,13 @@ impl Diag {
             return;
         }
         let marker = capture::captures_dir().and_then(|d| d.parent().map(|p| p.join("seen-start-here")));
-        if *self.cta_seen.get_or_insert_with(|| marker.as_ref().map_or(false, |m| m.exists())) {
+        if *self.cta_seen.get_or_insert_with(|| marker.as_ref().is_some_and(|m| m.exists())) {
             return;
         }
         // highlight the toolbar buttons and point at them: shown for 30 s, or until the pointer first enters them
         if let Some(b) = self.cta {
             let since = *self.cta_since.get_or_insert_with(Instant::now);
-            let hot = ui.input(|i| i.pointer.hover_pos()).map_or(false, |q| b.expand2(vec2(10.0, 7.0)).contains(q));
+            let hot = ui.input(|i| i.pointer.hover_pos()).is_some_and(|q| b.expand2(vec2(10.0, 7.0)).contains(q));
             if self.cta_off.is_none() && (hot || since.elapsed() > Duration::from_secs(30)) {
                 self.cta_off = Some(Instant::now());
                 if let Some(m) = &marker {
@@ -528,7 +528,7 @@ impl Diag {
                         }
                     }
                 }
-                let lb = action_button(ui, Some(Glyph::Open), if stacked { "" } else { "Library" }, BLUE, if self.lib_open { 0.0 } else { 0.0 }, true, 0.0).hint("Open a saved recording, or a capture file");
+                let lb = action_button(ui, Some(Glyph::Open), if stacked { "" } else { "Library" }, BLUE, 0.0, true, 0.0).hint("Open a saved recording, or a capture file");
                 self.lib_btn = Some(lb.rect);
                 if lb.clicked() {
                     self.lib_open = !self.lib_open;
@@ -552,7 +552,7 @@ impl Diag {
             }
         }
         self.cta = None;
-        if self.sessions_at.map_or(true, |t| t.elapsed() > Duration::from_secs(3)) {
+        if self.sessions_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
             self.sessions = capture::list();
             self.sessions_at = Some(Instant::now());
         }
@@ -572,7 +572,7 @@ impl Diag {
             _ => {}
         }
         if let Some(f) = self.follow.clone() {
-            if std::fs::metadata(&f).map_or(false, |m| m.len() > 16) {
+            if std::fs::metadata(&f).is_ok_and(|m| m.len() > 16) {
                 self.follow = None;
                 self.rec_msg = None;
                 self.open_path(f.display().to_string());
@@ -581,7 +581,7 @@ impl Diag {
         self.pump();
         let s = self.snoop.take();
         if let Some(res) = self.save_pick.as_ref().and_then(|(p, _)| p.poll()) {
-            let log = self.save_pick.take().map_or(false, |x| x.1);
+            let log = self.save_pick.take().is_some_and(|x| x.1);
             match res {
                 Ok(Some(path)) => self.finish_save(path, log, s.as_ref(), names),
                 Ok(None) => {} // cancelled
@@ -627,7 +627,7 @@ impl Diag {
             self.library_popover(ui.ctx(), rect);
             let (esc, outside) = ui.input(|i| {
                 let q = i.pointer.interact_pos();
-                (i.key_pressed(egui::Key::Escape), i.pointer.primary_clicked() && q.map_or(false, |q| !self.lib_rect.map_or(false, |r| r.contains(q)) && !self.lib_btn.map_or(false, |r| r.contains(q))))
+                (i.key_pressed(egui::Key::Escape), i.pointer.primary_clicked() && q.is_some_and(|q| !self.lib_rect.is_some_and(|r| r.contains(q)) && !self.lib_btn.is_some_and(|r| r.contains(q))))
             });
             if self.lib_open && was_open && (esc || outside) {
                 self.lib_open = false;
