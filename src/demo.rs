@@ -17,6 +17,9 @@ pub fn on() -> bool {
     std::env::var_os("AIRSCOPE_DEMO").is_some()
 }
 
+const HEADPHONES: &str = "AC:80:0A:3D:62:C0";
+const KEYBOARD: &str = "E4:11:5B:72:08:4D";
+
 fn ap(ssid: &str, bssid: &str, chan: u32, strength: u8, rate: u32, security: &str, in_use: bool) -> Ap {
     let freq = match chan {
         1..=13 => 2407 + chan * 5,
@@ -36,6 +39,7 @@ fn afh(channels: &[std::ops::RangeInclusive<usize>]) -> Vec<bool> {
 
 /// Fill the shared state once and keep the "last updated" times fresh.
 pub fn start(h: &Handle, oui: &Oui) {
+    let bad = degraded();
     let wifi: Vec<_> = [
         ap("Maple House", "00:0A:EB:3C:91:A0", std::env::var("AIRSCOPE_DEMO_CHAN").ok().and_then(|v| v.parse().ok()).unwrap_or(1), 94, 286, "WPA2 WPA3", false),
         ap("Maple House", "00:0A:EB:3C:91:A1", 44, 88, 866, "WPA2 WPA3", true),
@@ -56,8 +60,8 @@ pub fn start(h: &Handle, oui: &Oui) {
 
     const AUDIO: [&str; 4] = ["Audio Sink", "Advanced Audio Distribution", "A/V Remote Control", "Handsfree"];
     let mut devs: Vec<_> = [
-        bt("AC:80:0A:3D:62:C0", "Studio Headphones", "audio-headphones", 0x240404, "usb:v054Cp0CE6d0100", true, Some(if degraded() { 9 } else { 80 }), &AUDIO),
-        bt("E4:11:5B:72:08:4D", "Desk Keyboard", "input-keyboard", 0x002540, "usb:v046DpB342d0100", true, Some(70), &["Human Interface Device", "Battery Service"]),
+        bt(HEADPHONES, "Studio Headphones", "audio-headphones", 0x240404, "usb:v054Cp0CE6d0100", true, Some(if bad { 9 } else { 80 }), &AUDIO),
+        bt(KEYBOARD, "Desk Keyboard", "input-keyboard", 0x002540, "usb:v046DpB342d0100", true, Some(70), &["Human Interface Device", "Battery Service"]),
         bt("5C:BA:37:A1:4E:90", "Game Controller", "input-gaming", 0x002508, "usb:v054Cp09CCd0100", false, None, &["Human Interface Device"]),
         bt("08:EB:ED:19:C3:5A", "Pocket Speaker", "audio-speakers", 0x240414, "", false, None, &["Audio Sink", "Advanced Audio Distribution"]),
     ]
@@ -65,8 +69,8 @@ pub fn start(h: &Handle, oui: &Oui) {
     .map(|b| parse_bt(b, oui))
     .collect();
     let mut links = vec![
-        BtLink { mac: "AC:80:0A:3D:62:C0".into(), name: String::new(), lq: Some(255), rssi: Some(if degraded() { -14 } else { 0 }), tpl: Some(4), afh: Some(if degraded() { afh(&[0..=3, 21..=24, 46..=49, 77..=78]) } else { afh(&[0..=3, 21..=24, 46..=49, 73..=78]) }), lmp: "5.2 (0xb)".into(), mfr: "Sony (0x012d)".into() },
-        BtLink { mac: "E4:11:5B:72:08:4D".into(), name: String::new(), lq: Some(if degraded() { 168 } else { 255 }), rssi: Some(-3), tpl: Some(0), afh: None, lmp: "3.0 (0x5)".into(), mfr: "Broadcom Corporation (15)".into() },
+        BtLink { mac: HEADPHONES.into(), name: String::new(), lq: Some(255), rssi: Some(if bad { -14 } else { 0 }), tpl: Some(4), afh: Some(if bad { afh(&[0..=3, 21..=24, 46..=49, 77..=78]) } else { afh(&[0..=3, 21..=24, 46..=49, 73..=78]) }), lmp: "5.2 (0xb)".into(), mfr: "Sony (0x012d)".into() },
+        BtLink { mac: KEYBOARD.into(), name: String::new(), lq: Some(if bad { 168 } else { 255 }), rssi: Some(-3), tpl: Some(0), afh: None, lmp: "3.0 (0x5)".into(), mfr: "Broadcom Corporation (15)".into() },
     ];
     for l in links.iter_mut() {
         if let Some(d) = devs.iter_mut().find(|d| d.id == l.mac) {
@@ -76,7 +80,7 @@ pub fn start(h: &Handle, oui: &Oui) {
 
     // Demo problem: the keyboard dropped twice with connection timeouts and its link quality sagged.
     let ago = |s: u64| SystemTime::now() - Duration::from_secs(s);
-    let kb_events = if degraded() {
+    let kb_events = if bad {
         vec![
             DevEvent { at: ago(310), kind: EvKind::Disconnected(0x08) },
             DevEvent { at: ago(305), kind: EvKind::Connected },
@@ -87,22 +91,22 @@ pub fn start(h: &Handle, oui: &Oui) {
         vec![]
     };
     let mut kb_hist = History::new();
-    if degraded() {
+    if bad {
         for (i, q) in [255, 255, 250, 232, 190, 176, 168, 180, 168].iter().enumerate() {
             kb_hist.push_back(Sample { at: Instant::now() - Duration::from_secs(280 - i as u64 * 30), lq: Some(*q), afh: None, rssi: None });
         }
     }
     // Demo warning: the headphones are on a low battery and have stopped using many channels.
     let mut hp_hist = History::new();
-    if degraded() {
+    if bad {
         for (i, (n, r)) in [(26, -2), (26, -4), (24, -8), (20, -11), (14, -13), (14, -14), (14, -14)].iter().enumerate() {
             hp_hist.push_back(Sample { at: Instant::now() - Duration::from_secs(240 - i as u64 * 30), lq: Some(255), afh: Some(*n), rssi: Some(*r) });
         }
     }
     for d in devs.iter_mut() {
-        if d.id == "E4:11:5B:72:08:4D" {
+        if d.id == KEYBOARD {
             apply_events(d, &kb_events, &kb_hist, &wifi, &[]);
-        } else if d.id == "AC:80:0A:3D:62:C0" {
+        } else if d.id == HEADPHONES {
             apply_events(d, &[], &hp_hist, &wifi, &[]);
         }
     }

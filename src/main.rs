@@ -1641,7 +1641,7 @@ impl App {
     /// `crowd(i)` = estimated Wi-Fi crowding (0..1) on Bluetooth channel i: busier channels are drawn dimmer.
     /// Returns (y after the rows, hovered row, clicked row). Every row has the same full-width hit area.
     #[allow(clippy::too_many_arguments)]
-    fn bt_rows(&self, ui: &egui::Ui, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, mut y: f32, row_x: (f32, f32), crowd: &dyn Fn(usize) -> f32) -> (f32, Option<usize>, Option<usize>) {
+    fn bt_rows(&self, ui: &egui::Ui, p: &egui::Painter, label_x: f32, xl: &dyn Fn(usize) -> f32, cw: f32, mut y: f32, row_x: (f32, f32), crowd: &dyn Fn(usize) -> f32) -> (Option<usize>, Option<usize>) {
         let (mut hov, mut clk) = (None, None);
         for (li, l) in self.links.iter().enumerate() {
             let row = Rect::from_min_max(pos2(row_x.0, y - 3.0), pos2(row_x.1, y + 21.0));
@@ -1668,12 +1668,12 @@ impl App {
             }
             y += 26.0;
         }
-        (y, hov, clk)
+        (hov, clk)
     }
 
     // ---------- spectrum ----------
 
-    fn spectrum(&mut self, ui: &mut egui::Ui, _t: f32) {
+    fn spectrum(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
         let p = ui.painter().clone();
         p.rect_filled(rect, 0.0, BG);
@@ -1713,9 +1713,9 @@ impl App {
         }
         p.text(pos2(gx0 - 6.0, base - (gh - 20.0) - 12.0), Align2::RIGHT_CENTER, "dBm", FontId::monospace(9.5), CYAN); // the unit, at the top of the number column
         for n in 1..=13 {
-            let f = 2407.0 + 5.0 * n as f32;
-            p.line_segment([pos2(fx(f), rect.top() + 72.0), pos2(fx(f), base)], Stroke::new(1.0, alpha(CYAN, if [1, 6, 11].contains(&n) { 0.16 } else { 0.06 })));
-            p.text(pos2(fx(f), base + 9.0), Align2::CENTER_CENTER, n.to_string(), FontId::monospace(11.0), if [1, 6, 11].contains(&n) { CYAN } else { DIM });
+            let f = chan_f(n);
+            p.line_segment([pos2(fx(f), rect.top() + 72.0), pos2(fx(f), base)], Stroke::new(1.0, alpha(CYAN, if CLEAN_CHANNELS.contains(&n) { 0.16 } else { 0.06 })));
+            p.text(pos2(fx(f), base + 9.0), Align2::CENTER_CENTER, n.to_string(), FontId::monospace(11.0), if CLEAN_CHANNELS.contains(&n) { CYAN } else { DIM });
         }
         p.text(pos2(gx0 - 6.0, base + 9.0), Align2::RIGHT_CENTER, "Wi-Fi ch", FontId::monospace(9.5), CYAN);
         p.line_segment([pos2(gx0, base), pos2(gx1, base)], Stroke::new(1.5, alpha(CYAN, 0.35)));
@@ -1868,7 +1868,7 @@ impl App {
         let mid = frame.center().x; // centred on the whole card, like the graph title
         lcd(&p, pos2(mid, yc + 8.0), Align2::CENTER_CENTER, &title, 12.0, BLUE);
         if has_bt {
-            let (yend, bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, yc + 26.0, (l + 12.0, gx1 + 12.0), &crowd);
+            let (bt_hover, bt_click) = self.bt_rows(ui, &p, gx0 - 12.0, &|i| fx(2401.5 + i as f32), bcw, yc + 26.0, (l + 12.0, gx1 + 12.0), &crowd);
             if let (Some(i), Some(q)) = (bt_click, ptr) {
                 pick = Some((self.links[i].mac.clone(), q));
             }
@@ -1886,7 +1886,6 @@ impl App {
                 }
                 tip_box = Some((q, if l.name.is_empty() { l.mac.clone() } else { l.name.clone() }, lines));
             }
-            let _ = yend;
         }
 
         // legend
@@ -1939,7 +1938,7 @@ impl App {
         lcd(&p, pos2(pr.left() + 14.0, tile_top), Align2::LEFT_TOP, "YOUR NETWORK", 11.5, GREEN);
         let mut yn_tip: Option<TipC> = None;
         let mut tile_h: Option<usize> = None;
-        let hq = ui.input(|i| i.pointer.hover_pos()).unwrap_or(pr.center());
+        let hq = ptr.unwrap_or(pr.center());
         let mine = nets.iter().find(|n| n.mine && !n.name.contains("Guest")).or_else(|| nets.iter().find(|n| n.mine));
         match mine {
             None => {
@@ -1954,8 +1953,7 @@ impl App {
                 lcd(&p, pos2(pr.left() + 14.0, tile_bot + 26.0 * 0.2), Align2::LEFT_BOTTOM, &format!("CH {}", mn.chan), 26.0, AMBER);
             }
         }
-        let chans: [u32; 3] = [1, 6, 11]; // the only 2.4 GHz channels that don't overlap each other; any other channel overlaps at least one of them
-        let chan_f = |c: u32| 2407.0 + 5.0 * c as f32;
+        let chans = CLEAN_CHANNELS;
         let loads: Vec<f32> = chans.iter().map(|&c| (Self::load_at(&nets, chan_f(c)) / 2.2).clamp(0.0, 1.0)).collect();
         let (gap, x0) = (12.0, pr.left() + 250.0);
         let tw = ((pr.right() - 14.0 - x0 - gap * (chans.len() as f32 - 1.0)) / chans.len() as f32).max(110.0);
@@ -2342,6 +2340,14 @@ fn same_device(a: [u8; 6], b: [u8; 6]) -> bool {
     (tail(a) - tail(b)).abs() <= 8 || low(a) == low(b)
 }
 
+/// The only 2.4 GHz channels that don't overlap each other; any other channel overlaps at least one of them.
+const CLEAN_CHANNELS: [u32; 3] = [1, 6, 11];
+
+/// Centre frequency (MHz) of a 2.4 GHz Wi-Fi channel.
+fn chan_f(c: u32) -> f32 {
+    2407.0 + 5.0 * c as f32
+}
+
 /// Footprint of a 20 MHz Wi-Fi channel: 1 at the centre, 0 at ±11 MHz.
 fn hill(dx: f32) -> f32 {
     if dx.abs() >= 11.0 {
@@ -2419,6 +2425,29 @@ fn scrollbar(p: &egui::Painter, track: Rect, scroll: f32, max: f32, view: f32, c
     p.rect_filled(Rect::from_min_size(pos2(track.left(), ty), vec2(track.width(), th)), 3.0, alpha(col, 0.75));
 }
 
+type KvRows = Vec<(std::sync::Arc<egui::Galley>, std::sync::Arc<egui::Galley>)>;
+
+/// Lays out key/value rows for an info box: the key in small capitals, the value wrapped at `wrap` px.
+fn kv_layout(p: &egui::Painter, rows: &[(String, String)], key_col: Color32, wrap: f32) -> KvRows {
+    rows.iter().map(|(k, v)| (p.layout_no_wrap(k.to_uppercase(), FontId::monospace(10.5), key_col), p.layout(v.clone(), FontId::proportional(13.0), TEXT, wrap))).collect()
+}
+
+/// Height of laid-out rows with `gap` px between them.
+fn kv_height(rows: &KvRows, gap: f32) -> f32 {
+    rows.iter().map(|(_, v)| v.size().y.max(14.0) + gap).sum()
+}
+
+/// Draws rows from `y`, keys at `x`, values `kw` px to the right; returns the y below the last row.
+fn kv_draw(p: &egui::Painter, rows: KvRows, x: f32, kw: f32, mut y: f32, key_col: Color32, gap: f32) -> f32 {
+    for (k, v) in rows {
+        let rh = v.size().y.max(14.0);
+        p.galley(pos2(x, y + 2.0), k, key_col);
+        p.galley(pos2(x + kw, y), v, TEXT);
+        y += rh + gap;
+    }
+    y
+}
+
 /// Info box for one device. Returns the screen rects it covers (the wheel belongs to whatever box the mouse is over).
 /// A device with a problem gets an ISSUE button by its name; it opens an inner box with the diagnosis.
 #[allow(clippy::too_many_arguments)]
@@ -2426,13 +2455,9 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
     let w = 380.0;
     let lp = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("popup_measure")));
     let kw = 118.0;
-    let rows: Vec<_> = d
-        .details
-        .iter()
-        .map(|(k, v)| (lp.layout_no_wrap(k.to_uppercase(), FontId::monospace(10.5), alpha(CYAN, 0.8)), lp.layout(v.clone(), FontId::proportional(13.0), TEXT, w - 44.0 - kw)))
-        .collect();
+    let rows = kv_layout(&lp, &d.details, alpha(CYAN, 0.8), w - 44.0 - kw);
     let why = lp.layout(d.why.clone(), FontId::proportional(12.5), TEXT, w - 44.0);
-    let rows_h: f32 = rows.iter().map(|(_, g)| g.size().y.max(14.0) + 7.0).sum();
+    let rows_h = kv_height(&rows, 7.0);
     // indicator rows under the name: dBm for Wi-Fi; link, signal and channels for a connected Bluetooth device
     let sig_rows = if d.dbm.is_some() { 1 } else if d.lq.is_some() { 2 + d.rssi.is_some() as usize } else { 0 };
     let top = 94.0 + if sig_rows == 0 { 0.0 } else { 2.0 + sig_rows as f32 * 18.0 }; // where the detail rows start
@@ -2452,12 +2477,8 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
     let mut issue_open: bool = has_issue && ctx.data(|dt| dt.get_temp(open_id)).unwrap_or(std::env::var_os("AIRSCOPE_ISSUE").is_some()); // env: debug aid
     let ikw = 96.0;
     let iw = w - 20.0;
-    let irows: Vec<_> = d
-        .issue
-        .iter()
-        .map(|(k, v)| (lp.layout_no_wrap(k.to_uppercase(), FontId::monospace(10.5), alpha(acc, 0.9)), lp.layout(v.clone(), FontId::proportional(13.0), TEXT, iw - 52.0 - ikw)))
-        .collect();
-    let irows_h: f32 = irows.iter().map(|(_, g)| g.size().y.max(14.0) + 8.0).sum();
+    let irows = kv_layout(&lp, &d.issue, alpha(acc, 0.9), iw - 52.0 - ikw);
+    let irows_h = kv_height(&irows, 8.0);
     let ih_full = 44.0 + irows_h + 14.0;
     let ih = ih_full.min(r.height() - (top - 16.0) - 12.0).max(120.0);
     let ir = Rect::from_min_size(r.min + vec2(10.0, top - 16.0), vec2(iw, ih));
@@ -2540,12 +2561,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
         p.line_segment([pos2(r.left() + 20.0, yy - 6.0), pos2(r.right() - 20.0, yy - 6.0)], Stroke::new(1.0, alpha(CYAN, 0.15)));
         let body = p.with_clip_rect(Rect::from_min_max(pos2(r.left(), r.top() + top - 6.0), pos2(r.right(), r.bottom() - 30.0)));
         yy -= scroll;
-        for (k, v) in rows {
-            let rh = v.size().y.max(14.0);
-            body.galley(pos2(r.left() + 22.0, yy + 2.0), k, CYAN);
-            body.galley(pos2(r.left() + 22.0 + kw, yy), v, TEXT);
-            yy += rh + 7.0;
-        }
+        yy = kv_draw(&body, rows, r.left() + 22.0, kw, yy, CYAN, 7.0);
         yy += 6.0;
         lcd(&body, pos2(r.left() + 22.0, yy + 6.0), Align2::LEFT_CENTER, "HOW WE KNOW", 11.0, col);
         body.galley(pos2(r.left() + 22.0, yy + 20.0), why, TEXT);
@@ -2579,13 +2595,7 @@ fn popup(ctx: &egui::Context, d: &Dev, anchor: Pos2, bounds: Rect, close: &mut b
                 panel(&p, ir, 14.0, acc);
                 lcd(&p, pos2(ir.left() + 22.0, ir.top() + 24.0), Align2::LEFT_CENTER, "WHAT'S HAPPENING", 13.0, acc);
                 let body = p.with_clip_rect(Rect::from_min_max(pos2(ir.left(), ir.top() + 42.0), pos2(ir.right(), ir.bottom() - 6.0)));
-                let mut yy = ir.top() + 50.0 - iscroll;
-                for (k, v) in irows {
-                    let rh = v.size().y.max(14.0);
-                    body.galley(pos2(ir.left() + 22.0, yy + 2.0), k, acc);
-                    body.galley(pos2(ir.left() + 22.0 + ikw, yy), v, TEXT);
-                    yy += rh + 8.0;
-                }
+                kv_draw(&body, irows, ir.left() + 22.0, ikw, ir.top() + 50.0 - iscroll, acc, 8.0);
                 scrollbar(&p, Rect::from_min_max(pos2(ir.right() - 13.0, ir.top() + 46.0), pos2(ir.right() - 8.0, ir.bottom() - 10.0)), iscroll, imax, ih - 56.0, ih_full - 56.0, acc);
             });
         }
@@ -2618,7 +2628,7 @@ impl eframe::App for App {
         let central = ui.available_rect_before_wrap();
         egui::CentralPanel::no_frame().show(ui, |ui| match self.screen {
             Screen::Radar => self.radar(ui, t),
-            Screen::Spectrum => self.spectrum(ui, t),
+            Screen::Spectrum => self.spectrum(ui),
             Screen::Devices => self.devices(ui),
             Screen::Diagnostics => {
                 let names: diag::Names = self.devs.iter().filter(|d| d.kind == Kind::Bt).map(|d| (d.id.to_uppercase(), (d.name.clone(), d.icon))).collect();

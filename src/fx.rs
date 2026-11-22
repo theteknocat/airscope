@@ -418,7 +418,6 @@ pub fn nav_icon(p: &Painter, which: u8, c: Pos2, s: f32, col: Color32) {
     }
 }
 
-/// Subtle glow around a rectangle: an additive gradient from `k` at the edge to nothing `g` px out.
 /// Points around a rounded rectangle (clockwise from the top-right arc), `arc` segments per corner.
 pub fn rounded_outline(rr: Rect, rad: f32, arc: usize) -> Vec<Pos2> {
     use std::f32::consts::{FRAC_PI_2, PI};
@@ -430,6 +429,7 @@ pub fn rounded_outline(rr: Rect, rad: f32, arc: usize) -> Vec<Pos2> {
     })).collect()
 }
 
+/// Subtle glow around a rectangle: an additive gradient from `k` at the edge to nothing `g` px out.
 pub fn glow_rect(p: &Painter, r: Rect, g: f32, col: Color32, k: f32) {
     glow_rect_r(p, r, 2.0, g, col, k);
 }
@@ -545,27 +545,18 @@ pub fn glyph(p: &Painter, g: Glyph, c: Pos2, s: f32, col: Color32) {
             line(&[(-0.55, -0.25), (0.0, 0.35), (0.55, -0.25)]);
             line(&[(-0.95, 0.15), (-0.95, 0.9), (0.95, 0.9), (0.95, 0.15)]);
         }
-        Glyph::Refresh => {
-            // an almost-closed circle with an arrowhead at its end
+        Glyph::Refresh | Glyph::Undo => {
+            // an almost-closed circle with an arrowhead at its end; Undo is the same drawing mirrored left to right
+            let flip = if g == Glyph::Undo { -1.0 } else { 1.0 };
+            let pt = |x: f32, y: f32| c + vec2(flip * x, y) * s;
             let (r, a0, a1) = (0.8f32, 40.0f32.to_radians(), 320.0f32.to_radians());
             let pts: Vec<Pos2> = (0..=20).map(|i| { let a = a0 + (a1 - a0) * i as f32 / 20.0; pt(r * a.cos(), r * a.sin()) }).collect();
             p.add(Shape::line(pts, st));
             let e = vec2(r * a1.cos(), r * a1.sin());
             let t = vec2(-a1.sin(), a1.cos()); // direction of travel at the end
             let n = vec2(a1.cos(), a1.sin());
-            line(&[((e - t * 0.55 + n * 0.45).x, (e - t * 0.55 + n * 0.45).y), (e.x, e.y), ((e - t * 0.55 - n * 0.45).x, (e - t * 0.55 - n * 0.45).y)]);
-        }
-        Glyph::Undo => {
-            let pt = |x: f32, y: f32| c + vec2(-x, y) * s;
-            let line = |pts: &[(f32, f32)]| { p.add(Shape::line(pts.iter().map(|q| pt(q.0, q.1)).collect(), st)); };
-            // an almost-closed circle with an arrowhead at its end
-            let (r, a0, a1) = (0.8f32, 40.0f32.to_radians(), 320.0f32.to_radians());
-            let pts: Vec<Pos2> = (0..=20).map(|i| { let a = a0 + (a1 - a0) * i as f32 / 20.0; pt(r * a.cos(), r * a.sin()) }).collect();
-            p.add(Shape::line(pts, st));
-            let e = vec2(r * a1.cos(), r * a1.sin());
-            let t = vec2(-a1.sin(), a1.cos()); // direction of travel at the end
-            let n = vec2(a1.cos(), a1.sin());
-            line(&[((e - t * 0.55 + n * 0.45).x, (e - t * 0.55 + n * 0.45).y), (e.x, e.y), ((e - t * 0.55 - n * 0.45).x, (e - t * 0.55 - n * 0.45).y)]);
+            let barb = |k: f32| pt((e - t * 0.55 + n * k).x, (e - t * 0.55 + n * k).y);
+            p.add(Shape::line(vec![barb(0.45), pt(e.x, e.y), barb(-0.45)], st));
         }
         Glyph::Back => {
             line(&[(0.95, 0.0), (-0.95, 0.0)]);
