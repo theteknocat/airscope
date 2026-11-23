@@ -4498,7 +4498,7 @@ fn popup(
                 let y = by + i as f32 * 18.0;
                 let value = format!("{:.0} dBm", rd.dbm);
                 let bar = (&rd.label()[..], data::signal_frac(rd.dbm), col, &value[..]);
-                // label column fits "2.4G ch 100", value column fits "-100 dBm"
+                // label column fits "ch 100, 2.4G", value column fits "-100 dBm"
                 meter_w(&p, (x0, x1), y, bar, (88.0, 76.0));
             }
         } else if let Some(q) = d.lq {

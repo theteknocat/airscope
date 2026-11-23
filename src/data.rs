@@ -74,11 +74,10 @@ pub struct Radio {
 }
 
 impl Radio {
-    /// Short band and channel for the left end of a signal bar: "2.4G ch 1", "5G   ch 100". The band is padded
-    /// to four characters so "ch" lines up down a column in a monospace font.
+    /// Channel and band for the left end of a signal bar: "ch 1, 2.4G", "ch 100, 5G".
     pub fn label(&self) -> String {
-        let band = format!("{}G", band_name(self.freq).trim_end_matches(" GHz"));
-        format!("{band:<4} ch {}", self.chan)
+        let band = band_name(self.freq).trim_end_matches(" GHz");
+        format!("ch {}, {band}G", self.chan)
     }
 }
 
@@ -1660,7 +1659,7 @@ mod tests {
         assert_eq!(cabin.band_text().as_deref(), Some("2 radios, 2.4 + 5 GHz"));
         let keys: Vec<&str> = cabin.details.iter().map(|(k, _)| k.as_str()).collect();
         assert!(
-            keys.contains(&"2.4G ch 1") && keys.contains(&"5G   ch 100"),
+            keys.contains(&"ch 1, 2.4G") && keys.contains(&"ch 100, 5G"),
             "one row per radio"
         );
         assert!(cabin.details.iter().all(|(k, _)| k != "BSSID"));
