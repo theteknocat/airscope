@@ -29,6 +29,7 @@ use std::time::Instant;
 
 const DMAX: f32 = 80.0;
 const SIGNAL_LEEWAY_DB: f32 = 4.0; // a pinged device only moves if its signal changed by at least this much
+const SWEEP_TRAIL: f32 = 0.9; // radians the radar sweep's glow trails behind its leading line
 const GROUP_PX: f32 = 38.0; // nodes closer than this on screen merge into one group icon
 
 struct N {
@@ -78,6 +79,26 @@ fn slot(c: Pos2, k: usize, nn: usize, t: f32, s: f32) -> Pos2 {
 fn hit(ui: &egui::Ui, rect: Rect, id: egui::Id, sense: Sense) -> egui::Response {
     ui.interact(rect, id, sense)
         .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The X that closes a box: a `size` px hit area centred on `c`, brighter under the pointer. True when clicked.
+fn close_button(ui: &egui::Ui, p: &egui::Painter, c: Pos2, size: f32, id: egui::Id) -> bool {
+    let resp = hit(
+        ui,
+        Rect::from_center_size(c, Vec2::splat(size)),
+        id,
+        Sense::click(),
+    );
+    let col = if resp.hovered() { Color32::WHITE } else { DIM };
+    p.line_segment(
+        [c + vec2(-5.0, -5.0), c + vec2(5.0, 5.0)],
+        Stroke::new(2.0, col),
+    );
+    p.line_segment(
+        [c + vec2(5.0, -5.0), c + vec2(-5.0, 5.0)],
+        Stroke::new(2.0, col),
+    );
+    resp.clicked()
 }
 
 /// Soft-edged, semi-transparent dark disc that obscures what is behind an open group.
@@ -162,8 +183,7 @@ fn node_widget(
     } else {
         kind_col(d.kind)
     };
-    let diff = (sw - n.ang).rem_euclid(TAU);
-    let hot = if diff < 0.9 { 1.0 - diff / 0.9 } else { 0.0 };
+    let hot = sweep_glow(n.ang, sw);
     let rad = scale * node_rad(d);
     let mut hovered = false;
     if interactive {
@@ -403,7 +423,7 @@ struct App {
     shot_sent: bool,        // AIRSCOPE_SHOT: screenshot already requested
     vendor_path: String,
     vendor_msg: Option<(bool, String)>, // (ok, text) of the last import
-    vendor_copied: Option<(usize, Instant)>, // which link was just opened
+    vendor_opened: Option<(usize, Instant)>, // which link was just opened
     vendor_pick: Option<picker::Pick>,  // file dialog for the downloaded list, while open
     screen: Screen,
     diag: diag::Diag,
@@ -471,7 +491,6 @@ fn dmap(r: f32, big: f32) -> f32 {
     ((r / big) * (1.0 + DMAX).ln()).exp() - 1.0
 }
 
-/// Default placement: (angle, metres, dimmed). Angle is a stable hash (no direction info from one receiver).
 /// Devices on the radar are the ones with a wireless signal: Wi-Fi access points and connected Bluetooth devices.
 /// Everything else (network devices, Bluetooth that is not connected) sits in the tray beside it.
 fn on_radar(d: &Dev) -> bool {
@@ -498,6 +517,7 @@ fn tray_group(d: &Dev) -> &'static str {
     }
 }
 
+/// Default placement: (angle, metres, dimmed). Angle is a stable hash (no direction info from one receiver).
 fn layout_of(d: &Dev) -> (f32, f32, bool) {
     let a = (hash64(&d.cluster) % 3600) as f32 / 3600.0 * TAU
         + ((hash64(&d.id) % 1000) as f32 / 1000.0 - 0.5) * 0.9;
@@ -552,7 +572,7 @@ impl App {
             vendor_open: std::env::var("AIRSCOPE_VENDOR").is_ok(), // debug aid
             vendor_path: String::new(),
             vendor_msg: None,
-            vendor_copied: None,
+            vendor_opened: None,
             vendor_pick: None,
             screen: match std::env::var("AIRSCOPE_SCREEN").as_deref() {
                 Ok("spectrum") => Screen::Spectrum,
@@ -775,7 +795,6 @@ impl App {
         matches!(s, Screen::Diagnostics | Screen::Spectrum)
     }
 
-    /// Dialog for importing a newer vendor list, drawn like the rest of the app: centred, dimmed backdrop.
     /// Desktop file dialogs are not attached to our window (Wayland gives no handle to attach them with), so while one
     /// is open the whole window is dimmed and ignores clicks, or the app could be used, or a screen left, meanwhile.
     fn dialog_scrim(&mut self, ctx: &egui::Context) {
@@ -813,6 +832,7 @@ impl App {
         }
     }
 
+    /// Dialog for importing a newer vendor list, drawn like the rest of the app: centred, dimmed backdrop.
     fn vendor_window(&mut self, ctx: &egui::Context) {
         if !self.vendor_open {
             return;
@@ -864,7 +884,7 @@ impl App {
         let (total, c) = oui.stats();
         let col = CYAN;
         egui::Area::new(egui::Id::new("vendor_dialog")).order(egui::Order::Foreground).fixed_pos(r.min).show(ctx, |ui| {
-            let (_, _) = ui.allocate_exact_size(r.size(), Sense::click()); // swallow clicks so the backdrop doesn't see them
+            ui.allocate_exact_size(r.size(), Sense::click()); // swallow clicks so the backdrop doesn't see them
             let p = ui.painter_at(r.expand(40.0));
             panel(&p, r, 16.0, col);
             let (l, rr) = (r.left() + 30.0, r.right() - 30.0);
@@ -872,12 +892,7 @@ impl App {
             // title
             lcd(&p, pos2(l, r.top() + 38.0), Align2::LEFT_CENTER, "VENDOR LIST", 24.0, col);
             p.text(pos2(l, r.top() + 66.0), Align2::LEFT_CENTER, "Turns the first half of a MAC address into a manufacturer name.", FontId::proportional(13.0), DIM);
-            let cr = Rect::from_center_size(pos2(r.right() - 26.0, r.top() + 26.0), Vec2::splat(26.0));
-            let resp = hit(ui, cr, ui.id().with("vclose"), Sense::click());
-            let cc = if resp.hovered() { Color32::WHITE } else { DIM };
-            p.line_segment([cr.center() + vec2(-5.0, -5.0), cr.center() + vec2(5.0, 5.0)], Stroke::new(2.0, cc));
-            p.line_segment([cr.center() + vec2(5.0, -5.0), cr.center() + vec2(-5.0, 5.0)], Stroke::new(2.0, cc));
-            if resp.clicked() {
+            if close_button(ui, &p, pos2(r.right() - 26.0, r.top() + 26.0), 26.0, ui.id().with("vclose")) {
                 close = true;
             }
             // counts
@@ -911,11 +926,11 @@ impl App {
             for (i, (name, file, url)) in links.iter().enumerate() {
                 p.text(pos2(l + 38.0, y + 12.0), Align2::LEFT_CENTER, format!("{}  ·  {}", name, file), FontId::proportional(13.5), TEXT);
                 p.text(pos2(l + 38.0, y + 32.0), Align2::LEFT_CENTER, *url, FontId::monospace(11.5), DIM);
-                let copied = self.vendor_copied.is_some_and(|(j, t)| j == i && t.elapsed().as_secs_f32() < 1.6);
+                let opened = self.vendor_opened.is_some_and(|(j, t)| j == i && t.elapsed().as_secs_f32() < 1.6);
                 let b = Rect::from_min_size(pos2(rr - 112.0, y + 8.0), vec2(112.0, 32.0));
-                if pill(ui, b, &format!("copy{}", i), if copied { "Opened" } else { "Open link" }, if copied { GREEN } else { BLUE }) {
+                if pill(ui, b, &format!("link{}", i), if opened { "Opened" } else { "Open link" }, if opened { GREEN } else { BLUE }) {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(*url));
-                    self.vendor_copied = Some((i, Instant::now()));
+                    self.vendor_opened = Some((i, Instant::now()));
                 }
                 y += 54.0;
             }
@@ -983,7 +998,7 @@ impl App {
         });
     }
 
-    fn header(&mut self, ui: &mut egui::Ui, _t: f32) {
+    fn header(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
         let p = ui.painter().clone();
         p.rect_filled(rect, 0.0, BG);
@@ -1342,9 +1357,10 @@ impl App {
         p.circle_stroke(c, ro, Stroke::new(1.5, alpha(CYAN, 0.3)));
         let mut m = egui::Mesh::default();
         let n = 36;
+        let step = SWEEP_TRAIL / n as f32;
         for kk in 0..n {
-            let a0 = sw - kk as f32 * 0.025;
-            let a1 = sw - (kk + 1) as f32 * 0.025;
+            let a0 = sw - kk as f32 * step;
+            let a1 = sw - (kk + 1) as f32 * step;
             let col = add(CYAN, 0.16 * (1.0 - kk as f32 / n as f32).powi(2));
             let i0 = m.vertices.len() as u32;
             m.colored_vertex(c, col);
@@ -2400,13 +2416,13 @@ impl App {
             Kind::Wifi => {
                 // an AP radio of a device on our LAN (e.g. the router): its BSSID is derived from the device's MAC
                 let b = mac_bytes(&d.id);
-                (b.is_some_and(|b| {
+                b.is_some_and(|b| {
                     self.devs
                         .iter()
                         .filter(|x| x.kind == Kind::Lan)
                         .filter_map(|x| mac_bytes(&x.id))
                         .any(|m| same_device(b, m))
-                })) || (d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())))
+                }) || (d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())))
             }
             _ => true,
         }
@@ -2458,8 +2474,9 @@ impl App {
             .sum()
     }
 
-    /// `crowd(i)` = estimated Wi-Fi crowding (0..1) on Bluetooth channel i: busier channels are drawn dimmer.
-    /// Returns (y after the rows, hovered row, clicked row). Every row has the same full-width hit area.
+    /// One row per connected Bluetooth device: the channels it hops on, drawn dimmer where `crowd(i)` (estimated
+    /// Wi-Fi crowding 0..1 on Bluetooth channel i) is higher. Returns (hovered row, clicked row); every row has
+    /// the same full-width hit area.
     #[allow(clippy::too_many_arguments)]
     fn bt_rows(
         &self,
@@ -3678,11 +3695,21 @@ fn draw_tip(p: &egui::Painter, c: &TipC, bounds: Rect) {
     );
 }
 
-/// How strongly the radar sweep is lighting up a point (1 as it passes, fading over ~0.9 rad behind it).
+/// How strongly the radar sweep (at angle `sw`) is lighting up something at angle `ang` from the PC:
+/// 1 as it passes, fading to 0 over `SWEEP_TRAIL` behind it.
+fn sweep_glow(ang: f32, sw: f32) -> f32 {
+    let diff = (sw - ang).rem_euclid(TAU);
+    if diff < SWEEP_TRAIL {
+        1.0 - diff / SWEEP_TRAIL
+    } else {
+        0.0
+    }
+}
+
+/// `sweep_glow` for a screen point `q` seen from the PC at `c`.
 fn sweep_hot(c: Pos2, q: Pos2, sw: f32) -> f32 {
     let v = q - c;
-    let diff = (sw - v.y.atan2(v.x).rem_euclid(TAU)).rem_euclid(TAU);
-    if diff < 0.9 { 1.0 - diff / 0.9 } else { 0.0 }
+    sweep_glow(v.y.atan2(v.x), sw)
 }
 
 /// Glowing link from the PC to a connected device (or a group holding one), with travelling pulses.
@@ -4344,18 +4371,13 @@ fn popup(
             if more { CYAN } else { DIM },
         );
         // close
-        let cr = Rect::from_center_size(pos2(r.right() - 24.0, r.top() + 24.0), Vec2::splat(24.0));
-        let resp = hit(ui, cr, ui.scope_id().with("close"), Sense::click());
-        let cc = if resp.hovered() { Color32::WHITE } else { DIM };
-        p.line_segment(
-            [cr.center() + vec2(-5.0, -5.0), cr.center() + vec2(5.0, 5.0)],
-            Stroke::new(2.0, cc),
-        );
-        p.line_segment(
-            [cr.center() + vec2(5.0, -5.0), cr.center() + vec2(-5.0, 5.0)],
-            Stroke::new(2.0, cc),
-        );
-        if resp.clicked() {
+        if close_button(
+            ui,
+            &p,
+            pos2(r.right() - 24.0, r.top() + 24.0),
+            24.0,
+            ui.scope_id().with("close"),
+        ) {
             *close = true;
         }
     });
@@ -4447,7 +4469,7 @@ impl eframe::App for App {
             .resizable(false)
             .show_separator_line(false)
             .frame(egui::Frame::NONE)
-            .show(ui, |ui| self.header(ui, t));
+            .show(ui, |ui| self.header(ui));
         self.radar_anchor = None;
         let central = ui.available_rect_before_wrap();
         egui::CentralPanel::no_frame().show(ui, |ui| match self.screen {

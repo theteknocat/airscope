@@ -60,9 +60,6 @@ pub fn field_width(ui: &egui::Ui, placeholder: &str) -> f32 {
     if let Some(w) = ui.ctx().data(|d| d.get_temp::<f32>(key)) {
         return w;
     }
-    const SHORT: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
     let font = FontId::proportional(14.0);
     let measure = |s: String| {
         ui.painter()
@@ -71,7 +68,7 @@ pub fn field_width(ui: &egui::Ui, placeholder: &str) -> f32 {
             .x
     };
     let mut widest = measure(placeholder.to_string());
-    for m in SHORT {
+    for m in crate::snoop::MONTHS {
         for d in '0'..='9' {
             widest = widest.max(measure(format!("{m} {d}{d}, 2{d}{d}{d}  {d}{d}:{d}{d}")));
         }
@@ -79,6 +76,27 @@ pub fn field_width(ui: &egui::Ui, placeholder: &str) -> f32 {
     let w = (widest + 14.0 + 34.0).ceil(); // left padding, and room for the arrow on the right
     ui.ctx().data_mut(|dt| dt.insert_temp(key, w));
     w
+}
+
+/// A small square button with a one-character label (the month arrows and the hour/minute steppers).
+fn step_button(
+    ui: &egui::Ui,
+    p: &egui::Painter,
+    id: egui::Id,
+    r: Rect,
+    rad: f32,
+    label: &str,
+) -> egui::Response {
+    let rs = crate::hit(ui, r, id, Sense::click());
+    p.rect_filled(r, rad, alpha(CYAN, if rs.hovered() { 0.2 } else { 0.08 }));
+    p.text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::monospace(14.0),
+        CYAN,
+    );
+    rs
 }
 
 /// A field that opens the calendar, `h` px tall. `value` is None until something is picked (`placeholder` shows
@@ -140,8 +158,7 @@ pub fn field_h(
         [c + vec2(0.0, 2.5), c + vec2(4.5, -2.0)],
         Stroke::new(1.5, DIM),
     );
-    let _ = ui
-        .interact(r, id.with("hand"), Sense::hover())
+    ui.interact(r, id.with("hand"), Sense::hover())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     let mut changed = false;
     if open {
@@ -166,15 +183,7 @@ pub fn field_h(
                 );
                 for (dx, glyph, step) in [(0.0, "<", -1), (head.width() - 30.0, ">", 1)] {
                     let br = Rect::from_min_size(head.min + vec2(dx, 0.0), vec2(30.0, 30.0));
-                    let rs = crate::hit(ui, br, id.with(("step", step)), Sense::click());
-                    p.rect_filled(br, 8.0, alpha(CYAN, if rs.hovered() { 0.2 } else { 0.08 }));
-                    p.text(
-                        br.center(),
-                        Align2::CENTER_CENTER,
-                        glyph,
-                        FontId::monospace(14.0),
-                        CYAN,
-                    );
+                    let rs = step_button(ui, &p, id.with(("step", step)), br, 8.0, glyph);
                     if rs.clicked() {
                         let n = y * 12 + m0 + step;
                         (y, m0) = (n.div_euclid(12), n.rem_euclid(12));
@@ -286,15 +295,7 @@ pub fn field_h(
                             pos2(cx - 30.0 + j as f32 * 60.0, ty + 15.0),
                             vec2(22.0, 26.0),
                         );
-                        let rs = crate::hit(ui, br, id.with(("t", k, j)), Sense::click());
-                        p.rect_filled(br, 7.0, alpha(CYAN, if rs.hovered() { 0.2 } else { 0.08 }));
-                        p.text(
-                            br.center(),
-                            Align2::CENTER_CENTER,
-                            g,
-                            FontId::monospace(14.0),
-                            CYAN,
-                        );
+                        let rs = step_button(ui, &p, id.with(("t", k, j)), br, 7.0, g);
                         if rs.clicked() {
                             let (nh, nm) = (
                                 (t0.tm_hour + sign * dh).rem_euclid(24),

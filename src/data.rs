@@ -1401,6 +1401,20 @@ pub fn write_atomic(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    const MAC: &str = "AA:BB:CC:DD:EE:FF";
+
+    /// A link-history sample taken now.
+    fn sample(lq: Option<i32>, afh: Option<usize>, rssi: Option<i32>) -> Sample {
+        Sample {
+            at: Instant::now(),
+            lq,
+            afh,
+            rssi,
+        }
+    }
+
     #[test]
     fn atomic_write_replaces_and_leaves_no_tmp() {
         let dir = std::env::temp_dir().join(format!("airscope-atomic-{}", std::process::id()));
@@ -1413,8 +1427,6 @@ mod tests {
         assert!(write_atomic(&dir.join("no/such/dir/p.tsv"), "x").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
-
-    use super::*;
 
     #[test]
     fn oui_formats() {
@@ -1462,22 +1474,14 @@ mod tests {
 
     #[test]
     fn link_trouble_is_relative() {
-        let hist = |qs: &[i32]| -> History {
-            qs.iter()
-                .map(|q| Sample {
-                    at: Instant::now(),
-                    lq: Some(*q),
-                    afh: None,
-                    rssi: None,
-                })
-                .collect()
-        };
+        let hist =
+            |qs: &[i32]| -> History { qs.iter().map(|q| sample(Some(*q), None, None)).collect() };
         let drop = [DevEvent {
             at: SystemTime::now() - Duration::from_secs(10),
             kind: EvKind::Disconnected(0x08),
         }];
         let run = |qs: &[i32], evs: &[DevEvent]| {
-            let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+            let mut d = Dev::new(MAC, Kind::Bt);
             d.lq = qs.last().copied();
             apply_events(&mut d, evs, &hist(qs), &[], &[]);
             d.issue.iter().any(|(k, _)| k == "Link health")
@@ -1507,7 +1511,7 @@ mod tests {
             }]
         };
         let run = |gap: u64| {
-            let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+            let mut d = Dev::new(MAC, Kind::Bt);
             let peers = vec![(
                 "11:22:33:44:55:66".to_string(),
                 "Headphones".to_string(),
@@ -1525,7 +1529,7 @@ mod tests {
     #[test]
     fn warnings_and_loops() {
         let now = SystemTime::now();
-        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        let mut d = Dev::new(MAC, Kind::Bt);
         let flap: Vec<DevEvent> = (0..3)
             .map(|i| DevEvent {
                 at: now - Duration::from_secs(60 * i),
@@ -1538,7 +1542,7 @@ mod tests {
             "three reconnects in ten minutes is a problem"
         );
 
-        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        let mut d = Dev::new(MAC, Kind::Bt);
         d.battery = Some(10);
         apply_events(&mut d, &[], &History::new(), &[], &[]);
         assert!(
@@ -1546,15 +1550,10 @@ mod tests {
             "low battery is only a warning"
         );
 
-        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        let mut d = Dev::new(MAC, Kind::Bt);
         let h: History = [40, 40, 30]
             .iter()
-            .map(|n| Sample {
-                at: Instant::now(),
-                lq: None,
-                afh: Some(*n),
-                rssi: None,
-            })
+            .map(|n| sample(None, Some(*n), None))
             .collect();
         apply_events(&mut d, &[], &h, &[], &[]);
         assert!(
@@ -1562,15 +1561,10 @@ mod tests {
             "adaptive hopping on its own is not a problem"
         );
 
-        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
+        let mut d = Dev::new(MAC, Kind::Bt);
         let h: History = [30, 22, 21, 20]
             .iter()
-            .map(|n| Sample {
-                at: Instant::now(),
-                lq: None,
-                afh: Some(*n),
-                rssi: None,
-            })
+            .map(|n| sample(None, Some(*n), None))
             .collect();
         apply_events(&mut d, &[], &h, &[], &[]);
         assert!(
@@ -1578,15 +1572,8 @@ mod tests {
             "a map near the 20-channel minimum is a warning"
         );
 
-        let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
-        let h: History = (0..5)
-            .map(|_| Sample {
-                at: Instant::now(),
-                lq: None,
-                afh: None,
-                rssi: Some(-14),
-            })
-            .collect();
+        let mut d = Dev::new(MAC, Kind::Bt);
+        let h: History = (0..5).map(|_| sample(None, None, Some(-14))).collect();
         apply_events(&mut d, &[], &h, &[], &[]);
         assert!(
             d.trouble == 0.0 && d.caution == 0.0,
