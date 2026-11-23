@@ -44,6 +44,7 @@ pub enum Kind {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
     Router,
+    #[allow(dead_code)] // no device is given this icon yet; kept so the icon set stays complete
     Wifi,
     Keyboard,
     Headphones,
@@ -56,6 +57,7 @@ pub enum Icon {
     Server,
     Printer,
     Speaker,
+    #[allow(dead_code)] // no device is given this icon yet; kept so the icon set stays complete
     Camera,
     Unknown,
 }

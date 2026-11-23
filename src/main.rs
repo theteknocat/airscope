@@ -1,3 +1,7 @@
+// egui 0.37 deprecated `Id::new` and `Ui::id` (renamed to `Id::unique`/`IdSalt::new` and `Ui::scope_id`). The old
+// calls still work and the right replacement differs per site, so this is left for the next egui upgrade.
+#![allow(deprecated)]
+
 mod bluez;
 mod capture;
 mod data;
@@ -281,6 +285,7 @@ fn node_widget(
 /// What a help box row's marker looks like.
 #[derive(Clone, Copy)]
 enum Mark {
+    #[allow(dead_code)] // no help row uses a dot marker yet; the help box can already draw one
     Dot(Color32),
     Dash,
 }
@@ -1419,6 +1424,8 @@ impl App {
                 }
             }
         }
+        // `sort_by_key` with `Reverse` would also work, but this reads more plainly as "largest overlap first"
+        #[allow(clippy::unnecessary_sort_by)]
         cand.sort_by(|a, b| b.0.cmp(&a.0));
         let mut key_of: Vec<Option<String>> = vec![None; raw.len()];
         let mut used_prev: HashSet<usize> = HashSet::new();
