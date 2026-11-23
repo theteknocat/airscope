@@ -1,0 +1,7 @@
+# Ponytail audit, 2026-11-22 (follow-up, round 8: the work from the hands-on testing)
+
+This is the ninth pass of the audit, run with Claude Code using the ponytail audit skill. Scope for this round: the code I wrote after round 7 in response to testing on my own machine, which is the System log toolbar and rows refactor, the "yours" rule for the connected network, merging access points with one name into one network (`merge_networks`, `Dev.radios`), the Spectrum hills, legend and highlighting, the per-radio signal bars in the info box, and the Wayland drag text. This log is written as I go, and nothing here was run on hardware other than my own machine.
+
+## Findings
+
+1. **Spectrum could crash when a network vanished while hovering a channel tile dot** (`src/main.rs`, `spectrum()`, minor, fixed). Hovering a dot in one of the three channel tiles lights its hill, and the position of that hill in the network list is remembered from the previous frame. It was then used straight away (`nets[h]`) without checking that it still existed, so if a Wi-Fi scan dropped a network on that frame the list got shorter and the app panicked. The unchecked use was already there in the tooltip code, and the network highlighting I added today read it earlier in the frame. It needs a hover and a scan update at the same moment, so it is rare, but a long session on a busy network could hit it. **Fixed.** A remembered position past the end of the list is now ignored.

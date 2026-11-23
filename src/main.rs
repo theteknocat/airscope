@@ -2913,7 +2913,8 @@ impl App {
         let mut hover: Option<usize> = ui
             .ctx()
             .data(|d| d.get_temp::<Option<usize>>(tile_id))
-            .flatten(); // a dot in a tile (seen last frame) lights its hill like the list does
+            .flatten() // a dot in a tile (seen last frame) lights its hill like the list does
+            .filter(|&h| h < nets.len()); // a scan may have removed networks since last frame
         let lx = gx1 + 44.0;
         let card = Rect::from_min_max(
             pos2(lx - 12.0, frame.top()),
