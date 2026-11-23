@@ -574,9 +574,13 @@ fn merge_group(mut group: Vec<Dev>) -> Dev {
 
 /// ponytail: fixed 60 s; each scan briefly disturbs Bluetooth on the shared chip, make it a setting if that matters.
 const AUTO_RESCAN_SECS: u64 = 60;
+/// Right after start the first scan can be partial, so the second one comes sooner.
+const WARMUP_RESCAN_SECS: u64 = 10;
 
 fn wifi_loop(h: Handle, oui: Arc<Oui>) {
-    let mut last_scan = Instant::now();
+    // None until the first request, so the first loop scans at once instead of a minute after start.
+    let mut last_scan: Option<Instant> = None;
+    let mut scans = 0;
     // The kernel only keeps a scan result for about 30 s, so remember the last real dBm of each access point.
     let mut real_seen: std::collections::HashMap<String, (f32, Instant)> =
         std::collections::HashMap::new();
@@ -587,14 +591,20 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
             std::mem::take(&mut s.rescan)
         };
         // NetworkManager 1.58 sets wpa_supplicant bgscan to once a day while the signal is good, so ask for a scan ourselves.
-        if req || last_scan.elapsed().as_secs() >= AUTO_RESCAN_SECS {
+        let wait = if scans < 2 {
+            WARMUP_RESCAN_SECS
+        } else {
+            AUTO_RESCAN_SECS
+        };
+        if req || last_scan.is_none_or(|t| t.elapsed().as_secs() >= wait) {
             if bus.is_none() {
                 bus = crate::nm::connect();
             }
             if let Some(c) = &bus {
                 crate::nm::request_scan(c);
             }
-            last_scan = Instant::now();
+            last_scan = Some(Instant::now());
+            scans += 1;
             std::thread::sleep(Duration::from_secs(3));
         }
         // Cached scan results only: never trigger a scan implicitly (scans briefly disturb Bluetooth on a shared Wi-Fi/BT chip).
