@@ -62,17 +62,39 @@ fn attrs(mut b: &[u8]) -> Vec<(u16, &[u8])> {
 
 /// Sends `req` and collects the attribute bytes of every reply message (for a dump, until the kernel says it is done).
 fn request(fd: &OwnedFd, req: &[u8], dump: bool) -> Option<Vec<Vec<u8>>> {
-    let tv = libc::timeval { tv_sec: 2, tv_usec: 0 };
+    let tv = libc::timeval {
+        tv_sec: 2,
+        tv_usec: 0,
+    };
     unsafe {
-        libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVTIMEO, &tv as *const _ as *const libc::c_void, std::mem::size_of::<libc::timeval>() as u32);
-        if libc::send(fd.as_raw_fd(), req.as_ptr() as *const libc::c_void, req.len(), 0) < 0 {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &tv as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::timeval>() as u32,
+        );
+        if libc::send(
+            fd.as_raw_fd(),
+            req.as_ptr() as *const libc::c_void,
+            req.len(),
+            0,
+        ) < 0
+        {
             return None;
         }
     }
     let mut out = vec![];
     let mut buf = vec![0u8; 1 << 16];
     loop {
-        let n = unsafe { libc::recv(fd.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
+        let n = unsafe {
+            libc::recv(
+                fd.as_raw_fd(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+                0,
+            )
+        };
         if n <= 0 {
             return None;
         }
@@ -101,7 +123,13 @@ fn request(fd: &OwnedFd, req: &[u8], dump: bool) -> Option<Vec<Vec<u8>>> {
 }
 
 fn open() -> Option<OwnedFd> {
-    let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, NETLINK_GENERIC) };
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            NETLINK_GENERIC,
+        )
+    };
     (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
@@ -112,7 +140,13 @@ fn wireless_ifindexes() -> Vec<u32> {
         .flatten()
         .flatten()
         .filter(|e| e.path().join("wireless").exists())
-        .filter_map(|e| std::fs::read_to_string(e.path().join("ifindex")).ok()?.trim().parse().ok())
+        .filter_map(|e| {
+            std::fs::read_to_string(e.path().join("ifindex"))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
+        })
         .collect()
 }
 
@@ -127,8 +161,17 @@ fn parse_scan(msgs: &[Vec<u8>]) -> HashMap<String, f32> {
             let (mut mac, mut dbm) = (None, None);
             for (t, d) in attrs(bss) {
                 match t {
-                    NL80211_BSS_BSSID if d.len() == 6 => mac = Some(d.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")),
-                    NL80211_BSS_SIGNAL_MBM if d.len() == 4 => dbm = Some(i32::from_ne_bytes([d[0], d[1], d[2], d[3]]) as f32 / 100.0),
+                    NL80211_BSS_BSSID if d.len() == 6 => {
+                        mac = Some(
+                            d.iter()
+                                .map(|b| format!("{b:02X}"))
+                                .collect::<Vec<_>>()
+                                .join(":"),
+                        )
+                    }
+                    NL80211_BSS_SIGNAL_MBM if d.len() == 4 => {
+                        dbm = Some(i32::from_ne_bytes([d[0], d[1], d[2], d[3]]) as f32 / 100.0)
+                    }
                     _ => {}
                 }
             }
@@ -143,16 +186,35 @@ fn parse_scan(msgs: &[Vec<u8>]) -> HashMap<String, f32> {
 /// Signal strength in dBm of every access point in the kernel's scan cache; empty if it cannot be read.
 pub fn signals() -> HashMap<String, f32> {
     let ifs = wireless_ifindexes();
-    let Some(fd) = open().filter(|_| !ifs.is_empty()) else { return HashMap::new() };
+    let Some(fd) = open().filter(|_| !ifs.is_empty()) else {
+        return HashMap::new();
+    };
     let mut name = vec![];
     attr(&mut name, CTRL_ATTR_FAMILY_NAME, b"nl80211\0");
-    let Some(reply) = request(&fd, &message(GENL_ID_CTRL, NLM_F_REQUEST, CTRL_CMD_GETFAMILY, &name), false) else { return HashMap::new() };
-    let Some(family) = reply.first().and_then(|m| attrs(m).into_iter().find(|(t, d)| *t == CTRL_ATTR_FAMILY_ID && d.len() >= 2).map(|(_, d)| u16::from_ne_bytes([d[0], d[1]]))) else { return HashMap::new() };
+    let Some(reply) = request(
+        &fd,
+        &message(GENL_ID_CTRL, NLM_F_REQUEST, CTRL_CMD_GETFAMILY, &name),
+        false,
+    ) else {
+        return HashMap::new();
+    };
+    let Some(family) = reply.first().and_then(|m| {
+        attrs(m)
+            .into_iter()
+            .find(|(t, d)| *t == CTRL_ATTR_FAMILY_ID && d.len() >= 2)
+            .map(|(_, d)| u16::from_ne_bytes([d[0], d[1]]))
+    }) else {
+        return HashMap::new();
+    };
     let mut out = HashMap::new();
     for i in ifs {
         let mut a = vec![];
         attr(&mut a, NL80211_ATTR_IFINDEX, &i.to_ne_bytes());
-        if let Some(msgs) = request(&fd, &message(family, NLM_F_REQUEST | NLM_F_DUMP, NL80211_CMD_GET_SCAN, &a), true) {
+        if let Some(msgs) = request(
+            &fd,
+            &message(family, NLM_F_REQUEST | NLM_F_DUMP, NL80211_CMD_GET_SCAN, &a),
+            true,
+        ) {
             out.extend(parse_scan(&msgs));
         }
     }
@@ -166,7 +228,11 @@ mod tests {
     #[test]
     fn reads_bssid_and_signal_from_a_bss_attribute() {
         let mut bss = vec![];
-        attr(&mut bss, NL80211_BSS_BSSID, &[0xb0, 0x82, 0xe2, 0xb4, 0x3a, 0x56]);
+        attr(
+            &mut bss,
+            NL80211_BSS_BSSID,
+            &[0xb0, 0x82, 0xe2, 0xb4, 0x3a, 0x56],
+        );
         attr(&mut bss, NL80211_BSS_SIGNAL_MBM, &(-3400i32).to_ne_bytes());
         let mut msg = vec![];
         attr(&mut msg, NL80211_ATTR_BSS, &bss);

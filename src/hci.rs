@@ -72,29 +72,58 @@ pub struct LinkData {
 }
 
 fn open(dev: u16) -> Option<OwnedFd> {
-    open_mask(dev, (1 << EVT_REMOTE_VERSION) | (1 << EVT_CMD_COMPLETE) | (1 << EVT_CMD_STATUS))
+    open_mask(
+        dev,
+        (1 << EVT_REMOTE_VERSION) | (1 << EVT_CMD_COMPLETE) | (1 << EVT_CMD_STATUS),
+    )
 }
 
 fn open_mask(dev: u16, events: u32) -> Option<OwnedFd> {
     unsafe {
-        let fd = libc::socket(AF_BLUETOOTH, libc::SOCK_RAW | libc::SOCK_CLOEXEC, BTPROTO_HCI);
+        let fd = libc::socket(
+            AF_BLUETOOTH,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            BTPROTO_HCI,
+        );
         if fd < 0 {
             return None;
         }
         let fd = OwnedFd::from_raw_fd(fd);
-        let addr = SockaddrHci { family: AF_BLUETOOTH as u16, dev, channel: 0 };
-        if libc::bind(fd.as_raw_fd(), &addr as *const _ as *const libc::sockaddr, std::mem::size_of::<SockaddrHci>() as u32) < 0 {
+        let addr = SockaddrHci {
+            family: AF_BLUETOOTH as u16,
+            dev,
+            channel: 0,
+        };
+        if libc::bind(
+            fd.as_raw_fd(),
+            &addr as *const _ as *const libc::sockaddr,
+            std::mem::size_of::<SockaddrHci>() as u32,
+        ) < 0
+        {
             return None;
         }
         // only the events we wait for (an unprivileged socket may only subscribe to a safe subset)
-        let f = HciFilter { type_mask: 1 << 4, event_mask: [events, 0], opcode: 0 };
-        libc::setsockopt(fd.as_raw_fd(), SOL_HCI, HCI_FILTER, &f as *const _ as *const libc::c_void, std::mem::size_of::<HciFilter>() as u32);
+        let f = HciFilter {
+            type_mask: 1 << 4,
+            event_mask: [events, 0],
+            opcode: 0,
+        };
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            SOL_HCI,
+            HCI_FILTER,
+            &f as *const _ as *const libc::c_void,
+            std::mem::size_of::<HciFilter>() as u32,
+        );
         Some(fd)
     }
 }
 
 fn mac_str(b: [u8; 6]) -> String {
-    format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", b[5], b[4], b[3], b[2], b[1], b[0])
+    format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        b[5], b[4], b[3], b[2], b[1], b[0]
+    )
 }
 
 /// All connected ACL links on all local adapters.
@@ -102,13 +131,28 @@ pub fn connections() -> Vec<Conn> {
     let mut out = vec![];
     for dev in 0..4u16 {
         let Some(fd) = open(dev) else { continue };
-        let mut req = ConnList { dev_id: dev, conn_num: 16, info: [ConnInfo::default(); 16] };
-        if unsafe { libc::ioctl(fd.as_raw_fd(), HCIGETCONNLIST as _, &mut req as *mut ConnList) } < 0 {
+        let mut req = ConnList {
+            dev_id: dev,
+            conn_num: 16,
+            info: [ConnInfo::default(); 16],
+        };
+        if unsafe {
+            libc::ioctl(
+                fd.as_raw_fd(),
+                HCIGETCONNLIST as _,
+                &mut req as *mut ConnList,
+            )
+        } < 0
+        {
             continue;
         }
         for c in req.info.iter().take(req.conn_num as usize) {
             if c.kind == 1 {
-                out.push(Conn { dev, handle: c.handle, mac: mac_str(c.bdaddr) });
+                out.push(Conn {
+                    dev,
+                    handle: c.handle,
+                    mac: mac_str(c.bdaddr),
+                });
             }
         }
     }
@@ -127,7 +171,11 @@ fn exchange(fd: RawFd, opcode: u16, params: &[u8], want_evt: Option<u8>) -> Opti
     let mut buf = [0u8; 300];
     loop {
         let left = deadline.checked_duration_since(Instant::now())?.as_millis() as i32;
-        let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         if unsafe { libc::poll(&mut p, 1, left) } <= 0 {
             return None;
         }
@@ -138,8 +186,20 @@ fn exchange(fd: RawFd, opcode: u16, params: &[u8], want_evt: Option<u8>) -> Opti
         let (evt, plen) = (buf[1], buf[2] as usize);
         let data = &buf[3..(3 + plen).min(n as usize)];
         match evt {
-            EVT_CMD_COMPLETE if want_evt.is_none() && data.len() >= 3 && u16::from_le_bytes([data[1], data[2]]) == opcode => return Some(data[3..].to_vec()),
-            EVT_CMD_STATUS if data.len() >= 4 && u16::from_le_bytes([data[2], data[3]]) == opcode && data[0] != 0 => return None,
+            EVT_CMD_COMPLETE
+                if want_evt.is_none()
+                    && data.len() >= 3
+                    && u16::from_le_bytes([data[1], data[2]]) == opcode =>
+            {
+                return Some(data[3..].to_vec());
+            }
+            EVT_CMD_STATUS
+                if data.len() >= 4
+                    && u16::from_le_bytes([data[2], data[3]]) == opcode
+                    && data[0] != 0 =>
+            {
+                return None;
+            }
             e if Some(e) == want_evt => return Some(data.to_vec()),
             _ => {}
         }
@@ -157,13 +217,19 @@ pub fn decode_map(b: &[u8]) -> Vec<bool> {
 }
 
 pub fn link_data(c: &Conn) -> LinkData {
-    let Some(fd) = open(c.dev) else { return LinkData::default() };
+    let Some(fd) = open(c.dev) else {
+        return LinkData::default();
+    };
     let fd = fd.as_raw_fd();
     let h = c.handle.to_le_bytes();
-    let afh = exchange(fd, OP_READ_AFH_MAP, &h, None).filter(|r| r.len() >= 14 && r[0] == 0 && r[3] == 1).map(|r| decode_map(&r[4..14]));
+    let afh = exchange(fd, OP_READ_AFH_MAP, &h, None)
+        .filter(|r| r.len() >= 14 && r[0] == 0 && r[3] == 1)
+        .map(|r| decode_map(&r[4..14]));
     LinkData {
         afh,
-        lq: exchange(fd, OP_READ_LINK_QUALITY, &h, None).filter(|r| r.len() >= 4 && r[0] == 0).map(|r| r[3] as i32),
+        lq: exchange(fd, OP_READ_LINK_QUALITY, &h, None)
+            .filter(|r| r.len() >= 4 && r[0] == 0)
+            .map(|r| r[3] as i32),
         rssi: read_i8(fd, OP_READ_RSSI, &h),
         tpl: read_i8(fd, OP_READ_TX_POWER, &[h[0], h[1], 0]),
     }
@@ -171,19 +237,37 @@ pub fn link_data(c: &Conn) -> LinkData {
 
 /// (Bluetooth version text, chip maker text) as reported by the remote controller.
 pub fn remote_version(c: &Conn) -> (String, String) {
-    let Some(fd) = open(c.dev) else { return Default::default() };
+    let Some(fd) = open(c.dev) else {
+        return Default::default();
+    };
     let h = c.handle.to_le_bytes();
-    let Some(d) = exchange(fd.as_raw_fd(), OP_READ_REMOTE_VERSION, &h, Some(EVT_REMOTE_VERSION)) else { return Default::default() };
+    let Some(d) = exchange(
+        fd.as_raw_fd(),
+        OP_READ_REMOTE_VERSION,
+        &h,
+        Some(EVT_REMOTE_VERSION),
+    ) else {
+        return Default::default();
+    };
     if d.len() < 8 || d[0] != 0 {
         return Default::default();
     }
     let ver = d[3];
     let company = u16::from_le_bytes([d[4], d[5]]);
-    (format!("{} (0x{:x})", version_name(ver), ver), format!("{} ({})", company_name(company), company))
+    (
+        format!("{} (0x{:x})", version_name(ver), ver),
+        format!("{} ({})", company_name(company), company),
+    )
 }
 
 fn version_name(v: u8) -> &'static str {
-    ["1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1", "4.2", "5.0", "5.1", "5.2", "5.3", "5.4", "6.0", "6.1"].get(v as usize).copied().unwrap_or("?")
+    [
+        "1.0b", "1.1", "1.2", "2.0", "2.1", "3.0", "4.0", "4.1", "4.2", "5.0", "5.1", "5.2", "5.3",
+        "5.4", "6.0", "6.1",
+    ]
+    .get(v as usize)
+    .copied()
+    .unwrap_or("?")
 }
 
 fn company_name(id: u16) -> String {
@@ -230,7 +314,9 @@ pub fn watch(mut f: impl FnMut(Event)) {
     use std::collections::HashMap;
     let mut handles: HashMap<(u16, u16), String> = HashMap::new();
     loop {
-        let socks: Vec<(u16, OwnedFd)> = (0..4u16).filter_map(|d| open_mask(d, (1 << 0x03) | (1 << 0x05)).map(|fd| (d, fd))).collect();
+        let socks: Vec<(u16, OwnedFd)> = (0..4u16)
+            .filter_map(|d| open_mask(d, (1 << 0x03) | (1 << 0x05)).map(|fd| (d, fd)))
+            .collect();
         if socks.is_empty() {
             std::thread::sleep(Duration::from_secs(10)); // no adapter (yet)
             continue;
@@ -239,7 +325,14 @@ pub fn watch(mut f: impl FnMut(Event)) {
             for c in connections() {
                 handles.insert((c.dev, c.handle), c.mac);
             }
-            let mut pfds: Vec<libc::pollfd> = socks.iter().map(|(_, fd)| libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 }).collect();
+            let mut pfds: Vec<libc::pollfd> = socks
+                .iter()
+                .map(|(_, fd)| libc::pollfd {
+                    fd: fd.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                })
+                .collect();
             if unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as _, 1000) } <= 0 {
                 continue;
             }
@@ -252,7 +345,8 @@ pub fn watch(mut f: impl FnMut(Event)) {
                 }
                 let dev = socks[i].0;
                 let mut buf = [0u8; 300];
-                let n = unsafe { libc::read(pf.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+                let n =
+                    unsafe { libc::read(pf.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
                 if n < 3 || buf[0] != 4 {
                     continue;
                 }
@@ -263,12 +357,20 @@ pub fn watch(mut f: impl FnMut(Event)) {
                         if d[0] == 0 {
                             handles.insert((dev, u16::from_le_bytes([d[1], d[2]])), mac.clone());
                         }
-                        f(Event { mac: Some(mac), connected: true, code: d[0] });
+                        f(Event {
+                            mac: Some(mac),
+                            connected: true,
+                            code: d[0],
+                        });
                     }
                     0x05 if d.len() >= 4 => {
                         let mac = handles.remove(&(dev, u16::from_le_bytes([d[1], d[2]])));
                         if d[0] == 0 {
-                            f(Event { mac, connected: false, code: d[3] });
+                            f(Event {
+                                mac,
+                                connected: false,
+                                code: d[3],
+                            });
                         }
                     }
                     _ => {}
@@ -281,17 +383,61 @@ pub fn watch(mut f: impl FnMut(Event)) {
 /// Plain-English name, meaning and "does this point at the radio link" for an HCI disconnect reason.
 pub fn reason(code: u8) -> (&'static str, &'static str, bool) {
     match code {
-        0x08 => ("connection timeout", "The device stopped answering and the link was declared dead. This is what a lost radio link looks like: interference, distance or obstruction, or the device going to sleep or flat.", true),
-        0x22 => ("link layer timeout", "The device stopped responding to link management messages: another radio-trouble sign.", true),
-        0x3D => ("encryption check failed", "A packet failed its integrity check (MIC), usually damaged in transit or a pairing/key mismatch.", true),
-        0x05 => ("authentication failure", "Pairing keys were rejected. Forgetting and re-pairing the device usually fixes this.", true),
-        0x06 => ("pairing key missing", "One side lost the pairing key. Forget the device and pair it again.", true),
-        0x3E => ("connection failed to establish", "A connection attempt did not complete: weak or noisy link, or the device was not ready.", true),
-        0x13 => ("the device ended it", "The device itself closed the connection (switched off, went to sleep or was told to disconnect). Not a radio problem.", false),
-        0x14 => ("device low on resources", "The device closed the link because it was out of resources.", false),
-        0x15 => ("device powered off", "The device switched itself off.", false),
-        0x16 => ("this PC ended it", "This computer closed the connection (you, the desktop, suspend or a program). Not a radio problem.", false),
-        _ => ("other reason", "The controller reported a less common disconnect code.", false),
+        0x08 => (
+            "connection timeout",
+            "The device stopped answering and the link was declared dead. This is what a lost radio link looks like: interference, distance or obstruction, or the device going to sleep or flat.",
+            true,
+        ),
+        0x22 => (
+            "link layer timeout",
+            "The device stopped responding to link management messages: another radio-trouble sign.",
+            true,
+        ),
+        0x3D => (
+            "encryption check failed",
+            "A packet failed its integrity check (MIC), usually damaged in transit or a pairing/key mismatch.",
+            true,
+        ),
+        0x05 => (
+            "authentication failure",
+            "Pairing keys were rejected. Forgetting and re-pairing the device usually fixes this.",
+            true,
+        ),
+        0x06 => (
+            "pairing key missing",
+            "One side lost the pairing key. Forget the device and pair it again.",
+            true,
+        ),
+        0x3E => (
+            "connection failed to establish",
+            "A connection attempt did not complete: weak or noisy link, or the device was not ready.",
+            true,
+        ),
+        0x13 => (
+            "the device ended it",
+            "The device itself closed the connection (switched off, went to sleep or was told to disconnect). Not a radio problem.",
+            false,
+        ),
+        0x14 => (
+            "device low on resources",
+            "The device closed the link because it was out of resources.",
+            false,
+        ),
+        0x15 => (
+            "device powered off",
+            "The device switched itself off.",
+            false,
+        ),
+        0x16 => (
+            "this PC ended it",
+            "This computer closed the connection (you, the desktop, suspend or a program). Not a radio problem.",
+            false,
+        ),
+        _ => (
+            "other reason",
+            "The controller reported a less common disconnect code.",
+            false,
+        ),
     }
 }
 
@@ -314,7 +460,10 @@ mod tests {
 
     #[test]
     fn mac_is_reversed() {
-        assert_eq!(mac_str([0x2F, 0x00, 0xAA, 0x35, 0x73, 0xF4]), "F4:73:35:AA:00:2F");
+        assert_eq!(
+            mac_str([0x2F, 0x00, 0xAA, 0x35, 0x73, 0xF4]),
+            "F4:73:35:AA:00:2F"
+        );
     }
 
     /// Prints live data for connected devices; compare with `hcitool con/afh/lq/rssi/tpl/info`.
@@ -324,8 +473,16 @@ mod tests {
     fn live_dump() {
         for c in connections() {
             let d = link_data(&c);
-            println!("{} handle {} afh={:?} lq={:?} rssi={:?} tpl={:?} ver={:?}", c.mac, c.handle, d.afh.as_ref().map(|m| m.iter().filter(|x| **x).count()), d.lq, d.rssi, d.tpl, remote_version(&c));
+            println!(
+                "{} handle {} afh={:?} lq={:?} rssi={:?} tpl={:?} ver={:?}",
+                c.mac,
+                c.handle,
+                d.afh.as_ref().map(|m| m.iter().filter(|x| **x).count()),
+                d.lq,
+                d.rssi,
+                d.tpl,
+                remote_version(&c)
+            );
         }
     }
 }
-

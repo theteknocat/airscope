@@ -13,11 +13,11 @@ const AP: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 
 pub struct Ap {
-    pub ssid: String, // empty = hidden
+    pub ssid: String,  // empty = hidden
     pub bssid: String, // upper case
-    pub freq: u32,    // MHz
+    pub freq: u32,     // MHz
     pub chan: u32,
-    pub strength: u8, // percent, as nmcli's SIGNAL
+    pub strength: u8,     // percent, as nmcli's SIGNAL
     pub dbm: Option<f32>, // true signal from nl80211, when it could be read
     pub rate_kbps: u32,
     pub security: String, // like nmcli: "WPA2", "WPA1 WPA2 802.1X", "WPA2 WPA3", ... ("" = open)
@@ -33,7 +33,15 @@ pub fn connect() -> Option<Connection> {
 }
 
 fn managed(conn: &Connection) -> Option<Managed> {
-    let msg = conn.call_method(Some(NM), "/org/freedesktop", Some("org.freedesktop.DBus.ObjectManager"), "GetManagedObjects", &()).ok()?;
+    let msg = conn
+        .call_method(
+            Some(NM),
+            "/org/freedesktop",
+            Some("org.freedesktop.DBus.ObjectManager"),
+            "GetManagedObjects",
+            &(),
+        )
+        .ok()?;
     msg.body().deserialize().ok()
 }
 
@@ -81,20 +89,32 @@ pub fn security(flags: u32, wpa: u32, rsn: u32) -> String {
 pub fn access_points(conn: &Connection) -> Option<Vec<Ap>> {
     let all = managed(conn)?;
     // the AP each wireless device is connected to
-    let active: Vec<String> = all.values().filter_map(|i| i.get(WIRELESS)).filter_map(|p| get::<OwnedObjectPath>(p, "ActiveAccessPoint")).map(|p| p.to_string()).collect();
+    let active: Vec<String> = all
+        .values()
+        .filter_map(|i| i.get(WIRELESS))
+        .filter_map(|p| get::<OwnedObjectPath>(p, "ActiveAccessPoint"))
+        .map(|p| p.to_string())
+        .collect();
     let mut out = vec![];
     for (path, ifaces) in &all {
         let Some(p) = ifaces.get(AP) else { continue };
         let freq: u32 = get(p, "Frequency").unwrap_or(0);
         out.push(Ap {
-            ssid: String::from_utf8_lossy(&get::<Vec<u8>>(p, "Ssid").unwrap_or_default()).into_owned(),
-            bssid: get::<String>(p, "HwAddress").unwrap_or_default().to_uppercase(),
+            ssid: String::from_utf8_lossy(&get::<Vec<u8>>(p, "Ssid").unwrap_or_default())
+                .into_owned(),
+            bssid: get::<String>(p, "HwAddress")
+                .unwrap_or_default()
+                .to_uppercase(),
             freq,
             chan: channel(freq),
             strength: get(p, "Strength").unwrap_or(0),
             dbm: None,
             rate_kbps: get(p, "MaxBitrate").unwrap_or(0),
-            security: security(get(p, "Flags").unwrap_or(0), get(p, "WpaFlags").unwrap_or(0), get(p, "RsnFlags").unwrap_or(0)),
+            security: security(
+                get(p, "Flags").unwrap_or(0),
+                get(p, "WpaFlags").unwrap_or(0),
+                get(p, "RsnFlags").unwrap_or(0),
+            ),
             in_use: active.iter().any(|a| a == path.as_str()),
         });
     }
@@ -109,7 +129,13 @@ pub fn request_scan(conn: &Connection) {
     for (path, ifaces) in &all {
         if ifaces.contains_key(WIRELESS) {
             let opts: HashMap<String, Value> = HashMap::new();
-            let _ = conn.call_method(Some(NM), path.as_str(), Some(WIRELESS), "RequestScan", &(opts,));
+            let _ = conn.call_method(
+                Some(NM),
+                path.as_str(),
+                Some(WIRELESS),
+                "RequestScan",
+                &(opts,),
+            );
         }
     }
 }
@@ -147,13 +173,22 @@ mod tests {
         let c = connect().expect("system bus");
         let last = |c: &Connection| -> i64 {
             let all = managed(c).expect("nm");
-            all.values().filter_map(|i| i.get(WIRELESS)).filter_map(|p| get::<i64>(p, "LastScan")).max().unwrap_or(-1)
+            all.values()
+                .filter_map(|i| i.get(WIRELESS))
+                .filter_map(|p| get::<i64>(p, "LastScan"))
+                .max()
+                .unwrap_or(-1)
         };
         let before = last(&c);
         request_scan(&c);
         std::thread::sleep(std::time::Duration::from_secs(5));
         let after = last(&c);
-        println!("LastScan before={} after={} advanced_by={} ms", before, after, after - before);
+        println!(
+            "LastScan before={} after={} advanced_by={} ms",
+            before,
+            after,
+            after - before
+        );
     }
 
     /// Lists what NetworkManager reports. Compare with `nmcli dev wifi list --rescan no`.
@@ -163,7 +198,17 @@ mod tests {
     fn nm_dump() {
         let c = connect().expect("system bus");
         for a in access_points(&c).expect("networkmanager") {
-            println!("{}|{:?}|{}|{}|{}|{}|{} Mbit/s|{}", if a.in_use { "*" } else { " " }, a.ssid, a.bssid, a.chan, a.freq, a.strength, a.rate_kbps / 1000, a.security);
+            println!(
+                "{}|{:?}|{}|{}|{}|{}|{} Mbit/s|{}",
+                if a.in_use { "*" } else { " " },
+                a.ssid,
+                a.bssid,
+                a.chan,
+                a.freq,
+                a.strength,
+                a.rate_kbps / 1000,
+                a.security
+            );
         }
     }
 }

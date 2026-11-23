@@ -1,7 +1,7 @@
 //! Data collectors. Each runs in its own thread, shells out to a system tool,
 //! and publishes into `Shared`. The UI only ever reads the shared snapshot.
-use std::collections::{HashMap, HashSet, VecDeque};
 use crate::net;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -181,7 +181,11 @@ pub fn parse_oui(text: &str) -> Vec<(u32, String)> {
     let mut out = vec![];
     for l in text.lines() {
         let l = l.trim_end_matches('\r');
-        if l.is_empty() || l.starts_with('#') || l.starts_with(char::is_whitespace) || l.contains("(base 16)") {
+        if l.is_empty()
+            || l.starts_with('#')
+            || l.starts_with(char::is_whitespace)
+            || l.contains("(base 16)")
+        {
             continue;
         }
         let (key, name) = if let Some((a, b)) = l.split_once("(hex)") {
@@ -196,7 +200,10 @@ pub fn parse_oui(text: &str) -> Vec<(u32, String)> {
             continue;
         } else {
             match l.split_once(char::is_whitespace) {
-                Some((k, r)) => (k.to_string(), r.rsplit('\t').next().unwrap_or("").trim().to_string()),
+                Some((k, r)) => (
+                    k.to_string(),
+                    r.rsplit('\t').next().unwrap_or("").trim().to_string(),
+                ),
                 None => continue,
             }
         };
@@ -229,14 +236,24 @@ impl Oui {
         Self::at(user_oui_path())
     }
     fn at(user: Option<std::path::PathBuf>) -> Self {
-        let o = Oui { map: Default::default(), counts: Default::default(), user };
+        let o = Oui {
+            map: Default::default(),
+            counts: Default::default(),
+            user,
+        };
         o.reload();
         o
     }
     pub fn reload(&self) {
         let mut m = HashMap::new();
         let mut c = [0usize; 3];
-        let layers = [Some(BUILT_IN_OUI.to_string()), std::fs::read_to_string("/usr/share/hwdata/oui.txt").ok(), self.user.as_ref().and_then(|p| std::fs::read_to_string(p).ok())];
+        let layers = [
+            Some(BUILT_IN_OUI.to_string()),
+            std::fs::read_to_string("/usr/share/hwdata/oui.txt").ok(),
+            self.user
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok()),
+        ];
         for (i, text) in layers.iter().enumerate() {
             if let Some(t) = text {
                 for (k, v) in parse_oui(t) {
@@ -255,14 +272,18 @@ impl Oui {
     }
     /// Read a downloaded list, keep it as the user's file and use it from now on. Returns the number of entries.
     pub fn import(&self, path: &str) -> Result<usize, String> {
-        let bytes = std::fs::read(path.trim().trim_matches('"')).map_err(|e| format!("Can't read that file: {}", e))?;
+        let bytes = std::fs::read(path.trim().trim_matches('"'))
+            .map_err(|e| format!("Can't read that file: {}", e))?;
         let list = parse_oui(&String::from_utf8_lossy(&bytes));
         if list.is_empty() {
             return Err("No vendor entries found. Expected the IEEE oui.txt / oui.csv or a Wireshark manuf file.".into());
         }
         let dest = self.user.clone().ok_or("HOME is not set")?;
         std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
-        let tsv: String = list.iter().map(|(k, v)| format!("{:06X}\t{}\n", k, v)).collect();
+        let tsv: String = list
+            .iter()
+            .map(|(k, v)| format!("{:06X}\t{}\n", k, v))
+            .collect();
         write_atomic(&dest, tsv).map_err(|e| format!("Can't save {}: {}", dest.display(), e))?;
         self.reload();
         Ok(list.len())
@@ -274,7 +295,12 @@ impl Oui {
                     return "Private / randomized address".into();
                 }
                 let k = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-                self.map.read().unwrap().get(&k).cloned().unwrap_or_else(|| "Unknown vendor".into())
+                self.map
+                    .read()
+                    .unwrap()
+                    .get(&k)
+                    .cloned()
+                    .unwrap_or_else(|| "Unknown vendor".into())
             }
             None => "Unknown".into(),
         }
@@ -301,62 +327,102 @@ fn set(h: &Handle, f: impl FnOnce(&mut Shared)) {
 
 /// One Wi-Fi access point as a device (shared by the live collector and the demo data).
 pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
-        let (inuse, ssid, bssid) = (ap.in_use, ap.ssid.clone(), ap.bssid.clone());
-        let chan = Some(ap.chan);
-        let freq = Some(ap.freq);
-        let pct = ap.strength as f32;
-        let sec = ap.security.clone();
-        let dbm = ap.dbm.unwrap_or(pct / 2.0 - 100.0); // NetworkManager's percentage tops out at -50 dBm; nl80211 gives the real value
-        let dist = dist_from_dbm(dbm);
-        let vendor = oui.vendor(&bssid);
-        let hidden = ssid.is_empty();
-        let randomized = vendor.starts_with("Private");
-        let band = match freq {
-            Some(f) if f < 3000 => "2.4 GHz",
-            Some(f) if f < 5900 => "5 GHz",
-            Some(_) => "6 GHz",
-            None => "?",
-        };
-        let mut d = Dev::new(&bssid, Kind::Wifi);
-        d.cluster = bssid.rsplitn(3, ':').take(2).collect::<Vec<_>>().join(":");
-        d.known = !hidden;
-        d.icon = if hidden { Icon::Unknown } else { Icon::Router };
-        d.name = if hidden { "(hidden network)".into() } else { ssid.clone() };
-        d.vendor = vendor.clone();
-        d.dbm = Some(dbm);
-        d.dist_m = Some(dist);
-        d.connected = inuse;
-        d.chan = chan;
-        d.freq = freq;
-        d.details = vec![
-            ("Type".into(), "Wi-Fi access point".into()),
-            ("SSID".into(), if hidden { "(hidden)".into() } else { ssid.clone() }),
-            ("BSSID".into(), bssid.clone()),
-            ("Vendor".into(), vendor),
-            ("Band / channel".into(), format!("{} / ch {} ({} MHz)", band, ap.chan, ap.freq)),
-            ("Rate".into(), format!("{} Mbit/s", ap.rate_kbps / 1000)),
-            ("Signal".into(), format!("{}%  (about {:.0} dBm{})", pct, dbm, if pct >= 100.0 { " or stronger; the scale saturates" } else { "" })),
-            ("Distance (rough)".into(), format!("about {:.1} m, estimated from signal only", dist)),
-            ("Security".into(), if sec.is_empty() { "open".into() } else { sec.clone() }),
-        ];
-        if let (Some(fr), true) = (freq, band == "2.4 GHz") {
-            let lo = (fr as i32 - 10 - 2402).max(0);
-            let hi = (fr as i32 + 10 - 2402).min(78);
-            d.details.push(("Overlaps Bluetooth ch".into(), format!("{}-{} (20 MHz footprint)", lo, hi)));
-        }
-        d.why = if hidden && randomized {
-            "Hidden network with a randomized address. Typically a phone hotspot or a virtual access point on a mesh node or ISP gateway.".into()
-        } else if hidden {
-            "Access point that does not broadcast its name. Could be a guest, IoT or backhaul network.".into()
-        } else if sec.contains("802.1X") {
-            "Enterprise authentication (802.1X): usually ISP community Wi-Fi, an office or a campus network.".into()
-        } else if ssid.to_lowercase().contains("mesh") {
-            "The name suggests a mesh or IoT access point.".into()
-        } else if inuse {
-            "The access point this PC is connected to.".into()
-        } else {
-            "Wi-Fi access point seen in the last scan (cached, not an active probe).".into()
-        };
+    let (inuse, ssid, bssid) = (ap.in_use, ap.ssid.clone(), ap.bssid.clone());
+    let chan = Some(ap.chan);
+    let freq = Some(ap.freq);
+    let pct = ap.strength as f32;
+    let sec = ap.security.clone();
+    let dbm = ap.dbm.unwrap_or(pct / 2.0 - 100.0); // NetworkManager's percentage tops out at -50 dBm; nl80211 gives the real value
+    let dist = dist_from_dbm(dbm);
+    let vendor = oui.vendor(&bssid);
+    let hidden = ssid.is_empty();
+    let randomized = vendor.starts_with("Private");
+    let band = match freq {
+        Some(f) if f < 3000 => "2.4 GHz",
+        Some(f) if f < 5900 => "5 GHz",
+        Some(_) => "6 GHz",
+        None => "?",
+    };
+    let mut d = Dev::new(&bssid, Kind::Wifi);
+    d.cluster = bssid.rsplitn(3, ':').take(2).collect::<Vec<_>>().join(":");
+    d.known = !hidden;
+    d.icon = if hidden { Icon::Unknown } else { Icon::Router };
+    d.name = if hidden {
+        "(hidden network)".into()
+    } else {
+        ssid.clone()
+    };
+    d.vendor = vendor.clone();
+    d.dbm = Some(dbm);
+    d.dist_m = Some(dist);
+    d.connected = inuse;
+    d.chan = chan;
+    d.freq = freq;
+    d.details = vec![
+        ("Type".into(), "Wi-Fi access point".into()),
+        (
+            "SSID".into(),
+            if hidden {
+                "(hidden)".into()
+            } else {
+                ssid.clone()
+            },
+        ),
+        ("BSSID".into(), bssid.clone()),
+        ("Vendor".into(), vendor),
+        (
+            "Band / channel".into(),
+            format!("{} / ch {} ({} MHz)", band, ap.chan, ap.freq),
+        ),
+        ("Rate".into(), format!("{} Mbit/s", ap.rate_kbps / 1000)),
+        (
+            "Signal".into(),
+            format!(
+                "{}%  (about {:.0} dBm{})",
+                pct,
+                dbm,
+                if pct >= 100.0 {
+                    " or stronger; the scale saturates"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        (
+            "Distance (rough)".into(),
+            format!("about {:.1} m, estimated from signal only", dist),
+        ),
+        (
+            "Security".into(),
+            if sec.is_empty() {
+                "open".into()
+            } else {
+                sec.clone()
+            },
+        ),
+    ];
+    if let (Some(fr), true) = (freq, band == "2.4 GHz") {
+        let lo = (fr as i32 - 10 - 2402).max(0);
+        let hi = (fr as i32 + 10 - 2402).min(78);
+        d.details.push((
+            "Overlaps Bluetooth ch".into(),
+            format!("{}-{} (20 MHz footprint)", lo, hi),
+        ));
+    }
+    d.why = if hidden && randomized {
+        "Hidden network with a randomized address. Typically a phone hotspot or a virtual access point on a mesh node or ISP gateway.".into()
+    } else if hidden {
+        "Access point that does not broadcast its name. Could be a guest, IoT or backhaul network."
+            .into()
+    } else if sec.contains("802.1X") {
+        "Enterprise authentication (802.1X): usually ISP community Wi-Fi, an office or a campus network.".into()
+    } else if ssid.to_lowercase().contains("mesh") {
+        "The name suggests a mesh or IoT access point.".into()
+    } else if inuse {
+        "The access point this PC is connected to.".into()
+    } else {
+        "Wi-Fi access point seen in the last scan (cached, not an active probe).".into()
+    };
     d
 }
 
@@ -366,7 +432,8 @@ const AUTO_RESCAN_SECS: u64 = 60;
 fn wifi_loop(h: Handle, oui: Arc<Oui>) {
     let mut last_scan = Instant::now();
     // The kernel only keeps a scan result for about 30 s, so remember the last real dBm of each access point.
-    let mut real_seen: std::collections::HashMap<String, (f32, Instant)> = std::collections::HashMap::new();
+    let mut real_seen: std::collections::HashMap<String, (f32, Instant)> =
+        std::collections::HashMap::new();
     let mut bus = None;
     loop {
         let req = {
@@ -410,7 +477,10 @@ fn wifi_loop(h: Handle, oui: Arc<Oui>) {
                 });
             }
             None => set(&h, |s| {
-                s.errs.insert("wifi", "Wi-Fi scanning needs NetworkManager (not detected)".into());
+                s.errs.insert(
+                    "wifi",
+                    "Wi-Fi scanning needs NetworkManager (not detected)".into(),
+                );
             }),
         }
         std::thread::sleep(Duration::from_secs(2));
@@ -461,14 +531,30 @@ fn modalias_vendor(m: &str) -> Option<&'static str> {
 pub fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
     let mac = b.mac.as_str();
     let mut d = Dev::new(&b.mac, Kind::Bt);
-    let (alias, name, icon, class, modalias) = (b.alias.clone(), b.name.clone(), b.icon.clone(), b.class, b.modalias.clone());
+    let (alias, name, icon, class, modalias) = (
+        b.alias.clone(),
+        b.name.clone(),
+        b.icon.clone(),
+        b.class,
+        b.modalias.clone(),
+    );
     let (paired, trusted, conn, batt) = (b.paired, b.trusted, b.connected, b.battery);
     let uuids = b.services.clone();
-    let title = if !alias.is_empty() { alias } else if !name.is_empty() { name } else { mac.to_string() };
+    let title = if !alias.is_empty() {
+        alias
+    } else if !name.is_empty() {
+        name
+    } else {
+        mac.to_string()
+    };
     let lname = title.to_lowercase();
     d.icon = if icon.contains("keyboard") || lname.contains("keyboard") {
         Icon::Keyboard
-    } else if icon.contains("headset") || icon.contains("headphones") || lname.contains("airpods") || lname.contains("headphone") {
+    } else if icon.contains("headset")
+        || icon.contains("headphones")
+        || lname.contains("airpods")
+        || lname.contains("headphone")
+    {
         Icon::Headphones
     } else if icon.contains("mouse") {
         Icon::Mouse
@@ -496,8 +582,22 @@ pub fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
         ("Type".into(), "Bluetooth device".into()),
         ("Address".into(), mac.to_uppercase()),
         ("Vendor".into(), vendor),
-        ("Connected".into(), if conn { "yes".into() } else { "no (paired but not connected)".into() }),
-        ("Paired / trusted".into(), format!("{} / {}", if paired { "yes" } else { "no" }, if trusted { "yes" } else { "no" })),
+        (
+            "Connected".into(),
+            if conn {
+                "yes".into()
+            } else {
+                "no (paired but not connected)".into()
+            },
+        ),
+        (
+            "Paired / trusted".into(),
+            format!(
+                "{} / {}",
+                if paired { "yes" } else { "no" },
+                if trusted { "yes" } else { "no" }
+            ),
+        ),
     ];
     if class != 0 {
         d.details.push(("Device class".into(), class_text(class)));
@@ -512,8 +612,19 @@ pub fn parse_bt(b: &crate::bluez::BtDev, oui: &Oui) -> Dev {
     d.why = format!(
         "Identified from what the device told BlueZ: icon hint \"{}\"{}{}.",
         if icon.is_empty() { "none" } else { &icon },
-        if class != 0 { format!(", class {}", class_text(class)) } else { String::new() },
-        if uuids.is_empty() { String::new() } else { format!(", services: {}", uuids.iter().take(3).cloned().collect::<Vec<_>>().join(", ")) }
+        if class != 0 {
+            format!(", class {}", class_text(class))
+        } else {
+            String::new()
+        },
+        if uuids.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", services: {}",
+                uuids.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+            )
+        }
     );
     d
 }
@@ -565,7 +676,10 @@ fn events_loop(ev: Events) {
         };
         let mut m = ev.lock().unwrap();
         let v = m.entry(mac).or_default();
-        v.push(DevEvent { at: SystemTime::now(), kind });
+        v.push(DevEvent {
+            at: SystemTime::now(),
+            kind,
+        });
         if v.len() > 40 {
             v.remove(0);
         }
@@ -574,15 +688,28 @@ fn events_loop(ev: Events) {
 
 /// "HH:MM:SS" in local time.
 fn clock(t: SystemTime) -> String {
-    let tm = crate::snoop::local(t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0));
+    let tm = crate::snoop::local(
+        t.duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    );
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 fn wifi_context(wifi: &[Dev]) -> String {
-    let mut near: Vec<&Dev> = wifi.iter().filter(|w| w.freq.is_some_and(|f| f < 3000) && w.dbm.is_some_and(|d| d > -75.0)).collect();
-    near.sort_by(|a, b| b.dbm.partial_cmp(&a.dbm).unwrap_or(std::cmp::Ordering::Equal));
+    let mut near: Vec<&Dev> = wifi
+        .iter()
+        .filter(|w| w.freq.is_some_and(|f| f < 3000) && w.dbm.is_some_and(|d| d > -75.0))
+        .collect();
+    near.sort_by(|a, b| {
+        b.dbm
+            .partial_cmp(&a.dbm)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     match near.first() {
-        None => "No strong 2.4 GHz Wi-Fi network is visible, so Wi-Fi is an unlikely cause here.".into(),
+        None => {
+            "No strong 2.4 GHz Wi-Fi network is visible, so Wi-Fi is an unlikely cause here.".into()
+        }
         Some(s) => format!(
             "{} 2.4 GHz Wi-Fi network(s) above -75 dBm share the band; the strongest is {} (ch {}, {:.0} dBm). Other common sources: microwave ovens, cordless phones, USB 3 devices and other Bluetooth gear.",
             near.len(),
@@ -605,7 +732,13 @@ fn ev_code(e: &DevEvent) -> Option<u8> {
 /// warnings (almost no channels left, low battery). Low link quality or a weak signal only count when a radio-type
 /// drop happened too: a device can work fine on a low reading. `peers` = (id, name, events) of all devices, to
 /// spot several devices dropping at once. The explanation goes into `d.issue`.
-pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev], peers: &[(String, String, Vec<DevEvent>)]) {
+pub fn apply_events(
+    d: &mut Dev,
+    ev: &[DevEvent],
+    hist: &History,
+    wifi: &[Dev],
+    peers: &[(String, String, Vec<DevEvent>)],
+) {
     let now = SystemTime::now();
     let age = |e: &DevEvent| now.duration_since(e.at).map(|x| x.as_secs()).unwrap_or(0);
     let mut diagnosis: Option<(String, String)> = None;
@@ -613,42 +746,70 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev], 
     let mut rows: Vec<(String, String)> = vec![]; // supporting evidence
 
     // red: link lost for a radio-type reason
-    let bad: Vec<&DevEvent> = ev.iter().filter(|e| age(e) < TROUBLE_WINDOW_SECS && ev_code(e).is_some_and(|c| crate::hci::reason(c).2)).collect();
+    let bad: Vec<&DevEvent> = ev
+        .iter()
+        .filter(|e| {
+            age(e) < TROUBLE_WINDOW_SECS && ev_code(e).is_some_and(|c| crate::hci::reason(c).2)
+        })
+        .collect();
     if let Some(last) = bad.last() {
         let code = ev_code(last).unwrap_or(0);
         let (name, meaning, _) = crate::hci::reason(code);
         let mut text = format!("Last problem: {}. {}", name, meaning);
         if bad.len() >= 2 {
-            text += &format!(" It has happened {} times in the last 15 minutes, so this is a pattern rather than a one-off.", bad.len());
+            text += &format!(
+                " It has happened {} times in the last 15 minutes, so this is a pattern rather than a one-off.",
+                bad.len()
+            );
         }
         if matches!(code, 0x08 | 0x22 | 0x3E | 0x3D) {
             if let Some(b) = d.battery.filter(|b| *b <= 20) {
-                text += &format!(" The battery is at {}%, which is a likelier cause than radio interference.", b);
+                text += &format!(
+                    " The battery is at {}%, which is a likelier cause than radio interference.",
+                    b
+                );
             }
             text += &format!(" {}", wifi_context(wifi));
         }
         diagnosis = Some(("What it means".into(), text));
         let fresh = (1.0 - age(last) as f32 / TROUBLE_WINDOW_SECS as f32).max(0.25);
-        d.trouble = d.trouble.max((0.5 + 0.25 * (bad.len() as f32 - 1.0)).min(1.0) * fresh);
+        d.trouble = d
+            .trouble
+            .max((0.5 + 0.25 * (bad.len() as f32 - 1.0)).min(1.0) * fresh);
     }
     // red: link quality fell well below this device's own recent best
     let peak = hist.iter().filter_map(|s| s.lq).max();
     if let (Some(cur), Some(pk)) = (d.lq, peak) {
         if !bad.is_empty() && hist.len() >= 5 && (cur as f32) < pk as f32 * LINK_DROP {
-            d.trouble = d.trouble.max(((pk - cur) as f32 / (pk as f32 * 0.5)).clamp(0.25, 1.0));
+            d.trouble = d
+                .trouble
+                .max(((pk - cur) as f32 / (pk as f32 * 0.5)).clamp(0.25, 1.0));
             d.issue.push(("Link health".into(), format!("DEGRADED: link quality fell to {}% (it was {}% earlier). Packets are being lost or retried, which is what interference looks like.", lq_pct(cur), lq_pct(pk))));
         }
     }
     // several devices losing their links at the same moment: the cause is shared, not this device
     let mut shared: Vec<(String, SystemTime)> = vec![];
-    for e in bad.iter().filter(|e| matches!(e.kind, EvKind::Disconnected(_))) {
+    for e in bad
+        .iter()
+        .filter(|e| matches!(e.kind, EvKind::Disconnected(_)))
+    {
         for (id, name, pev) in peers.iter().filter(|(id, _, _)| *id != d.id) {
             let hit = pev.iter().any(|q| {
                 matches!(q.kind, EvKind::Disconnected(c) if crate::hci::reason(c).2)
-                    && q.at.duration_since(e.at).or_else(|x| e.at.duration_since(q.at).map_err(|_| x)).is_ok_and(|g| g <= SHARED_DROP)
+                    && q.at
+                        .duration_since(e.at)
+                        .or_else(|x| e.at.duration_since(q.at).map_err(|_| x))
+                        .is_ok_and(|g| g <= SHARED_DROP)
             });
             if hit && !shared.iter().any(|(n, _)| n == name) {
-                shared.push((if name.is_empty() { id.clone() } else { name.clone() }, e.at));
+                shared.push((
+                    if name.is_empty() {
+                        id.clone()
+                    } else {
+                        name.clone()
+                    },
+                    e.at,
+                ));
             }
         }
     }
@@ -658,14 +819,31 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev], 
         notes.push(("Shared cause".into(), format!("{} lost the link within {} seconds of this device (around {}). When several devices drop at the same moment the cause is shared: the Bluetooth adapter, 2.4 GHz interference or the PC itself, not this device on its own.", names.join(", "), SHARED_DROP.as_secs(), clock(shared[0].1))));
     }
     // red: reconnecting over and over
-    let connects = ev.iter().filter(|e| matches!(e.kind, EvKind::Connected) && age(e) < FLAP_WINDOW_SECS).count();
+    let connects = ev
+        .iter()
+        .filter(|e| matches!(e.kind, EvKind::Connected) && age(e) < FLAP_WINDOW_SECS)
+        .count();
     if connects >= FLAP_COUNT {
         d.trouble = d.trouble.max(0.7);
         notes.push(("Reconnecting".into(), format!("Connected {} times in the last 10 minutes. A healthy device stays connected; repeated reconnects mean the link keeps failing and recovering, so it is unreliable even if it seems to work.", connects)));
     }
     // amber: almost no channels left. Dropping some is normal adaptive hopping (the device dodging noise), so
     // only the floor counts; a shrunken map with bad link quality is already caught by the link rules above.
-    if let Some(cur) = hist.iter().rev().take(3).filter_map(|s| s.afh).max().filter(|_| hist.iter().rev().take(3).filter(|s| s.afh.is_some()).count() >= 3) {
+    if let Some(cur) = hist
+        .iter()
+        .rev()
+        .take(3)
+        .filter_map(|s| s.afh)
+        .max()
+        .filter(|_| {
+            hist.iter()
+                .rev()
+                .take(3)
+                .filter(|s| s.afh.is_some())
+                .count()
+                >= 3
+        })
+    {
         if cur <= AFH_FLOOR {
             d.caution = d.caution.max(0.5);
             notes.push(("Channel map".into(), format!("Only {} of 79 channels are usable (the minimum is 20). The device has little room left to hop around noise, so any more interference will hit the link directly.", cur)));
@@ -680,22 +858,49 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev], 
     // amber: low battery
     if let Some(b) = d.battery.filter(|b| *b <= 15) {
         d.caution = d.caution.max(0.5);
-        notes.push(("Battery".into(), format!("Battery at {}%. A weak battery commonly causes dropouts and slow reconnects.", b)));
+        notes.push((
+            "Battery".into(),
+            format!(
+                "Battery at {}%. A weak battery commonly causes dropouts and slow reconnects.",
+                b
+            ),
+        ));
     }
 
     for e in ev.iter().rev().take(4) {
         let text = match e.kind {
             EvKind::Connected => "Connected".to_string(),
-            EvKind::ConnectFailed(c) => format!("Connection attempt failed: {} (0x{:02x})", crate::hci::reason(c).0, c),
-            EvKind::Disconnected(c) => format!("Disconnected: {} (0x{:02x})", crate::hci::reason(c).0, c),
+            EvKind::ConnectFailed(c) => format!(
+                "Connection attempt failed: {} (0x{:02x})",
+                crate::hci::reason(c).0,
+                c
+            ),
+            EvKind::Disconnected(c) => {
+                format!("Disconnected: {} (0x{:02x})", crate::hci::reason(c).0, c)
+            }
         };
         rows.push((clock(e.at), text));
     }
     let lqs: Vec<i32> = hist.iter().filter_map(|s| s.lq).collect();
     if lqs.len() >= 3 {
-        let (min, avg) = (*lqs.iter().min().unwrap(), lqs.iter().sum::<i32>() / lqs.len() as i32);
-        let span = hist.back().zip(hist.front()).map(|(b, f)| b.at.duration_since(f.at).as_secs()).unwrap_or(0);
-        rows.push(("Link history".into(), format!("last {} min: link quality lowest {}%, average {}%", (span / 60).max(1), lq_pct(min), lq_pct(avg))));
+        let (min, avg) = (
+            *lqs.iter().min().unwrap(),
+            lqs.iter().sum::<i32>() / lqs.len() as i32,
+        );
+        let span = hist
+            .back()
+            .zip(hist.front())
+            .map(|(b, f)| b.at.duration_since(f.at).as_secs())
+            .unwrap_or(0);
+        rows.push((
+            "Link history".into(),
+            format!(
+                "last {} min: link quality lowest {}%, average {}%",
+                (span / 60).max(1),
+                lq_pct(min),
+                lq_pct(avg)
+            ),
+        ));
     }
     // only worth showing when something is flagged: health row, diagnosis, other findings, then the evidence
     if d.trouble > 0.0 || d.caution > 0.0 {
@@ -709,8 +914,20 @@ pub fn apply_events(d: &mut Dev, ev: &[DevEvent], hist: &History, wifi: &[Dev], 
 
 fn link_info(c: &crate::hci::Conn, cache: &mut HashMap<String, (String, String)>) -> BtLink {
     let d = crate::hci::link_data(c);
-    let (lmp, mfr) = cache.entry(c.mac.clone()).or_insert_with(|| crate::hci::remote_version(c)).clone();
-    BtLink { mac: c.mac.clone(), name: String::new(), lq: d.lq, rssi: d.rssi, tpl: d.tpl, afh: d.afh, lmp, mfr }
+    let (lmp, mfr) = cache
+        .entry(c.mac.clone())
+        .or_insert_with(|| crate::hci::remote_version(c))
+        .clone();
+    BtLink {
+        mac: c.mac.clone(),
+        name: String::new(),
+        lq: d.lq,
+        rssi: d.rssi,
+        tpl: d.tpl,
+        afh: d.afh,
+        lmp,
+        mfr,
+    }
 }
 
 /// A link counts as degraded when its quality falls below this share of the device's own recent best.
@@ -719,35 +936,41 @@ const LINK_DROP: f32 = 0.75;
 
 /// Adds the live link data (quality, hopping map, versions) to a Bluetooth device.
 pub fn attach_link(d: &mut Dev, l: &mut BtLink) {
-        l.name = d.name.clone();
-        d.connected = true;
-        d.online = true;
-        // Controller RSSI for a connected link is relative to the "golden range" (0 = fine),
-        // so it is not a distance. Use it only to nudge the node outward for display.
-        d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
-        d.lq = l.lq;
-        d.rssi = l.rssi;
-        d.chan_use = l.afh.as_ref().map(|m| m.iter().filter(|x| **x).count());
-        d.details.push((
-            "RSSI (relative)".into(),
-            l.rssi.map(|r| format!("{} (0 = inside the ideal range; not a distance)", r)).unwrap_or("?".into()),
-        ));
-        if let Some(t) = l.tpl {
-            d.details.push(("TX power".into(), format!("{} dBm", t)));
-        }
-        if !l.lmp.is_empty() {
-            d.details.push(("Bluetooth version".into(), format!("LMP {}", l.lmp)));
-        }
-        if !l.mfr.is_empty() {
-            d.details.push(("Chip maker".into(), l.mfr.clone()));
-        }
-        d.details.push((
-            "Channel hopping".into(),
-            match &l.afh {
-                Some(m) => format!("adaptive: {} of 79 channels in use", m.iter().filter(|x| **x).count()),
-                None => "not adaptive: uses all 79 channels, cannot avoid busy ones".into(),
-            },
-        ));
+    l.name = d.name.clone();
+    d.connected = true;
+    d.online = true;
+    // Controller RSSI for a connected link is relative to the "golden range" (0 = fine),
+    // so it is not a distance. Use it only to nudge the node outward for display.
+    d.dist_m = Some(1.6 + l.rssi.unwrap_or(0).unsigned_abs() as f32 * 0.25);
+    d.lq = l.lq;
+    d.rssi = l.rssi;
+    d.chan_use = l.afh.as_ref().map(|m| m.iter().filter(|x| **x).count());
+    d.details.push((
+        "RSSI (relative)".into(),
+        l.rssi
+            .map(|r| format!("{} (0 = inside the ideal range; not a distance)", r))
+            .unwrap_or("?".into()),
+    ));
+    if let Some(t) = l.tpl {
+        d.details.push(("TX power".into(), format!("{} dBm", t)));
+    }
+    if !l.lmp.is_empty() {
+        d.details
+            .push(("Bluetooth version".into(), format!("LMP {}", l.lmp)));
+    }
+    if !l.mfr.is_empty() {
+        d.details.push(("Chip maker".into(), l.mfr.clone()));
+    }
+    d.details.push((
+        "Channel hopping".into(),
+        match &l.afh {
+            Some(m) => format!(
+                "adaptive: {} of 79 channels in use",
+                m.iter().filter(|x| **x).count()
+            ),
+            None => "not adaptive: uses all 79 channels, cannot avoid busy ones".into(),
+        },
+    ));
 }
 
 fn bt_loop(h: Handle, oui: Arc<Oui>, events: Events) {
@@ -775,23 +998,46 @@ fn bt_loop(h: Handle, oui: Arc<Oui>, events: Events) {
                         attach_link(d, &mut l);
                     }
                     let hs = hist.entry(l.mac.clone()).or_default();
-                    hs.push_back(Sample { at: Instant::now(), lq: l.lq, afh: l.afh.as_ref().map(|m| m.iter().filter(|x| **x).count()), rssi: l.rssi });
+                    hs.push_back(Sample {
+                        at: Instant::now(),
+                        lq: l.lq,
+                        afh: l.afh.as_ref().map(|m| m.iter().filter(|x| **x).count()),
+                        rssi: l.rssi,
+                    });
                     links.push(l);
                 }
             }
         }
         // forget old readings, then explain any problems (drop reasons, link history, Wi-Fi around)
         for hs in hist.values_mut() {
-            while hs.front().is_some_and(|x| x.at.elapsed().as_secs() > HISTORY_SECS) {
+            while hs
+                .front()
+                .is_some_and(|x| x.at.elapsed().as_secs() > HISTORY_SECS)
+            {
                 hs.pop_front();
             }
         }
         {
             let wifi = h.lock().unwrap().wifi.clone();
             let evs = events.lock().unwrap().clone();
-            let peers: Vec<(String, String, Vec<DevEvent>)> = devs.iter().map(|d| (d.id.clone(), d.name.clone(), evs.get(&d.id).cloned().unwrap_or_default())).collect();
+            let peers: Vec<(String, String, Vec<DevEvent>)> = devs
+                .iter()
+                .map(|d| {
+                    (
+                        d.id.clone(),
+                        d.name.clone(),
+                        evs.get(&d.id).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
             for d in devs.iter_mut() {
-                apply_events(d, evs.get(&d.id).map(|v| v.as_slice()).unwrap_or(&[]), hist.get(&d.id).unwrap_or(&History::new()), &wifi, &peers);
+                apply_events(
+                    d,
+                    evs.get(&d.id).map(|v| v.as_slice()).unwrap_or(&[]),
+                    hist.get(&d.id).unwrap_or(&History::new()),
+                    &wifi,
+                    &peers,
+                );
             }
         }
         set(&h, |s| {
@@ -817,8 +1063,12 @@ type Mdns = Arc<Mutex<HashMap<String, (String, Vec<String>)>>>;
 fn mdns_loop(m: Mdns) {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
     type Inst = HashMap<String, (Vec<String>, String, String)>; // full name -> (ipv4s, host, service)
-    let Ok(daemon) = ServiceDaemon::new() else { return }; // no mDNS: LAN still works from ARP + DNS
-    let Ok(meta) = daemon.browse("_services._dns-sd._udp.local.") else { return };
+    let Ok(daemon) = ServiceDaemon::new() else {
+        return;
+    }; // no mDNS: LAN still works from ARP + DNS
+    let Ok(meta) = daemon.browse("_services._dns-sd._udp.local.") else {
+        return;
+    };
     let inst: Arc<Mutex<Inst>> = Arc::new(Mutex::new(HashMap::new()));
     let publish = |inst: &Inst, m: &Mdns| {
         let mut map: HashMap<String, (String, Vec<String>)> = HashMap::new();
@@ -834,7 +1084,9 @@ fn mdns_loop(m: Mdns) {
     };
     let mut seen: HashSet<String> = HashSet::new();
     while let Ok(ev) = meta.recv() {
-        let ServiceEvent::ServiceFound(_, ty) = ev else { continue };
+        let ServiceEvent::ServiceFound(_, ty) = ev else {
+            continue;
+        };
         if !seen.insert(ty.clone()) {
             continue;
         }
@@ -845,9 +1097,26 @@ fn mdns_loop(m: Mdns) {
                 let mut i = inst.lock().unwrap();
                 match ev {
                     ServiceEvent::ServiceResolved(r) => {
-                        let svc = r.ty_domain.trim_start_matches('_').split('.').next().unwrap_or("").to_string();
-                        let host = r.host.trim_end_matches('.').trim_end_matches(".local").to_string();
-                        i.insert(r.fullname.clone(), (r.get_addresses_v4().iter().map(|a| a.to_string()).collect(), host, svc));
+                        let svc = r
+                            .ty_domain
+                            .trim_start_matches('_')
+                            .split('.')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        let host = r
+                            .host
+                            .trim_end_matches('.')
+                            .trim_end_matches(".local")
+                            .to_string();
+                        i.insert(
+                            r.fullname.clone(),
+                            (
+                                r.get_addresses_v4().iter().map(|a| a.to_string()).collect(),
+                                host,
+                                svc,
+                            ),
+                        );
                     }
                     ServiceEvent::ServiceRemoved(_, full) => {
                         i.remove(&full);
@@ -865,51 +1134,115 @@ fn classify(vendor: &str, host: &str, svcs: &[String], gw: bool) -> (Icon, &'sta
     let v = vendor.to_lowercase();
     let hn = host.to_lowercase();
     if gw {
-        return (Icon::Router, "Router / gateway", "This is the default gateway, so it routes this PC's traffic.".into());
+        return (
+            Icon::Router,
+            "Router / gateway",
+            "This is the default gateway, so it routes this PC's traffic.".into(),
+        );
     }
     if has("googlecast") {
-        return (Icon::Tv, "Google Cast device", "Advertises Google Cast over mDNS (Chromecast, Android TV or a cast speaker).".into());
+        return (
+            Icon::Tv,
+            "Google Cast device",
+            "Advertises Google Cast over mDNS (Chromecast, Android TV or a cast speaker).".into(),
+        );
     }
     if has("airplay") || has("raop") {
-        return (Icon::Speaker, "AirPlay device", "Advertises AirPlay over mDNS (Apple TV, HomePod or an AirPlay speaker/TV).".into());
+        return (
+            Icon::Speaker,
+            "AirPlay device",
+            "Advertises AirPlay over mDNS (Apple TV, HomePod or an AirPlay speaker/TV).".into(),
+        );
     }
     if has("ipp") || has("printer") || has("pdl-datastream") {
-        return (Icon::Printer, "Printer", "Advertises a printing service over mDNS.".into());
+        return (
+            Icon::Printer,
+            "Printer",
+            "Advertises a printing service over mDNS.".into(),
+        );
     }
-    if has("smb") || has("afpovertcp") || has("nfs") || v.contains("synology") || v.contains("qnap") {
-        return (Icon::Server, "File server / NAS", "Advertises a file-sharing service or is made by a NAS vendor.".into());
+    if has("smb") || has("afpovertcp") || has("nfs") || v.contains("synology") || v.contains("qnap")
+    {
+        return (
+            Icon::Server,
+            "File server / NAS",
+            "Advertises a file-sharing service or is made by a NAS vendor.".into(),
+        );
     }
     if has("hap") {
-        return (Icon::Unknown, "HomeKit accessory", "Advertises HomeKit (HAP) over mDNS.".into());
+        return (
+            Icon::Unknown,
+            "HomeKit accessory",
+            "Advertises HomeKit (HAP) over mDNS.".into(),
+        );
     }
     if has("spotify-connect") {
-        return (Icon::Speaker, "Spotify Connect speaker", "Advertises Spotify Connect over mDNS.".into());
+        return (
+            Icon::Speaker,
+            "Spotify Connect speaker",
+            "Advertises Spotify Connect over mDNS.".into(),
+        );
     }
     if v.contains("raspberry") || hn.contains("pi") && hn.contains("hole") {
-        return (Icon::Server, "Small server (Raspberry Pi / DNS)", "Vendor or hostname suggests a Raspberry Pi or Pi-hole.".into());
+        return (
+            Icon::Server,
+            "Small server (Raspberry Pi / DNS)",
+            "Vendor or hostname suggests a Raspberry Pi or Pi-hole.".into(),
+        );
     }
     if has("workstation") || has("ssh") {
-        return (Icon::Computer, "Computer", "Advertises a workstation or SSH service over mDNS.".into());
+        return (
+            Icon::Computer,
+            "Computer",
+            "Advertises a workstation or SSH service over mDNS.".into(),
+        );
     }
     if v.contains("private") {
         return (Icon::Unknown, "Private/virtual address", "Randomized or virtual MAC: a phone with private Wi-Fi address, a container, or a VM. The vendor cannot be read.".into());
     }
     if v.contains("apple") {
-        return (Icon::Phone, "Apple device", "Vendor is Apple; could be a phone, tablet, Mac or TV.".into());
+        return (
+            Icon::Phone,
+            "Apple device",
+            "Vendor is Apple; could be a phone, tablet, Mac or TV.".into(),
+        );
     }
-    (Icon::Unknown, "Unidentified device", "No services advertised and the vendor alone is not specific enough.".into())
+    (
+        Icon::Unknown,
+        "Unidentified device",
+        "No services advertised and the vendor alone is not specific enough.".into(),
+    )
 }
 
 /// One LAN neighbour as a device (shared by the live collector and the demo data).
 #[allow(clippy::too_many_arguments)]
-pub fn lan_dev(ip: &str, dev: &str, mac: &str, state: &str, online: bool, is_gw: bool, dns: &str, mhost: String, svcs: Vec<String>, oui: &Oui) -> Dev {
-    let host = if !mhost.is_empty() { mhost } else { dns.to_string() };
+pub fn lan_dev(
+    ip: &str,
+    dev: &str,
+    mac: &str,
+    state: &str,
+    online: bool,
+    is_gw: bool,
+    dns: &str,
+    mhost: String,
+    svcs: Vec<String>,
+    oui: &Oui,
+) -> Dev {
+    let host = if !mhost.is_empty() {
+        mhost
+    } else {
+        dns.to_string()
+    };
     let vendor = oui.vendor(mac);
     let (icon, what, why) = classify(&vendor, &host, &svcs, is_gw);
     let mut d = Dev::new(mac, Kind::Lan);
     d.known = icon != Icon::Unknown;
     d.icon = icon;
-    d.name = if !host.is_empty() { host.clone() } else { ip.to_string() };
+    d.name = if !host.is_empty() {
+        host.clone()
+    } else {
+        ip.to_string()
+    };
     d.vendor = vendor.clone();
     d.online = online;
     d.connected = is_gw;
@@ -918,10 +1251,27 @@ pub fn lan_dev(ip: &str, dev: &str, mac: &str, state: &str, online: bool, is_gw:
         ("IP address".into(), ip.to_string()),
         ("MAC".into(), mac.to_string()),
         ("Vendor".into(), vendor),
-        ("Hostname".into(), if host.is_empty() { "(none advertised)".into() } else { host }),
+        (
+            "Hostname".into(),
+            if host.is_empty() {
+                "(none advertised)".into()
+            } else {
+                host
+            },
+        ),
         ("Neighbour state".into(), format!("{} on {}", state, dev)),
-        ("Services".into(), if svcs.is_empty() { "(none seen)".into() } else { svcs.join(", ") }),
-        ("Signal".into(), "n/a: seen over the network, no radio signal measured".into()),
+        (
+            "Services".into(),
+            if svcs.is_empty() {
+                "(none seen)".into()
+            } else {
+                svcs.join(", ")
+            },
+        ),
+        (
+            "Signal".into(),
+            "n/a: seen over the network, no radio signal measured".into(),
+        ),
     ];
     d.why = why;
     d
@@ -933,7 +1283,14 @@ fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
         let gw = net::gateway().map(|g| g.to_string()).unwrap_or_default();
         let mut v = vec![];
         // keep real LAN neighbours: not VPN/container interfaces, not multicast/broadcast/failed entries
-        let neigh: Vec<net::Neigh> = net::neighbours().into_iter().filter(|n| !net::is_virtual(&n.dev) && !matches!(n.state, "NOARP" | "FAILED" | "INCOMPLETE") && n.mac != "00:00:00:00:00:00").collect();
+        let neigh: Vec<net::Neigh> = net::neighbours()
+            .into_iter()
+            .filter(|n| {
+                !net::is_virtual(&n.dev)
+                    && !matches!(n.state, "NOARP" | "FAILED" | "INCOMPLETE")
+                    && n.mac != "00:00:00:00:00:00"
+            })
+            .collect();
         // STALE only means "not talked to recently": ask those devices directly. If the system forbids
         // unprivileged ping (None), give them the benefit of the doubt.
         let answered: HashSet<String> = std::thread::scope(|sc| {
@@ -942,19 +1299,43 @@ fn lan_loop(h: Handle, oui: Arc<Oui>, mdns: Mdns) {
                 .filter(|n| n.state == "STALE")
                 .map(|n| {
                     let ip = n.ip;
-                    sc.spawn(move || (ip.to_string(), net::ping(ip, Duration::from_secs(1)).unwrap_or(true)))
+                    sc.spawn(move || {
+                        (
+                            ip.to_string(),
+                            net::ping(ip, Duration::from_secs(1)).unwrap_or(true),
+                        )
+                    })
                 })
                 .collect();
-            hs.into_iter().filter_map(|h| h.join().ok()).filter(|(_, ok)| *ok).map(|(ip, _)| ip).collect()
+            hs.into_iter()
+                .filter_map(|h| h.join().ok())
+                .filter(|(_, ok)| *ok)
+                .map(|(ip, _)| ip)
+                .collect()
         });
         {
             let mm = mdns.lock().unwrap().clone();
             for n in &neigh {
-                let (ip, dev, mac, state) = (n.ip.to_string(), n.dev.as_str(), n.mac.clone(), n.state);
+                let (ip, dev, mac, state) =
+                    (n.ip.to_string(), n.dev.as_str(), n.mac.clone(), n.state);
                 let ip = ip.as_str();
-                let dns = names.entry((ip.to_string(), mac.clone())).or_insert_with(|| net::reverse_name(n.ip).unwrap_or_default()).clone();
+                let dns = names
+                    .entry((ip.to_string(), mac.clone()))
+                    .or_insert_with(|| net::reverse_name(n.ip).unwrap_or_default())
+                    .clone();
                 let (mhost, svcs) = mm.get(ip).cloned().unwrap_or_default();
-                let d = lan_dev(ip, dev, &mac, state, state != "STALE" || answered.contains(ip), ip == gw, &dns, mhost, svcs, &oui);
+                let d = lan_dev(
+                    ip,
+                    dev,
+                    &mac,
+                    state,
+                    state != "STALE" || answered.contains(ip),
+                    ip == gw,
+                    &dns,
+                    mhost,
+                    svcs,
+                    &oui,
+                );
                 v.push(d);
             }
         }
@@ -1002,9 +1383,11 @@ pub fn spawn() -> Handle {
 /// Writes to `<path>.tmp` then renames over `path`, so a full disk or a crash never leaves a half-written file.
 pub fn write_atomic(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, contents).and_then(|_| std::fs::rename(&tmp, path)).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    std::fs::write(&tmp, contents)
+        .and_then(|_| std::fs::rename(&tmp, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
 }
 
 #[cfg(test)]
@@ -1027,12 +1410,18 @@ mod tests {
     #[test]
     fn oui_formats() {
         let ieee = "28-6F-B9   (hex)\t\tNokia Shanghai Bell Co., Ltd.\n286FB9     (base 16)\t\tNokia Shanghai Bell Co., Ltd.\n\t\t\t\tNo.388 Road\n";
-        assert_eq!(parse_oui(ieee), vec![(0x286FB9, "Nokia Shanghai Bell Co., Ltd.".to_string())]);
+        assert_eq!(
+            parse_oui(ieee),
+            vec![(0x286FB9, "Nokia Shanghai Bell Co., Ltd.".to_string())]
+        );
         let csv = "Registry,Assignment,Organization Name,Organization Address\nMA-L,286FB9,\"Nokia, Ltd.\",Road\nMA-S,70B3D5E0A,Small Co,Street\n";
         assert_eq!(parse_oui(csv), vec![(0x286FB9, "Nokia, Ltd.".to_string())]);
         let manuf = "# comment\n00:00:00\tXerox\tXerox Corporation\n00:1B:C5:00:00:00/36\tConverging\tConverging Systems\n";
         assert_eq!(parse_oui(manuf), vec![(0, "Xerox Corporation".to_string())]);
-        assert_eq!(parse_oui("AABBCC\tSome Vendor\n"), vec![(0xAABBCC, "Some Vendor".to_string())]);
+        assert_eq!(
+            parse_oui("AABBCC\tSome Vendor\n"),
+            vec![(0xAABBCC, "Some Vendor".to_string())]
+        );
         assert!(parse_oui(BUILT_IN_OUI).len() > 30000);
     }
 
@@ -1043,40 +1432,82 @@ mod tests {
         assert_eq!(bt_quality(Some(255), None), Some(1.0));
         assert_eq!(bt_quality(None, None), None);
         let k = bt_quality(Some(132), Some(-5)).unwrap();
-        assert!((k - 132.0 / 255.0).abs() < 0.001, "the weaker part wins: link 52% beats signal 75%");
-        assert_eq!(bt_quality(Some(255), Some(-14)), Some(0.3), "poor signal drags a perfect link down");
+        assert!(
+            (k - 132.0 / 255.0).abs() < 0.001,
+            "the weaker part wins: link 52% beats signal 75%"
+        );
+        assert_eq!(
+            bt_quality(Some(255), Some(-14)),
+            Some(0.3),
+            "poor signal drags a perfect link down"
+        );
     }
 
     #[test]
     fn lq_percent() {
-        assert_eq!((lq_pct(255), lq_pct(0), lq_pct(132), lq_pct(300)), (100, 0, 52, 100));
+        assert_eq!(
+            (lq_pct(255), lq_pct(0), lq_pct(132), lq_pct(300)),
+            (100, 0, 52, 100)
+        );
     }
 
     #[test]
     fn link_trouble_is_relative() {
-        let hist = |qs: &[i32]| -> History { qs.iter().map(|q| Sample { at: Instant::now(), lq: Some(*q), afh: None, rssi: None }).collect() };
-        let drop = [DevEvent { at: SystemTime::now() - Duration::from_secs(10), kind: EvKind::Disconnected(0x08) }];
+        let hist = |qs: &[i32]| -> History {
+            qs.iter()
+                .map(|q| Sample {
+                    at: Instant::now(),
+                    lq: Some(*q),
+                    afh: None,
+                    rssi: None,
+                })
+                .collect()
+        };
+        let drop = [DevEvent {
+            at: SystemTime::now() - Duration::from_secs(10),
+            kind: EvKind::Disconnected(0x08),
+        }];
         let run = |qs: &[i32], evs: &[DevEvent]| {
             let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
             d.lq = qs.last().copied();
             apply_events(&mut d, evs, &hist(qs), &[], &[]);
             d.issue.iter().any(|(k, _)| k == "Link health")
         };
-        assert!(!run(&[132; 10], &drop), "a steady low reading is normal for that device");
-        assert!(!run(&[255, 255, 250, 240, 200, 150], &[]), "a fall in quality alone is not a problem");
-        assert!(run(&[255, 255, 250, 240, 200, 150], &drop), "a fall plus a radio drop is reported");
+        assert!(
+            !run(&[132; 10], &drop),
+            "a steady low reading is normal for that device"
+        );
+        assert!(
+            !run(&[255, 255, 250, 240, 200, 150], &[]),
+            "a fall in quality alone is not a problem"
+        );
+        assert!(
+            run(&[255, 255, 250, 240, 200, 150], &drop),
+            "a fall plus a radio drop is reported"
+        );
         assert!(!run(&[255, 250], &drop), "too little history to judge");
     }
 
     #[test]
     fn shared_drops() {
         let at = SystemTime::now() - Duration::from_secs(30);
-        let mk = |s: u64| vec![DevEvent { at: at + Duration::from_secs(s), kind: EvKind::Disconnected(0x08) }];
+        let mk = |s: u64| {
+            vec![DevEvent {
+                at: at + Duration::from_secs(s),
+                kind: EvKind::Disconnected(0x08),
+            }]
+        };
         let run = |gap: u64| {
             let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
-            let peers = vec![("11:22:33:44:55:66".to_string(), "Headphones".to_string(), mk(gap))];
+            let peers = vec![(
+                "11:22:33:44:55:66".to_string(),
+                "Headphones".to_string(),
+                mk(gap),
+            )];
             apply_events(&mut d, &mk(0), &History::new(), &[], &peers);
-            d.issue.iter().any(|(k, v)| k == "Shared cause" && v.contains("Headphones"))
+            d.issue
+                .iter()
+                .any(|(k, v)| k == "Shared cause" && v.contains("Headphones"))
         };
         assert!(run(1), "two devices dropping together share a cause");
         assert!(!run(20), "drops far apart do not");
@@ -1086,32 +1517,81 @@ mod tests {
     fn warnings_and_loops() {
         let now = SystemTime::now();
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
-        let flap: Vec<DevEvent> = (0..3).map(|i| DevEvent { at: now - Duration::from_secs(60 * i), kind: EvKind::Connected }).collect();
+        let flap: Vec<DevEvent> = (0..3)
+            .map(|i| DevEvent {
+                at: now - Duration::from_secs(60 * i),
+                kind: EvKind::Connected,
+            })
+            .collect();
         apply_events(&mut d, &flap, &History::new(), &[], &[]);
-        assert!(d.trouble > 0.0 && d.caution == 0.0, "three reconnects in ten minutes is a problem");
+        assert!(
+            d.trouble > 0.0 && d.caution == 0.0,
+            "three reconnects in ten minutes is a problem"
+        );
 
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
         d.battery = Some(10);
         apply_events(&mut d, &[], &History::new(), &[], &[]);
-        assert!(d.trouble == 0.0 && d.caution > 0.0, "low battery is only a warning");
+        assert!(
+            d.trouble == 0.0 && d.caution > 0.0,
+            "low battery is only a warning"
+        );
 
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
-        let h: History = [40, 40, 30].iter().map(|n| Sample { at: Instant::now(), lq: None, afh: Some(*n), rssi: None }).collect();
+        let h: History = [40, 40, 30]
+            .iter()
+            .map(|n| Sample {
+                at: Instant::now(),
+                lq: None,
+                afh: Some(*n),
+                rssi: None,
+            })
+            .collect();
         apply_events(&mut d, &[], &h, &[], &[]);
-        assert!(d.trouble == 0.0 && d.caution == 0.0, "adaptive hopping on its own is not a problem");
+        assert!(
+            d.trouble == 0.0 && d.caution == 0.0,
+            "adaptive hopping on its own is not a problem"
+        );
 
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
-        let h: History = [30, 22, 21, 20].iter().map(|n| Sample { at: Instant::now(), lq: None, afh: Some(*n), rssi: None }).collect();
+        let h: History = [30, 22, 21, 20]
+            .iter()
+            .map(|n| Sample {
+                at: Instant::now(),
+                lq: None,
+                afh: Some(*n),
+                rssi: None,
+            })
+            .collect();
         apply_events(&mut d, &[], &h, &[], &[]);
-        assert!(d.trouble == 0.0 && d.caution > 0.0, "a map near the 20-channel minimum is a warning");
+        assert!(
+            d.trouble == 0.0 && d.caution > 0.0,
+            "a map near the 20-channel minimum is a warning"
+        );
 
         let mut d = Dev::new("AA:BB:CC:DD:EE:FF", Kind::Bt);
-        let h: History = (0..5).map(|_| Sample { at: Instant::now(), lq: None, afh: None, rssi: Some(-14) }).collect();
+        let h: History = (0..5)
+            .map(|_| Sample {
+                at: Instant::now(),
+                lq: None,
+                afh: None,
+                rssi: Some(-14),
+            })
+            .collect();
         apply_events(&mut d, &[], &h, &[], &[]);
-        assert!(d.trouble == 0.0 && d.caution == 0.0, "a weak signal alone is not a problem");
-        let drop = [DevEvent { at: now - Duration::from_secs(10), kind: EvKind::Disconnected(0x08) }];
+        assert!(
+            d.trouble == 0.0 && d.caution == 0.0,
+            "a weak signal alone is not a problem"
+        );
+        let drop = [DevEvent {
+            at: now - Duration::from_secs(10),
+            kind: EvKind::Disconnected(0x08),
+        }];
         apply_events(&mut d, &drop, &h, &[], &[]);
-        assert!(d.caution > 0.0, "a weak signal alongside a radio drop is reported");
+        assert!(
+            d.caution > 0.0,
+            "a weak signal alongside a radio drop is reported"
+        );
     }
 
     #[test]

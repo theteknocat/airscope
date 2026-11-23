@@ -33,14 +33,34 @@ pub fn connect() -> Option<Connection> {
 
 /// All devices BlueZ knows about, or None if BlueZ can't be reached.
 pub fn devices(conn: &Connection) -> Option<Vec<BtDev>> {
-    let msg = conn.call_method(Some("org.bluez"), "/", Some("org.freedesktop.DBus.ObjectManager"), "GetManagedObjects", &()).ok()?;
+    let msg = conn
+        .call_method(
+            Some("org.bluez"),
+            "/",
+            Some("org.freedesktop.DBus.ObjectManager"),
+            "GetManagedObjects",
+            &(),
+        )
+        .ok()?;
     let all: Managed = msg.body().deserialize().ok()?;
     let mut out = vec![];
     for (_, ifaces) in all {
-        let Some(p) = ifaces.get("org.bluez.Device1") else { continue };
-        let Some(addr) = get::<String>(p, "Address") else { continue };
-        let battery = ifaces.get("org.bluez.Battery1").and_then(|b| get::<u8>(b, "Percentage")).map(|v| v as i32);
-        let mut services: Vec<String> = get::<Vec<String>>(p, "UUIDs").unwrap_or_default().iter().filter_map(|u| uuid_name(u)).map(|s| s.to_string()).collect();
+        let Some(p) = ifaces.get("org.bluez.Device1") else {
+            continue;
+        };
+        let Some(addr) = get::<String>(p, "Address") else {
+            continue;
+        };
+        let battery = ifaces
+            .get("org.bluez.Battery1")
+            .and_then(|b| get::<u8>(b, "Percentage"))
+            .map(|v| v as i32);
+        let mut services: Vec<String> = get::<Vec<String>>(p, "UUIDs")
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|u| uuid_name(u))
+            .map(|s| s.to_string())
+            .collect();
         let mut seen = std::collections::HashSet::new();
         services.retain(|s| seen.insert(s.clone())); // keeps the order; two UUIDs share the name "Human Interface Device"
         out.push(BtDev {
@@ -102,9 +122,15 @@ mod tests {
 
     #[test]
     fn uuid_names() {
-        assert_eq!(uuid_name("0000110B-0000-1000-8000-00805F9B34FB"), Some("Audio Sink"));
+        assert_eq!(
+            uuid_name("0000110B-0000-1000-8000-00805F9B34FB"),
+            Some("Audio Sink")
+        );
         assert_eq!(uuid_name("4715650b-5e9d-4ac2-b898-a4fc0aa5df78"), None);
-        assert_eq!(uuid_name("00001124-0000-1000-8000-00805f9b34fb"), Some("Human Interface Device"));
+        assert_eq!(
+            uuid_name("00001124-0000-1000-8000-00805f9b34fb"),
+            Some("Human Interface Device")
+        );
     }
 
     /// Lists the devices BlueZ reports. Run with: cargo test bluez_dump -- --ignored --nocapture
@@ -113,7 +139,20 @@ mod tests {
     fn bluez_dump() {
         let c = connect().expect("system bus");
         for d in devices(&c).expect("bluez") {
-            println!("{} {:?}/{:?} icon={:?} class={:#x} conn={} paired={} trusted={} batt={:?} svc={:?} modalias={:?}", d.mac, d.name, d.alias, d.icon, d.class, d.connected, d.paired, d.trusted, d.battery, d.services, d.modalias);
+            println!(
+                "{} {:?}/{:?} icon={:?} class={:#x} conn={} paired={} trusted={} batt={:?} svc={:?} modalias={:?}",
+                d.mac,
+                d.name,
+                d.alias,
+                d.icon,
+                d.class,
+                d.connected,
+                d.paired,
+                d.trusted,
+                d.battery,
+                d.services,
+                d.modalias
+            );
         }
     }
 }

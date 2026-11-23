@@ -23,7 +23,10 @@ pub type Addr = [u8; 6];
 pub const UNKNOWN: Addr = [0; 6];
 
 pub fn mac(a: &Addr) -> String {
-    format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", a[5], a[4], a[3], a[2], a[1], a[0])
+    format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        a[5], a[4], a[3], a[2], a[1], a[0]
+    )
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -32,11 +35,19 @@ pub enum Kind {
     ConnRequest,
     Connected,
     /// `quiet` = seconds since the last data packet on the link; `lived` = how long the link had been up.
-    Disconnected { reason: u8, quiet: Option<f64>, lived: Option<f64> },
+    Disconnected {
+        reason: u8,
+        quiet: Option<f64>,
+        lived: Option<f64>,
+    },
     /// The PC asked the device to leave sniff mode; `wait` = seconds until the controller answered (None = no answer).
-    SniffExit { wait: Option<f64> },
+    SniffExit {
+        wait: Option<f64>,
+    },
     /// The controller reported a mode change as failed (status code).
-    ModeFailed { status: u8 },
+    ModeFailed {
+        status: u8,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -102,7 +113,16 @@ impl Snoop {
                 break; // last record still being written
             }
             let flags = be32(&d[o + 8..]);
-            let ts = i64::from_be_bytes([d[o + 16], d[o + 17], d[o + 18], d[o + 19], d[o + 20], d[o + 21], d[o + 22], d[o + 23]]);
+            let ts = i64::from_be_bytes([
+                d[o + 16],
+                d[o + 17],
+                d[o + 18],
+                d[o + 19],
+                d[o + 20],
+                d[o + 21],
+                d[o + 22],
+                d[o + 23],
+            ]);
             self.record((flags & 0xffff) as u16, ts, &d[o + 24..o + 24 + incl]);
             o += 24 + incl;
         }
@@ -112,16 +132,23 @@ impl Snoop {
     }
 
     pub fn duration(&self) -> f64 {
-        self.first_us.map_or(0.0, |f| (self.last_us - f) as f64 / 1e6)
+        self.first_us
+            .map_or(0.0, |f| (self.last_us - f) as f64 / 1e6)
     }
 
     /// When the first record was written, in Unix seconds (0 for a capture with no records yet).
     pub fn first_unix(&self) -> f64 {
-        self.first_us.map_or(0.0, |f| (f - BTSNOOP_EPOCH_US) as f64 / 1e6)
+        self.first_us
+            .map_or(0.0, |f| (f - BTSNOOP_EPOCH_US) as f64 / 1e6)
     }
 
     fn push(&mut self, t: f64, unix: f64, addr: Addr, kind: Kind) -> usize {
-        self.events.push(Ev { t, unix, addr, kind });
+        self.events.push(Ev {
+            t,
+            unix,
+            addr,
+            kind,
+        });
         self.events.len() - 1
     }
 
@@ -175,12 +202,30 @@ impl Snoop {
                 match self.handles.remove(&h) {
                     Some((a, ct)) => {
                         let quiet = Some(t - self.last_acl.get(&h).copied().unwrap_or(ct));
-                        self.push(t, unix, a, Kind::Disconnected { reason: p[3], quiet, lived: Some(t - ct) });
+                        self.push(
+                            t,
+                            unix,
+                            a,
+                            Kind::Disconnected {
+                                reason: p[3],
+                                quiet,
+                                lived: Some(t - ct),
+                            },
+                        );
                     }
                     // the link was already up when the capture started: address and age unknown
                     None => {
                         let quiet = self.last_acl.get(&h).map(|l| t - l);
-                        self.push(t, unix, UNKNOWN, Kind::Disconnected { reason: p[3], quiet, lived: None });
+                        self.push(
+                            t,
+                            unix,
+                            UNKNOWN,
+                            Kind::Disconnected {
+                                reason: p[3],
+                                quiet,
+                                lived: None,
+                            },
+                        );
                     }
                 }
                 self.last_acl.remove(&h);
@@ -215,7 +260,9 @@ impl Snoop {
     // ---------- analysis ----------
 
     pub fn drops(&self) -> impl Iterator<Item = &Ev> {
-        self.events.iter().filter(|e| matches!(e.kind, Kind::Disconnected { .. }))
+        self.events
+            .iter()
+            .filter(|e| matches!(e.kind, Kind::Disconnected { .. }))
     }
 
     /// True for a sniff exit the controller answered late or not at all.
@@ -227,7 +274,12 @@ impl Snoop {
     /// in a single pass in `per_device`; this form is for tests).
     #[cfg(test)]
     pub fn after_stall(&self, drop: &Ev) -> bool {
-        self.events.iter().any(|e| e.addr == drop.addr && Self::slow_exit(e) && e.t <= drop.t && drop.t - e.t <= STALL_WINDOW_S)
+        self.events.iter().any(|e| {
+            e.addr == drop.addr
+                && Self::slow_exit(e)
+                && e.t <= drop.t
+                && drop.t - e.t <= STALL_WINDOW_S
+        })
     }
 
     /// Groups of drops separated by quiet stretches longer than `gap` seconds: (start, end, drops).
@@ -255,12 +307,20 @@ impl Snoop {
         let mut out = vec![];
         for a in addrs {
             let mine: Vec<&Ev> = self.events.iter().filter(|e| e.addr == a).collect();
-            let drops: Vec<&&Ev> = mine.iter().filter(|e| matches!(e.kind, Kind::Disconnected { .. })).collect();
+            let drops: Vec<&&Ev> = mine
+                .iter()
+                .filter(|e| matches!(e.kind, Kind::Disconnected { .. }))
+                .collect();
             let mut reasons: Vec<(u8, usize)> = vec![];
             let mut lives = vec![];
             let mut quiets = vec![];
             for e in &drops {
-                if let Kind::Disconnected { reason, quiet, lived } = e.kind {
+                if let Kind::Disconnected {
+                    reason,
+                    quiet,
+                    lived,
+                } = e.kind
+                {
                     match reasons.iter_mut().find(|r| r.0 == reason) {
                         Some(r) => r.1 += 1,
                         None => reasons.push((reason, 1)),
@@ -275,7 +335,9 @@ impl Snoop {
             for e in &mine {
                 if Self::slow_exit(e) {
                     last_slow = Some(e.t);
-                } else if matches!(e.kind, Kind::Disconnected { .. }) && last_slow.is_some_and(|t| e.t - t <= STALL_WINDOW_S) {
+                } else if matches!(e.kind, Kind::Disconnected { .. })
+                    && last_slow.is_some_and(|t| e.t - t <= STALL_WINDOW_S)
+                {
                     after_stall += 1;
                 }
             }
@@ -286,11 +348,17 @@ impl Snoop {
                 drops: drops.len(),
                 after_stall,
                 slow_exits: mine.iter().filter(|e| Self::slow_exit(e)).count(),
-                exits: mine.iter().filter(|e| matches!(e.kind, Kind::SniffExit { .. })).count(),
+                exits: mine
+                    .iter()
+                    .filter(|e| matches!(e.kind, Kind::SniffExit { .. }))
+                    .count(),
                 reasons,
                 median_gap: median(gaps),
                 median_life: median(lives.clone()),
-                shortest_life: lives.iter().copied().fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.min(v)))),
+                shortest_life: lives
+                    .iter()
+                    .copied()
+                    .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.min(v)))),
                 median_quiet: median(quiets),
                 tx,
                 rx,
@@ -339,18 +407,30 @@ pub fn clock(unix: f64) -> String {
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// "Nov 8, 2026": local date for a Unix time in seconds, as shown everywhere in the app.
 pub fn date(unix: f64) -> String {
     let tm = local(unix as i64);
-    format!("{} {}, {}", MONTHS[(tm.tm_mon as usize).min(11)], tm.tm_mday, tm.tm_year + 1900)
+    format!(
+        "{} {}, {}",
+        MONTHS[(tm.tm_mon as usize).min(11)],
+        tm.tm_mday,
+        tm.tm_year + 1900
+    )
 }
 
 /// "2026-11-08": the same date for file names (no spaces or commas).
 pub fn date_iso(unix: f64) -> String {
     let tm = local(unix as i64);
-    format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)
+    format!(
+        "{:04}-{:02}-{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday
+    )
 }
 
 /// A library session folder name "2026-11-08_18-12-25" as "Nov 8, 2026  18:12:25"; other names come back unchanged.
@@ -358,13 +438,29 @@ pub fn pretty_stamp(name: &str) -> String {
     let p: Vec<&str> = name.split(['-', '_']).collect();
     let n: Vec<Option<usize>> = p.iter().map(|x| x.parse().ok()).collect();
     match (p.len(), n.as_slice()) {
-        (6, [Some(y), Some(m), Some(d), Some(h), Some(mi), Some(se)]) if (1..=12).contains(m) => format!("{} {}, {}  {:02}:{:02}:{:02}", MONTHS[m - 1], d, y, h, mi, se),
+        (6, [Some(y), Some(m), Some(d), Some(h), Some(mi), Some(se)]) if (1..=12).contains(m) => {
+            format!(
+                "{} {}, {}  {:02}:{:02}:{:02}",
+                MONTHS[m - 1],
+                d,
+                y,
+                h,
+                mi,
+                se
+            )
+        }
         _ => name.to_string(),
     }
 }
 
 pub fn dur(s: f64) -> String {
-    if s < 100.0 { format!("{s:.1} s") } else if s < 6000.0 { format!("{:.1} min", s / 60.0) } else { format!("{:.1} h", s / 3600.0) }
+    if s < 100.0 {
+        format!("{s:.1} s")
+    } else if s < 6000.0 {
+        format!("{:.1} min", s / 60.0)
+    } else {
+        format!("{:.1} h", s / 3600.0)
+    }
 }
 
 /// Seconds since the first record, for the "since start" column.
@@ -377,7 +473,11 @@ pub fn message(e: &Ev) -> String {
     match &e.kind {
         Kind::ConnRequest => "asks to connect".into(),
         Kind::Connected => "connected".into(),
-        Kind::Disconnected { reason, quiet, lived } => {
+        Kind::Disconnected {
+            reason,
+            quiet,
+            lived,
+        } => {
             let (name, _, _) = crate::hci::reason(*reason);
             let mut s = format!("DROPPED: {name} (0x{reason:02x})");
             if let Some(l) = lived {
@@ -388,16 +488,28 @@ pub fn message(e: &Ev) -> String {
             }
             s
         }
-        Kind::SniffExit { wait: Some(w) } if *w <= SLOW_EXIT_S => format!("sniff exit answered in {:.2} s", w),
-        Kind::SniffExit { wait: Some(w) } => format!("SLOW sniff exit: controller took {:.1} s to answer", w),
-        Kind::SniffExit { wait: None } => "SNIFF EXIT UNANSWERED (link dropped, or no reply yet)".into(),
+        Kind::SniffExit { wait: Some(w) } if *w <= SLOW_EXIT_S => {
+            format!("sniff exit answered in {:.2} s", w)
+        }
+        Kind::SniffExit { wait: Some(w) } => {
+            format!("SLOW sniff exit: controller took {:.1} s to answer", w)
+        }
+        Kind::SniffExit { wait: None } => {
+            "SNIFF EXIT UNANSWERED (link dropped, or no reply yet)".into()
+        }
         Kind::ModeFailed { status } => format!("mode change failed (status 0x{status:02x})"),
     }
 }
 
 /// One plain-text line describing an event, used in the saved report.
 pub fn line(e: &Ev, who: &str) -> String {
-    format!("{}  {:>10}  {}  {}", clock(e.unix), offset(e), who, message(e))
+    format!(
+        "{}  {:>10}  {}  {}",
+        clock(e.unix),
+        offset(e),
+        who,
+        message(e)
+    )
 }
 
 #[cfg(test)]
@@ -432,7 +544,12 @@ mod tests {
         rec(&mut f, OP_ACL_RX, 3_000_000, &[0x00, 0x21, 1, 0, 0xaa]);
         // sniff exit at t=5 s, never answered, drop at t=20 s (reason 0x08)
         rec(&mut f, OP_COMMAND, 6_000_000, &[0x04, 0x08, 2, 0x00, 0x01]);
-        rec(&mut f, OP_EVENT, 21_000_000, &[0x05, 4, 0, 0x00, 0x01, 0x08]);
+        rec(
+            &mut f,
+            OP_EVENT,
+            21_000_000,
+            &[0x05, 4, 0, 0x00, 0x01, 0x08],
+        );
         f
     }
 
@@ -443,9 +560,19 @@ mod tests {
         s.feed(&f).unwrap();
         let drops: Vec<&Ev> = s.drops().collect();
         assert_eq!(drops.len(), 1);
-        let Kind::Disconnected { reason, quiet, lived } = drops[0].kind else { panic!() };
+        let Kind::Disconnected {
+            reason,
+            quiet,
+            lived,
+        } = drops[0].kind
+        else {
+            panic!()
+        };
         assert_eq!(reason, 0x08);
-        assert!((quiet.unwrap() - 18.0).abs() < 1e-6, "last data at t=2 s, drop at t=20 s");
+        assert!(
+            (quiet.unwrap() - 18.0).abs() < 1e-6,
+            "last data at t=2 s, drop at t=20 s"
+        );
         assert!((lived.unwrap() - 20.0).abs() < 1e-6);
         assert!(s.after_stall(drops[0]));
         assert_eq!(s.acl, 1);
@@ -469,8 +596,19 @@ mod tests {
         let path = std::env::var("AIRSCOPE_SNOOP").unwrap();
         let mut s = Snoop::default();
         s.feed(&std::fs::read(path).unwrap()).unwrap();
-        println!("records {} acl {} events {} drops {}", s.records, s.acl, s.events.len(), s.drops().count());
-        for e in s.events.iter().filter(|e| !matches!(e.kind, Kind::SniffExit { .. })).take(40) {
+        println!(
+            "records {} acl {} events {} drops {}",
+            s.records,
+            s.acl,
+            s.events.len(),
+            s.drops().count()
+        );
+        for e in s
+            .events
+            .iter()
+            .filter(|e| !matches!(e.kind, Kind::SniffExit { .. }))
+            .take(40)
+        {
             println!("{}", line(e, &mac(&e.addr)[12..]));
         }
     }
