@@ -16,6 +16,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Formatting
         run: cargo fmt --check
+      - name: Formatting gave up nowhere
+        # plain --check passes when rustfmt silently skips a block it cannot fit in max_width
+        run: cargo fmt -- --check --config error_on_line_overflow=true
       - name: Lints
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Tests
