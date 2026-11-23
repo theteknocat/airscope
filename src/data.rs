@@ -211,10 +211,11 @@ pub fn parse_oui(text: &str) -> Vec<(u32, String)> {
             }
         };
         let hex: String = key.chars().filter(|c| *c != '-' && *c != ':').collect();
-        if hex.len() == 6 && !name.is_empty() {
-            if let Ok(v) = u32::from_str_radix(&hex, 16) {
-                out.push((v, name));
-            }
+        if hex.len() == 6
+            && !name.is_empty()
+            && let Ok(v) = u32::from_str_radix(&hex, 16)
+        {
+            out.push((v, name));
         }
     }
     out
@@ -784,13 +785,15 @@ pub fn apply_events(
     }
     // red: link quality fell well below this device's own recent best
     let peak = hist.iter().filter_map(|s| s.lq).max();
-    if let (Some(cur), Some(pk)) = (d.lq, peak) {
-        if !bad.is_empty() && hist.len() >= 5 && (cur as f32) < pk as f32 * LINK_DROP {
-            d.trouble = d
-                .trouble
-                .max(((pk - cur) as f32 / (pk as f32 * 0.5)).clamp(0.25, 1.0));
-            d.issue.push(("Link health".into(), format!("DEGRADED: link quality fell to {}% (it was {}% earlier). Packets are being lost or retried, which is what interference looks like.", lq_pct(cur), lq_pct(pk))));
-        }
+    if let (Some(cur), Some(pk)) = (d.lq, peak)
+        && !bad.is_empty()
+        && hist.len() >= 5
+        && (cur as f32) < pk as f32 * LINK_DROP
+    {
+        d.trouble = d
+            .trouble
+            .max(((pk - cur) as f32 / (pk as f32 * 0.5)).clamp(0.25, 1.0));
+        d.issue.push(("Link health".into(), format!("DEGRADED: link quality fell to {}% (it was {}% earlier). Packets are being lost or retried, which is what interference looks like.", lq_pct(cur), lq_pct(pk))));
     }
     // several devices losing their links at the same moment: the cause is shared, not this device
     let mut shared: Vec<(String, SystemTime)> = vec![];
@@ -848,11 +851,10 @@ pub fn apply_events(
                 .count()
                 >= 3
         })
+        && cur <= AFH_FLOOR
     {
-        if cur <= AFH_FLOOR {
-            d.caution = d.caution.max(0.5);
-            notes.push(("Channel map".into(), format!("Only {} of 79 channels are usable (the minimum is 20). The device has little room left to hop around noise, so any more interference will hit the link directly.", cur)));
-        }
+        d.caution = d.caution.max(0.5);
+        notes.push(("Channel map".into(), format!("Only {} of 79 channels are usable (the minimum is 20). The device has little room left to hop around noise, so any more interference will hit the link directly.", cur)));
     }
     // amber: signal weak (RSSI is relative to the ideal range: 0 is fine, negative is too weak)
     let rs: Vec<i32> = hist.iter().rev().take(5).filter_map(|s| s.rssi).collect();

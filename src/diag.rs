@@ -238,11 +238,11 @@ impl Diag {
         }
         self.pos += buf.len() as u64;
         self.grew = Some(Instant::now());
-        if let Some(s) = self.snoop.as_mut() {
-            if let Err(e) = s.feed(&buf) {
-                self.err = Some(e);
-                self.snoop = None;
-            }
+        if let Some(s) = self.snoop.as_mut()
+            && let Err(e) = s.feed(&buf)
+        {
+            self.err = Some(e);
+            self.snoop = None;
         }
     }
 
@@ -703,15 +703,12 @@ impl Diag {
                 )
                 .hint("Stop the recording (asks for your password)")
                 .clicked()
+                    && let Some(r) = self.rec.as_mut()
                 {
-                    if let Some(r) = self.rec.as_mut() {
-                        self.rec_msg = Some(match r.stop() {
-                            Ok(()) => {
-                                (false, "Enter your password to end the capture.".to_string())
-                            }
-                            Err(e) => (true, e),
-                        });
-                    }
+                    self.rec_msg = Some(match r.stop() {
+                        Ok(()) => (false, "Enter your password to end the capture.".to_string()),
+                        Err(e) => (true, e),
+                    });
                 }
                 if let Some(r) = &self.rec {
                     lamp(
@@ -900,12 +897,12 @@ impl Diag {
             }
             _ => {}
         }
-        if let Some(f) = self.follow.clone() {
-            if std::fs::metadata(&f).is_ok_and(|m| m.len() > 16) {
-                self.follow = None;
-                self.rec_msg = None;
-                self.open_path(f.display().to_string());
-            }
+        if let Some(f) = self.follow.clone()
+            && std::fs::metadata(&f).is_ok_and(|m| m.len() > 16)
+        {
+            self.follow = None;
+            self.rec_msg = None;
+            self.open_path(f.display().to_string());
         }
         self.pump();
         let s = self.snoop.take();

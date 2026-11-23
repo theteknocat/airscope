@@ -514,10 +514,10 @@ impl App {
         if let Some(s) = cfg_path().and_then(|p| std::fs::read_to_string(p).ok()) {
             for l in s.lines() {
                 let f: Vec<&str> = l.split('\t').collect();
-                if f.len() == 3 {
-                    if let (Ok(a), Ok(d)) = (f[1].parse(), f[2].parse()) {
-                        over.insert(f[0].to_string(), (a, d));
-                    }
+                if f.len() == 3
+                    && let (Ok(a), Ok(d)) = (f[1].parse(), f[2].parse())
+                {
+                    over.insert(f[0].to_string(), (a, d));
                 }
             }
         }
@@ -633,7 +633,8 @@ impl App {
     }
 
     fn sync(&mut self) {
-        #[allow(clippy::unwrap_used)] // poisoned lock: another thread panicked, so crash (see data.rs)
+        #[allow(clippy::unwrap_used)]
+        // poisoned lock: another thread panicked, so crash (see data.rs)
         let s = self.h.lock().unwrap();
         if s.ver == self.ver {
             return;
@@ -1145,11 +1146,11 @@ impl App {
                         // leeway: ignore small signal wiggles so dots only move on a real change
                         let old = &self.latched[i];
                         let mut nd = d.clone();
-                        if let (Some(a), Some(b)) = (old.dbm, d.dbm) {
-                            if (a - b).abs() < SIGNAL_LEEWAY_DB {
-                                nd.dbm = old.dbm;
-                                nd.dist_m = old.dist_m;
-                            }
+                        if let (Some(a), Some(b)) = (old.dbm, d.dbm)
+                            && (a - b).abs() < SIGNAL_LEEWAY_DB
+                        {
+                            nd.dbm = old.dbm;
+                            nd.dist_m = old.dist_m;
                         }
                         self.latched[i] = nd;
                     }
@@ -1250,17 +1251,17 @@ impl App {
                 self.reset_view = false;
             }
         }
-        if let Some(ptr) = pointer {
-            if rect.contains(ptr) {
-                let sc = ui.input(|i| i.smooth_scroll_delta.y);
-                if sc != 0.0 {
-                    self.reset_view = false;
-                    let z0 = self.zoom;
-                    let z1 = (z0 * (1.0 + sc * 0.0015)).clamp(0.4, 14.0);
-                    let c0 = rect.center() + self.pan;
-                    self.pan += (ptr - c0) * (1.0 - z1 / z0); // keep the point under the cursor fixed
-                    self.zoom = z1;
-                }
+        if let Some(ptr) = pointer
+            && rect.contains(ptr)
+        {
+            let sc = ui.input(|i| i.smooth_scroll_delta.y);
+            if sc != 0.0 {
+                self.reset_view = false;
+                let z0 = self.zoom;
+                let z1 = (z0 * (1.0 + sc * 0.0015)).clamp(0.4, 14.0);
+                let c0 = rect.center() + self.pan;
+                self.pan += (ptr - c0) * (1.0 - z1 / z0); // keep the point under the cursor fixed
+                self.zoom = z1;
             }
         }
         let c = rect.center() + self.pan;
@@ -1473,10 +1474,10 @@ impl App {
                 }
             }; // the group icon (radius 22) clears the PC orb too
             let key = key_of[ri].clone().unwrap_or_default();
-            if let Some(r) = &reveal {
-                if mem.iter().any(|&i| &self.latched[nodes[i].i].id == r) {
-                    self.open.insert(key.clone()); // a device picked from the list must be visible
-                }
+            if let Some(r) = &reveal
+                && mem.iter().any(|&i| &self.latched[nodes[i].i].id == r)
+            {
+                self.open.insert(key.clone()); // a device picked from the list must be visible
             }
             if std::env::var_os("AIRSCOPE_AUTO").is_some()
                 && mem.iter().any(|&i| {
@@ -2137,14 +2138,14 @@ impl App {
         }
 
         // --- click outside an open group's circle closes it
-        if ui.input(|i| i.pointer.primary_clicked()) {
-            if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
-                if rect.contains(ptr) && ui.ctx().layer_id_at(ptr) == Some(ui.layer_id()) {
-                    for g in groups.iter().filter(|g| g.open) {
-                        if (ptr - g.center).length() > g.halo_r {
-                            toggle.push((g.key.clone(), false));
-                        }
-                    }
+        if ui.input(|i| i.pointer.primary_clicked())
+            && let Some(ptr) = ui.input(|i| i.pointer.interact_pos())
+            && rect.contains(ptr)
+            && ui.ctx().layer_id_at(ptr) == Some(ui.layer_id())
+        {
+            for g in groups.iter().filter(|g| g.open) {
+                if (ptr - g.center).length() > g.halo_r {
+                    toggle.push((g.key.clone(), false));
                 }
             }
         }
@@ -2178,17 +2179,15 @@ impl App {
                 Some(id)
             };
         }
-        if let Some(id) = self.sel.clone() {
-            if let Some(ni) = nodes
+        if let Some(id) = self.sel.clone()
+            && let Some(ni) = nodes
                 .iter()
                 .enumerate()
                 .find(|(_, n)| self.latched[n.i].id == id)
                 .map(|(ni, _)| ni)
-            {
-                if !settled[ni] {
-                    self.radar_anchor = Some((id, disp[ni])); // the shared info box follows the dot
-                }
-            }
+            && !settled[ni]
+        {
+            self.radar_anchor = Some((id, disp[ni])); // the shared info box follows the dot
         }
 
         // --- zoom HUD
@@ -2404,8 +2403,7 @@ impl App {
                         .filter(|x| x.kind == Kind::Lan)
                         .filter_map(|x| mac_bytes(&x.id))
                         .any(|m| same_device(b, m))
-                }))
-                    || (d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())))
+                })) || (d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())))
             }
             _ => true,
         }
@@ -2753,33 +2751,32 @@ impl App {
         }
         // hills under the cursor, nearest outline first (ties: the stronger network), so a hill hidden
         // inside a bigger one is still reachable by pointing near its own edge
-        if hover.is_none() {
-            if let Some(q) = ptr {
-                hover = labels.iter().find(|l| !l.3 && l.1.contains(q)).map(|l| l.0);
-            }
+        if hover.is_none()
+            && let Some(q) = ptr
+        {
+            hover = labels.iter().find(|l| !l.3 && l.1.contains(q)).map(|l| l.0);
         }
         let mut under: Vec<usize> = vec![];
-        if hover.is_none() {
-            if let Some(q) =
+        if hover.is_none()
+            && let Some(q) =
                 ptr.filter(|q| q.x > gx0 && q.x < gx1 && q.y < base && q.y > rect.top() + 72.0)
-            {
-                let f = 2399.0 + (q.x - gx0) / gw * 87.0;
-                let mut c: Vec<(usize, f32)> = nets
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, n)| {
-                        let depth = hh(n, f - n.f) - (base - q.y);
-                        (depth >= 0.0).then_some((i, depth))
-                    })
-                    .collect();
-                c.sort_by(|a, b| {
-                    a.1.partial_cmp(&b.1)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then(a.0.cmp(&b.0))
-                });
-                under = c.into_iter().map(|x| x.0).collect();
-                hover = under.first().copied();
-            }
+        {
+            let f = 2399.0 + (q.x - gx0) / gw * 87.0;
+            let mut c: Vec<(usize, f32)> = nets
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| {
+                    let depth = hh(n, f - n.f) - (base - q.y);
+                    (depth >= 0.0).then_some((i, depth))
+                })
+                .collect();
+            c.sort_by(|a, b| {
+                a.1.partial_cmp(&b.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.0.cmp(&b.0))
+            });
+            under = c.into_iter().map(|x| x.0).collect();
+            hover = under.first().copied();
         }
         if let Some(h) = hover {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -3603,10 +3600,10 @@ impl App {
                         })
                 });
         }
-        if let Some(g) = toggle {
-            if !self.collapsed.remove(&g) {
-                self.collapsed.insert(g);
-            }
+        if let Some(g) = toggle
+            && !self.collapsed.remove(&g)
+        {
+            self.collapsed.insert(g);
         }
         if let Some((id, q)) = pick {
             self.sel = if self.sel.as_deref() == Some(id.as_str()) {
@@ -4426,11 +4423,11 @@ impl eframe::App for App {
         ui.ctx().request_repaint();
         // the wheel belongs to an info box (or the vendor dialog) when the mouse is over one, not to what is behind it
         self.wheel = 0.0;
-        if let Some(q) = ui.input(|i| i.pointer.hover_pos()) {
-            if self.vendor_open || self.popup_rects.iter().any(|r| r.contains(q)) {
-                self.wheel = ui.input(|i| i.smooth_scroll_delta.y);
-                ui.ctx().input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
-            }
+        if let Some(q) = ui.input(|i| i.pointer.hover_pos())
+            && (self.vendor_open || self.popup_rects.iter().any(|r| r.contains(q)))
+        {
+            self.wheel = ui.input(|i| i.smooth_scroll_delta.y);
+            ui.ctx().input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
         }
         self.popup_rects.clear();
         let t = self.t0.elapsed().as_secs_f32();
@@ -4462,10 +4459,10 @@ impl eframe::App for App {
                 self.diag.ui(ui, &names)
             }
         });
-        if matches!(self.screen, Screen::Diagnostics) {
-            if let Some(t) = self.diag.tip.take() {
-                self.tip_want = Some(t);
-            }
+        if matches!(self.screen, Screen::Diagnostics)
+            && let Some(t) = self.diag.tip.take()
+        {
+            self.tip_want = Some(t);
         }
         self.vendor_window(ui.ctx());
         if self.vendor_pick.is_some() || self.diag.dialog_open() {
@@ -4505,25 +4502,24 @@ impl eframe::App for App {
         } else {
             self.sel.clone()
         };
-        if let Some(id) = &want {
-            if !self.pops.iter().any(|p| &p.id == id) {
-                if let Some(d) = self.devs.iter().find(|d| &d.id == id).cloned() {
-                    let anchor = self
-                        .radar_anchor
-                        .as_ref()
-                        .filter(|(i, _)| i == id)
-                        .map(|(_, q)| *q)
-                        .unwrap_or(self.anchor);
-                    self.pop_uid += 1;
-                    self.pops.push(Pop {
-                        id: id.clone(),
-                        dev: d,
-                        anchor,
-                        a: 0.0,
-                        uid: self.pop_uid,
-                    });
-                }
-            }
+        if let Some(id) = &want
+            && !self.pops.iter().any(|p| &p.id == id)
+            && let Some(d) = self.devs.iter().find(|d| &d.id == id).cloned()
+        {
+            let anchor = self
+                .radar_anchor
+                .as_ref()
+                .filter(|(i, _)| i == id)
+                .map(|(_, q)| *q)
+                .unwrap_or(self.anchor);
+            self.pop_uid += 1;
+            self.pops.push(Pop {
+                id: id.clone(),
+                dev: d,
+                anchor,
+                a: 0.0,
+                uid: self.pop_uid,
+            });
         }
         for p in self.pops.iter_mut() {
             let target = want.as_deref() == Some(p.id.as_str());
@@ -4531,10 +4527,8 @@ impl eframe::App for App {
             if let Some(d) = self.devs.iter().find(|d| d.id == p.id) {
                 p.dev = d.clone();
             }
-            if target {
-                if let Some((_, q)) = self.radar_anchor.as_ref().filter(|(i, _)| *i == p.id) {
-                    p.anchor = *q;
-                }
+            if target && let Some((_, q)) = self.radar_anchor.as_ref().filter(|(i, _)| *i == p.id) {
+                p.anchor = *q;
             }
         }
         self.pops
@@ -4593,15 +4587,15 @@ impl eframe::App for App {
         } else {
             self.tip_a = (self.tip_a - dt / 0.15).max(0.0);
         }
-        if self.tip_a > 0.0 {
-            if let Some(c) = &self.tip_last {
-                let mut p = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Tooltip,
-                    egui::Id::new("airscope_tip"),
-                ));
-                p.set_opacity(ease(self.tip_a));
-                draw_tip(&p, c, central);
-            }
+        if self.tip_a > 0.0
+            && let Some(c) = &self.tip_last
+        {
+            let mut p = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::new("airscope_tip"),
+            ));
+            p.set_opacity(ease(self.tip_a));
+            draw_tip(&p, c, central);
         }
     }
 }

@@ -810,8 +810,8 @@ impl Diag {
                 ui.allocate_ui_with_layout(vec2(w, 30.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     ui.label(RichText::new("EVENTS").size(12.0).color(DIM));
-                    if !cap {
-                        if let (Some(o), Some((ws, _))) = (self.log.oldest, self.log.window) {
+                    if !cap
+                        && let (Some(o), Some((ws, _))) = (self.log.oldest, self.log.window) {
                             // dim normally; amber when the log doesn't reach back to the start of the chosen range
                             let short_log = o > ws as f64 + 60.0;
                             let r = ui.label(RichText::new(format!("Oldest log entry: {}  {}", snoop::date(o), snoop::clock(o))).size(13.0).color(if short_log { AMBER } else { DIM }));
@@ -819,7 +819,6 @@ impl Diag {
                                 r.hint("The log does not go back to the start of this range, so earlier problems can't be shown.");
                             }
                         }
-                    }
                     if !cap && self.log_devs.iter().any(|d| d.problems + d.symptoms > 0) {
                         let t = "Record for additional details";
                         let g = ui.painter().layout_no_wrap(t.to_string(), FontId::proportional(12.5), alpha(TEXT, 0.8));

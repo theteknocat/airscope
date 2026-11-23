@@ -126,17 +126,16 @@ pub fn neighbours() -> Vec<Neigh> {
                             a += (al + 3) & !3;
                         }
                         let mut name = [0 as libc::c_char; libc::IF_NAMESIZE];
-                        if let (Some(ip), Some(mac)) = (ip, mac) {
-                            if !libc::if_indextoname(ifindex as u32, name.as_mut_ptr()).is_null() {
-                                let dev =
-                                    CStr::from_ptr(name.as_ptr()).to_string_lossy().into_owned();
-                                out.push(Neigh {
-                                    ip,
-                                    mac,
-                                    dev,
-                                    state: state_name(state),
-                                });
-                            }
+                        if let (Some(ip), Some(mac)) = (ip, mac)
+                            && !libc::if_indextoname(ifindex as u32, name.as_mut_ptr()).is_null()
+                        {
+                            let dev = CStr::from_ptr(name.as_ptr()).to_string_lossy().into_owned();
+                            out.push(Neigh {
+                                ip,
+                                mac,
+                                dev,
+                                state: state_name(state),
+                            });
                         }
                     }
                     _ => {}

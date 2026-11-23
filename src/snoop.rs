@@ -234,15 +234,15 @@ impl Snoop {
             // Mode Change: status, handle, mode, interval
             0x14 if p.len() >= 6 => {
                 let h = le16(&p[1..]) & 0x0fff;
-                if p[0] != 0 {
-                    if let Some((a, _)) = self.handles.get(&h).copied() {
-                        self.push(t, unix, a, Kind::ModeFailed { status: p[0] });
-                    }
+                if p[0] != 0
+                    && let Some((a, _)) = self.handles.get(&h).copied()
+                {
+                    self.push(t, unix, a, Kind::ModeFailed { status: p[0] });
                 }
-                if p[3] == 0 || p[0] != 0 {
-                    if let Some((t0, i)) = self.pending_exit.remove(&h) {
-                        self.events[i].kind = Kind::SniffExit { wait: Some(t - t0) };
-                    }
+                if (p[3] == 0 || p[0] != 0)
+                    && let Some((t0, i)) = self.pending_exit.remove(&h)
+                {
+                    self.events[i].kind = Kind::SniffExit { wait: Some(t - t0) };
                 }
             }
             // LE Meta: connection complete (0x01) or enhanced connection complete (0x0a)

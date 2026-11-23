@@ -224,10 +224,10 @@ fn btmon_files() -> Vec<(u32, PathBuf)> {
         if !args.first().is_some_and(|a| a.ends_with(b"btmon")) {
             continue;
         }
-        if let Some(w) = args.iter().position(|a| *a == b"-w") {
-            if let Some(f) = args.get(w + 1).and_then(|f| std::str::from_utf8(f).ok()) {
-                out.push((pid, PathBuf::from(f)));
-            }
+        if let Some(w) = args.iter().position(|a| *a == b"-w")
+            && let Some(f) = args.get(w + 1).and_then(|f| std::str::from_utf8(f).ok())
+        {
+            out.push((pid, PathBuf::from(f)));
         }
     }
     out
