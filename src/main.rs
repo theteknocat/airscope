@@ -4194,6 +4194,18 @@ fn meter(
     col: Color32,
     value: &str,
 ) {
+    meter_w(p, (x0, x1), y, (label, frac, col, value), (64.0, 112.0));
+}
+
+/// `meter` with the widths (px) of its label column and value column given: `(left, right)` edges, then what to
+/// show (label, fill 0..1, colour, value), then `(label_w, value_w)`.
+fn meter_w(
+    p: &egui::Painter,
+    (x0, x1): (f32, f32),
+    y: f32,
+    (label, frac, col, value): (&str, f32, Color32, &str),
+    (label_w, value_w): (f32, f32),
+) {
     p.text(
         pos2(x0, y + 4.5),
         Align2::LEFT_CENTER,
@@ -4203,7 +4215,10 @@ fn meter(
     );
     led_bar(
         p,
-        Rect::from_min_size(pos2(x0 + 64.0, y), vec2(x1 - x0 - 64.0 - 112.0, 9.0)),
+        Rect::from_min_size(
+            pos2(x0 + label_w, y),
+            vec2(x1 - x0 - label_w - value_w, 9.0),
+        ),
         frac.clamp(0.0, 1.0),
         col,
         20,
@@ -4482,16 +4497,9 @@ fn popup(
             for (i, rd) in d.radios.iter().enumerate() {
                 let y = by + i as f32 * 18.0;
                 let value = format!("{:.0} dBm", rd.dbm);
-                meter(
-                    &p,
-                    x0,
-                    x1,
-                    y,
-                    &rd.label(),
-                    data::signal_frac(rd.dbm),
-                    col,
-                    &value,
-                );
+                let bar = (&rd.label()[..], data::signal_frac(rd.dbm), col, &value[..]);
+                // label column fits "2.4G ch 100", value column fits "-100 dBm"
+                meter_w(&p, (x0, x1), y, bar, (88.0, 76.0));
             }
         } else if let Some(q) = d.lq {
             let mut y = by;
