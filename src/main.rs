@@ -334,6 +334,96 @@ const SPECTRUM_HELP: [(Mark, &str, &str); 4] = [
     ),
 ];
 
+/// Where to download a newer vendor list: (name, file, address).
+const VENDOR_LINKS: [(&str, &str, &str); 3] = [
+    (
+        "IEEE text file",
+        "oui.txt",
+        "https://standards-oui.ieee.org/oui/oui.txt",
+    ),
+    (
+        "IEEE spreadsheet",
+        "oui.csv",
+        "https://standards-oui.ieee.org/oui/oui.csv",
+    ),
+    (
+        "Wireshark list",
+        "manuf",
+        "https://www.wireshark.org/download/automated/data/manuf",
+    ),
+];
+
+/// The four counters across the top of the vendor dialog: known, built in, system list, your file.
+fn vendor_tiles(p: &egui::Painter, l: f32, top: f32, inner: f32, total: usize, counts: [usize; 3]) {
+    let tiles = [
+        ("KNOWN", total.to_string(), GREEN),
+        ("BUILT IN", counts[0].to_string(), CYAN),
+        ("+ SYSTEM LIST", format!("+{}", counts[1]), BLUE),
+        ("+ YOUR FILE", format!("+{}", counts[2]), AMBER),
+    ];
+    let tw = (inner - 3.0 * 12.0) / 4.0;
+    for (i, (label, num, tc)) in tiles.iter().enumerate() {
+        let t = Rect::from_min_size(pos2(l + i as f32 * (tw + 12.0), top), vec2(tw, 62.0));
+        p.rect_filled(t, 10.0, alpha(BG, 0.55));
+        p.rect_stroke(
+            t,
+            10.0,
+            Stroke::new(1.0, alpha(*tc, 0.35)),
+            StrokeKind::Inside,
+        );
+        lcd(
+            p,
+            pos2(t.left() + 14.0, t.top() + 24.0),
+            Align2::LEFT_CENTER,
+            num,
+            22.0,
+            *tc,
+        );
+        p.text(
+            pos2(t.left() + 14.0, t.top() + 46.0),
+            Align2::LEFT_CENTER,
+            *label,
+            FontId::monospace(10.5),
+            alpha(*tc, 0.8),
+        );
+    }
+}
+
+/// A numbered step heading in the vendor dialog.
+fn vendor_step(p: &egui::Painter, l: f32, y: f32, n: &str, title: &str) {
+    let c = pos2(l + 13.0, y);
+    p.circle_stroke(c, 13.0, Stroke::new(1.5, CYAN));
+    p.text(c, Align2::CENTER_CENTER, n, FontId::monospace(13.0), CYAN);
+    p.text(
+        pos2(l + 38.0, y),
+        Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(15.0),
+        Color32::WHITE,
+    );
+}
+
+/// A button of the vendor dialog; true when clicked.
+fn vendor_pill(
+    ui: &egui::Ui,
+    p: &egui::Painter,
+    rect: Rect,
+    id: &str,
+    label: &str,
+    accent: Color32,
+) -> bool {
+    let resp = hit(ui, rect, ui.id().with(id), Sense::click());
+    panel(p, rect, 9.0, if resp.hovered() { CYAN } else { accent });
+    p.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(13.5),
+        Color32::WHITE,
+    );
+    resp.clicked()
+}
+
 /// A help box under the header's "?" button: a title and rows of marker, heading and wrapped description.
 /// Returns its rectangle (for outside-click closing).
 fn help_panel(ctx: &egui::Context, btn: Rect, title: &str, rows: &[(Mark, &str, &str)]) -> Rect {
@@ -882,85 +972,157 @@ impl App {
                 }
             });
         let (total, c) = oui.stats();
-        let col = CYAN;
-        egui::Area::new(egui::Id::new("vendor_dialog")).order(egui::Order::Foreground).fixed_pos(r.min).show(ctx, |ui| {
-            ui.allocate_exact_size(r.size(), Sense::click()); // swallow clicks so the backdrop doesn't see them
-            let p = ui.painter_at(r.expand(40.0));
-            panel(&p, r, 16.0, col);
-            let (l, rr) = (r.left() + 30.0, r.right() - 30.0);
-            let inner = rr - l;
-            // title
-            lcd(&p, pos2(l, r.top() + 38.0), Align2::LEFT_CENTER, "VENDOR LIST", 24.0, col);
-            p.text(pos2(l, r.top() + 66.0), Align2::LEFT_CENTER, "Turns the first half of a MAC address into a manufacturer name.", FontId::proportional(13.0), DIM);
-            if close_button(ui, &p, pos2(r.right() - 26.0, r.top() + 26.0), 26.0, ui.id().with("vclose")) {
-                close = true;
-            }
-            // counts
-            let tiles = [("KNOWN", total.to_string(), GREEN), ("BUILT IN", c[0].to_string(), CYAN), ("+ SYSTEM LIST", format!("+{}", c[1]), BLUE), ("+ YOUR FILE", format!("+{}", c[2]), AMBER)];
-            let tw = (inner - 3.0 * 12.0) / 4.0;
-            for (i, (label, num, tc)) in tiles.iter().enumerate() {
-                let t = Rect::from_min_size(pos2(l + i as f32 * (tw + 12.0), r.top() + 92.0), vec2(tw, 62.0));
-                p.rect_filled(t, 10.0, alpha(BG, 0.55));
-                p.rect_stroke(t, 10.0, Stroke::new(1.0, alpha(*tc, 0.35)), StrokeKind::Inside);
-                lcd(&p, pos2(t.left() + 14.0, t.top() + 24.0), Align2::LEFT_CENTER, num, 22.0, *tc);
-                p.text(pos2(t.left() + 14.0, t.top() + 46.0), Align2::LEFT_CENTER, *label, FontId::monospace(10.5), alpha(*tc, 0.8));
-            }
-            let step = |y: f32, n: &str, title: &str| {
-                let c = pos2(l + 13.0, y);
-                p.circle_stroke(c, 13.0, Stroke::new(1.5, col));
-                p.text(c, Align2::CENTER_CENTER, n, FontId::monospace(13.0), col);
-                p.text(pos2(l + 38.0, y), Align2::LEFT_CENTER, title, FontId::proportional(15.0), Color32::WHITE);
-            };
-            let pill = |ui: &egui::Ui, rect: Rect, id: &str, label: &str, accent: Color32| -> bool {
-                let resp = hit(ui, rect, ui.id().with(id), Sense::click());
-                panel(&p, rect, 9.0, if resp.hovered() { CYAN } else { accent });
-                p.text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.5), Color32::WHITE);
-                resp.clicked()
-            };
-            // step 1
-            let mut y = r.top() + 190.0;
-            p.line_segment([pos2(l, y - 18.0), pos2(rr, y - 18.0)], Stroke::new(1.0, alpha(col, 0.15)));
-            step(y, "1", "Download a newer list in your browser");
-            y += 30.0;
-            let links = [("IEEE text file", "oui.txt", "https://standards-oui.ieee.org/oui/oui.txt"), ("IEEE spreadsheet", "oui.csv", "https://standards-oui.ieee.org/oui/oui.csv"), ("Wireshark list", "manuf", "https://www.wireshark.org/download/automated/data/manuf")];
-            for (i, (name, file, url)) in links.iter().enumerate() {
-                p.text(pos2(l + 38.0, y + 12.0), Align2::LEFT_CENTER, format!("{}  ·  {}", name, file), FontId::proportional(13.5), TEXT);
-                p.text(pos2(l + 38.0, y + 32.0), Align2::LEFT_CENTER, *url, FontId::monospace(11.5), DIM);
-                let opened = self.vendor_opened.is_some_and(|(j, t)| j == i && t.elapsed().as_secs_f32() < 1.6);
-                let b = Rect::from_min_size(pos2(rr - 112.0, y + 8.0), vec2(112.0, 32.0));
-                if pill(ui, b, &format!("link{}", i), if opened { "Opened" } else { "Open link" }, if opened { GREEN } else { BLUE }) {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(*url));
-                    self.vendor_opened = Some((i, Instant::now()));
-                }
-                y += 54.0;
-            }
-            // step 2
-            y += 8.0;
-            step(y, "2", "Give the downloaded file to Airscope");
-            p.text(pos2(l + 38.0, y + 26.0), Align2::LEFT_CENTER, "Choose it with Open, or drag it onto this window.", FontId::proportional(12.5), DIM);
-            let field = Rect::from_min_size(pos2(l + 38.0, y + 46.0), vec2(inner - 38.0 - 124.0, 32.0));
-            p.rect_filled(field, 8.0, alpha(BG, 0.55));
-            p.rect_stroke(field, 8.0, Stroke::new(1.0, alpha(CYAN, 0.30)), StrokeKind::Inside);
-            let shown = self.vendor_path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("No file chosen yet");
-            p.text(pos2(field.left() + 12.0, field.center().y), Align2::LEFT_CENTER, shown, FontId::proportional(13.5), if self.vendor_path.is_empty() { DIM } else { TEXT });
-            if pill(ui, Rect::from_min_size(pos2(rr - 112.0, y + 46.0), vec2(112.0, 32.0)), "open", if self.vendor_pick.is_some() { "Choosing..." } else { "Open" }, BLUE) && self.vendor_pick.is_none() {
-                self.vendor_pick = Some(picker::Pick::start("Choose the downloaded vendor list"));
-            }
-            // result and footer
-            if let Some((ok, msg)) = &self.vendor_msg {
-                let mc = if *ok { GREEN } else { RED };
-                dot(&p, pos2(l + 46.0, y + 98.0), 4.0, mc, 0.2);
-                let g = p.layout(msg.clone(), FontId::proportional(13.0), mc, inner - 70.0);
-                p.galley(pos2(l + 60.0, y + 90.0), g, mc);
-            }
-            if let Some(path) = data::user_oui_path() {
-                let g = p.layout(format!("Your imported list is saved to {}. Delete that file to go back to the built-in list.", path.display().to_string().replacen(&std::env::var("HOME").unwrap_or_default(), "~", 1)), FontId::proportional(11.5), DIM, inner);
-                p.galley(pos2(l, r.bottom() - 18.0 - g.size().y), g, DIM);
-            }
-        });
+        egui::Area::new(egui::Id::new("vendor_dialog"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(r.min)
+            .show(ctx, |ui| close |= self.vendor_dialog(ui, r, total, c));
         if close {
             self.vendor_open = false;
         }
+    }
+
+    /// Contents of the vendor list dialog in `r`: counts, the download links, the file chooser and the last
+    /// import result. `total` and `counts` are `Oui::stats()`. Returns true when the X was clicked.
+    fn vendor_dialog(
+        &mut self,
+        ui: &mut egui::Ui,
+        r: Rect,
+        total: usize,
+        counts: [usize; 3],
+    ) -> bool {
+        ui.allocate_exact_size(r.size(), Sense::click()); // swallow clicks so the backdrop doesn't see them
+        let p = ui.painter_at(r.expand(40.0));
+        panel(&p, r, 16.0, CYAN);
+        let (l, rr) = (r.left() + 30.0, r.right() - 30.0);
+        let inner = rr - l;
+        lcd(
+            &p,
+            pos2(l, r.top() + 38.0),
+            Align2::LEFT_CENTER,
+            "VENDOR LIST",
+            24.0,
+            CYAN,
+        );
+        p.text(
+            pos2(l, r.top() + 66.0),
+            Align2::LEFT_CENTER,
+            "Turns the first half of a MAC address into a manufacturer name.",
+            FontId::proportional(13.0),
+            DIM,
+        );
+        let closed = close_button(
+            ui,
+            &p,
+            pos2(r.right() - 26.0, r.top() + 26.0),
+            26.0,
+            ui.id().with("vclose"),
+        );
+        vendor_tiles(&p, l, r.top() + 92.0, inner, total, counts);
+
+        // step 1: download a list
+        let mut y = r.top() + 190.0;
+        p.line_segment(
+            [pos2(l, y - 18.0), pos2(rr, y - 18.0)],
+            Stroke::new(1.0, alpha(CYAN, 0.15)),
+        );
+        vendor_step(&p, l, y, "1", "Download a newer list in your browser");
+        y += 30.0;
+        for (i, (name, file, url)) in VENDOR_LINKS.iter().enumerate() {
+            p.text(
+                pos2(l + 38.0, y + 12.0),
+                Align2::LEFT_CENTER,
+                format!("{name}  ·  {file}"),
+                FontId::proportional(13.5),
+                TEXT,
+            );
+            p.text(
+                pos2(l + 38.0, y + 32.0),
+                Align2::LEFT_CENTER,
+                *url,
+                FontId::monospace(11.5),
+                DIM,
+            );
+            let opened = self
+                .vendor_opened
+                .is_some_and(|(j, t)| j == i && t.elapsed().as_secs_f32() < 1.6);
+            let (label, accent) = if opened {
+                ("Opened", GREEN)
+            } else {
+                ("Open link", BLUE)
+            };
+            let b = Rect::from_min_size(pos2(rr - 112.0, y + 8.0), vec2(112.0, 32.0));
+            if vendor_pill(ui, &p, b, &format!("link{i}"), label, accent) {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(*url));
+                self.vendor_opened = Some((i, Instant::now()));
+            }
+            y += 54.0;
+        }
+
+        // step 2: give the file to Airscope
+        y += 8.0;
+        vendor_step(&p, l, y, "2", "Give the downloaded file to Airscope");
+        p.text(
+            pos2(l + 38.0, y + 26.0),
+            Align2::LEFT_CENTER,
+            "Choose it with Open, or drag it onto this window.",
+            FontId::proportional(12.5),
+            DIM,
+        );
+        let field = Rect::from_min_size(pos2(l + 38.0, y + 46.0), vec2(inner - 38.0 - 124.0, 32.0));
+        p.rect_filled(field, 8.0, alpha(BG, 0.55));
+        p.rect_stroke(
+            field,
+            8.0,
+            Stroke::new(1.0, alpha(CYAN, 0.30)),
+            StrokeKind::Inside,
+        );
+        let shown = self
+            .vendor_path
+            .rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty())
+            .unwrap_or("No file chosen yet");
+        let shown_col = if self.vendor_path.is_empty() {
+            DIM
+        } else {
+            TEXT
+        };
+        p.text(
+            pos2(field.left() + 12.0, field.center().y),
+            Align2::LEFT_CENTER,
+            shown,
+            FontId::proportional(13.5),
+            shown_col,
+        );
+        let choosing = self.vendor_pick.is_some();
+        let open_btn = Rect::from_min_size(pos2(rr - 112.0, y + 46.0), vec2(112.0, 32.0));
+        let label = if choosing { "Choosing..." } else { "Open" };
+        if vendor_pill(ui, &p, open_btn, "open", label, BLUE) && !choosing {
+            self.vendor_pick = Some(picker::Pick::start("Choose the downloaded vendor list"));
+        }
+
+        // result of the last import, and where the list is kept
+        if let Some((ok, msg)) = &self.vendor_msg {
+            let mc = if *ok { GREEN } else { RED };
+            dot(&p, pos2(l + 46.0, y + 98.0), 4.0, mc, 0.2);
+            let g = p.layout(msg.clone(), FontId::proportional(13.0), mc, inner - 70.0);
+            p.galley(pos2(l + 60.0, y + 90.0), g, mc);
+        }
+        if let Some(path) = data::user_oui_path() {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let saved = path.display().to_string().replacen(&home, "~", 1);
+            let g = p.layout(
+                format!(
+                    "Your imported list is saved to {saved}. \
+                     Delete that file to go back to the built-in list."
+                ),
+                FontId::proportional(11.5),
+                DIM,
+                inner,
+            );
+            p.galley(pos2(l, r.bottom() - 18.0 - g.size().y), g, DIM);
+        }
+        closed
     }
 
     /// AIRSCOPE_SHOT=<file.ppm>: grab the app's own frame after a few seconds and quit (README screenshots;

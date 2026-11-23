@@ -14,6 +14,62 @@ pub(super) const CTL_H: f32 = 28.0;
 const PAGE: usize = 1000;
 const BOX_W: f32 = 520.0;
 
+// hover texts of the System log page that are too long to sit inline
+const LOG_SHORT_HINT: &str =
+    "The log does not go back to the start of this range, so earlier problems can't be shown.";
+const LOG_NO_REASON_HINT: &str = "The system log shows that problems happened, not why. A recording adds the reason for each drop and the packet timing. Click to see where to start one.";
+const ADDRS_SHOWN_TIP: &str = "Showing full device addresses. Click to hide them.";
+const ADDRS_HIDDEN_TIP: &str = "Addresses are hidden. Click to show the full device addresses.";
+const PROBLEMS_ONLY_TIP: &str =
+    "Showing only problems. Click to include routine events, such as a keyboard reconnecting.";
+
+/// What was clicked in the table toolbar this frame.
+#[derive(Default)]
+struct ToolbarClicks {
+    record_hint: bool,
+    addrs: bool,
+    problems: bool,
+    clear_filter: bool,
+}
+
+/// The "Record for additional details" pill, when there is room for it. True when clicked.
+fn record_nudge(ui: &mut egui::Ui) -> bool {
+    let text = "Record for additional details";
+    let g = ui.painter().layout_no_wrap(
+        text.to_string(),
+        FontId::proportional(12.5),
+        alpha(TEXT, 0.8),
+    );
+    if ui.available_width() <= g.size().x + 40.0 + 330.0 {
+        return false;
+    }
+    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, 28.0), Sense::click());
+    let hot = resp.hovered();
+    let p = ui.painter();
+    p.rect_filled(
+        r,
+        14.0,
+        alpha(Color32::WHITE, if hot { 0.09 } else { 0.04 }),
+    );
+    let edge = alpha(Color32::WHITE, if hot { 0.4 } else { 0.18 });
+    p.rect_stroke(r, 14.0, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    glyph(
+        p,
+        Glyph::Record,
+        pos2(r.left() + 17.0, r.center().y),
+        4.0,
+        RED,
+    );
+    p.galley(
+        pos2(r.left() + 30.0, r.center().y - g.size().y / 2.0),
+        g,
+        TEXT,
+    );
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+        .hint(LOG_NO_REASON_HINT)
+        .clicked()
+}
+
 /// One compact device card.
 pub(super) struct Card {
     key: String,
@@ -505,7 +561,17 @@ impl Diag {
             legend: ("other", "radio-type drop"),
             what: "link drops",
         };
-        let ticks = s.drops().map(|e| Tick { t: e.t, unix: e.unix, radio: matches!(e.kind, Kind::Disconnected { reason, .. } if crate::hci::reason(reason).2), who: self.who(&e.addr, names), detail: None }).collect();
+        let radio = |reason| crate::hci::reason(reason).2;
+        let ticks = s
+            .drops()
+            .map(|e| Tick {
+                t: e.t,
+                unix: e.unix,
+                radio: matches!(e.kind, Kind::Disconnected { reason, .. } if radio(reason)),
+                who: self.who(&e.addr, names),
+                detail: None,
+            })
+            .collect();
         let cards = self
             .stats
             .iter()
@@ -656,6 +722,135 @@ impl Diag {
         ui.add_space(12.0);
     }
 
+    /// The line above the event table: what it lists, the "Record for additional details" nudge, and the
+    /// filter chips on the right. Only reports what was clicked; the page applies it.
+    fn table_toolbar(
+        &self,
+        ui: &mut egui::Ui,
+        w: f32,
+        cap: bool,
+        filter_name: Option<&str>,
+    ) -> ToolbarClicks {
+        let mut out = ToolbarClicks::default();
+        let layout = egui::Layout::left_to_right(egui::Align::Center);
+        ui.allocate_ui_with_layout(vec2(w, 30.0), layout, |ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            ui.label(RichText::new("EVENTS").size(12.0).color(DIM));
+            if !cap && let (Some(o), Some((ws, _))) = (self.log.oldest, self.log.window) {
+                // dim normally; amber when the log doesn't reach back to the start of the chosen range
+                let short_log = o > ws as f64 + 60.0;
+                let text = format!("Oldest log entry: {}  {}", snoop::date(o), snoop::clock(o));
+                let col = if short_log { AMBER } else { DIM };
+                let r = ui.label(RichText::new(text).size(13.0).color(col));
+                if short_log {
+                    r.hint(LOG_SHORT_HINT);
+                }
+            }
+            if !cap && self.log_devs.iter().any(|d| d.problems + d.symptoms > 0) {
+                out.record_hint = record_nudge(ui);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let addrs_tip = if self.addrs {
+                    ADDRS_SHOWN_TIP
+                } else {
+                    ADDRS_HIDDEN_TIP
+                };
+                out.addrs = toggle_chip(ui, "Device addresses", self.addrs, CYAN, addrs_tip);
+                let tip = match (cap, self.problems_only) {
+                    (true, true) => {
+                        "Showing only drops and slow answers. Click to show every event."
+                    }
+                    (true, false) => {
+                        "Showing every event. Click to show only drops and slow answers."
+                    }
+                    (false, true) => PROBLEMS_ONLY_TIP,
+                    (false, false) => "Showing routine events too. Click to show only problems.",
+                };
+                out.problems = toggle_chip(ui, "Problems only", self.problems_only, AMBER, tip);
+                if let Some(n) = filter_name {
+                    let n = crate::fit_middle(ui.painter(), n, FontId::proportional(12.5), 220.0);
+                    let tip = "Showing one device. Click to show all devices.";
+                    out.clear_filter = toggle_chip(ui, &format!("Only: {n}"), true, CYAN, tip);
+                }
+            });
+        });
+        out
+    }
+
+    /// Heading of the empty table, by why it is empty.
+    fn empty_title(&self, cap: bool) -> &'static str {
+        let reading = !cap && self.log.job.is_some();
+        if self.dev_filter.is_some() {
+            "NOTHING TO SHOW FOR THIS DEVICE"
+        } else if reading {
+            "READING THE LOG"
+        } else if !cap && self.log.entries.is_empty() {
+            "NO BLUETOOTH PROBLEMS LOGGED"
+        } else if !cap {
+            "ONLY ROUTINE EVENTS LOGGED"
+        } else if self.problems_only {
+            "NO PROBLEMS IN THIS CAPTURE"
+        } else {
+            "NO EVENTS IN THIS CAPTURE"
+        }
+    }
+
+    /// Table row for event `i` of an open capture.
+    fn cap_row(&self, s: &Snoop, i: usize, names: &Names) -> Row {
+        let e = &s.events[i];
+        Row {
+            time: snoop::clock(e.unix),
+            since: Some(snoop::offset(e)),
+            who: self.who(&e.addr, names),
+            msg: snoop::message(e),
+            col: Self::colour(e),
+            bar: Self::problem(e),
+            tip: None,
+        }
+    }
+
+    /// Table row for entry `i` of the system log; the hover box lists where it came from.
+    fn log_row(&self, i: usize, names: &Names, multi_day: bool) -> Row {
+        let e = &self.log.entries[i];
+        let col = match e.sev {
+            Sev::Problem => RED,
+            Sev::Symptom => AMBER,
+            Sev::Info => DIM,
+        };
+        let who = self.log_who(&e.who, names);
+        let from = if e.origin.is_empty() {
+            format!("From: {}", e.source)
+        } else {
+            format!("From: {} ({})", e.source, e.origin)
+        };
+        let sub = vec![
+            format!("Device: {who}"),
+            format!("Time: {}  {}", snoop::date(e.unix), snoop::clock(e.unix)),
+            from,
+            format!("Logged as: {}", e.detail),
+        ];
+        let time = if multi_day {
+            let day = logview::short(e.unix as i64);
+            format!(
+                "{}  {}",
+                day.split(',').next().unwrap_or(""),
+                snoop::clock(e.unix)
+            )
+        } else {
+            snoop::clock(e.unix)
+        };
+        Row {
+            time,
+            since: None,
+            who,
+            msg: e.text.clone(),
+            col,
+            bar: e.sev != Sev::Info,
+            tip: Some((e.text.clone(), sub)),
+        }
+    }
+
     /// The whole page below the toolbar.
     pub(super) fn page(&mut self, ui: &mut egui::Ui, s: Option<&Snoop>, names: &Names) {
         let cap = s.is_some() || !self.path.is_empty() || self.rec.is_some();
@@ -770,136 +965,105 @@ impl Diag {
                 .map_or(k.clone(), |c| c.name.clone())
         });
         scroll_in_margin(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                let w = ui.available_width() - SCROLL_MARGIN;
-                let nt = view.tiles.len() as f32;
-                let tw = (w - GAP * (nt - 1.0)) / nt;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = GAP;
-                    for (l, v, c) in &view.tiles {
-                        if tile(ui, tw, l, v, *c) {
-                            pulse = true;
-                        }
-                    }
-                });
-                ui.add_space(14.0);
-                strip(ui, w, &view.spec, &view.ticks, &view.bursts, &self.tip);
-                ui.add_space(14.0);
-                if !view.cards.is_empty() {
-                    let cols_n = (((w + GAP) / (CARD_W + GAP)).floor() as usize).max(1);
-                    let cw = (w - GAP * (cols_n as f32 - 1.0)) / cols_n as f32;
-                    for (ri, row) in view.cards.chunks(cols_n).enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = GAP;
-                            for (ci, c) in row.iter().enumerate() {
-                                let on = info.as_ref() == Some(&c.key);
-                                let resp = compact(ui, c, on, cw);
-                                if on {
-                                    card_rect = Some(resp.rect);
-                                }
-                                let dbg = std::env::var("AIRSCOPE_INFO").ok().and_then(|v| v.parse::<usize>().ok()) == Some(ri * cols_n + ci);
-                                if resp.clicked() || (dbg && !self.dbg_done) {
-                                    click = Some((c.key.clone(), resp.rect));
-                                }
-                            }
-                        });
-                        ui.add_space(GAP);
-                    }
-                }
-                // table toolbar: what it lists, then the filters
-                ui.allocate_ui_with_layout(vec2(w, 30.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    ui.label(RichText::new("EVENTS").size(12.0).color(DIM));
-                    if !cap
-                        && let (Some(o), Some((ws, _))) = (self.log.oldest, self.log.window) {
-                            // dim normally; amber when the log doesn't reach back to the start of the chosen range
-                            let short_log = o > ws as f64 + 60.0;
-                            let r = ui.label(RichText::new(format!("Oldest log entry: {}  {}", snoop::date(o), snoop::clock(o))).size(13.0).color(if short_log { AMBER } else { DIM }));
-                            if short_log {
-                                r.hint("The log does not go back to the start of this range, so earlier problems can't be shown.");
-                            }
-                        }
-                    if !cap && self.log_devs.iter().any(|d| d.problems + d.symptoms > 0) {
-                        let t = "Record for additional details";
-                        let g = ui.painter().layout_no_wrap(t.to_string(), FontId::proportional(12.5), alpha(TEXT, 0.8));
-                        if ui.available_width() > g.size().x + 40.0 + 330.0 {
-                            let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, 28.0), Sense::click());
-                            let hot = resp.hovered();
-                            ui.painter().rect_filled(r, 14.0, alpha(Color32::WHITE, if hot { 0.09 } else { 0.04 }));
-                            ui.painter().rect_stroke(r, 14.0, Stroke::new(1.0, alpha(Color32::WHITE, if hot { 0.4 } else { 0.18 })), egui::StrokeKind::Inside);
-                            glyph(ui.painter(), Glyph::Record, pos2(r.left() + 17.0, r.center().y), 4.0, RED);
-                            ui.painter().galley(pos2(r.left() + 30.0, r.center().y - g.size().y / 2.0), g, TEXT);
-                            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).hint("The system log shows that problems happened, not why. A recording adds the reason for each drop and the packet timing. Click to see where to start one.").clicked() {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let w = ui.available_width() - SCROLL_MARGIN;
+                    let nt = view.tiles.len() as f32;
+                    let tw = (w - GAP * (nt - 1.0)) / nt;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = GAP;
+                        for (l, v, c) in &view.tiles {
+                            if tile(ui, tw, l, v, *c) {
                                 pulse = true;
                             }
                         }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        if toggle_chip(ui, "Device addresses", self.addrs, CYAN, if self.addrs { "Showing full device addresses. Click to hide them." } else { "Addresses are hidden. Click to show the full device addresses." }) {
-                            flip_addrs = true;
-                        }
-                        let tip = match (cap, self.problems_only) {
-                            (true, true) => "Showing only drops and slow answers. Click to show every event.",
-                            (true, false) => "Showing every event. Click to show only drops and slow answers.",
-                            (false, true) => "Showing only problems. Click to include routine events, such as a keyboard reconnecting.",
-                            (false, false) => "Showing routine events too. Click to show only problems.",
-                        };
-                        if toggle_chip(ui, "Problems only", self.problems_only, AMBER, tip) {
-                            flip_problems = true;
-                        }
-                        if let Some(n) = &filter_name {
-                            let n = crate::fit_middle(ui.painter(), n, FontId::proportional(12.5), 220.0);
-                            if toggle_chip(ui, &format!("Only: {n}"), true, CYAN, "Showing one device. Click to show all devices.") {
-                                clear_filter = true;
-                            }
-                        }
                     });
-                });
-                if self.tl.is_empty() {
-                    let title = if self.dev_filter.is_some() {
-                        "NOTHING TO SHOW FOR THIS DEVICE"
-                    } else if !cap && self.log.job.is_some() {
-                        "READING THE LOG"
-                    } else if !cap {
-                        if self.log.entries.is_empty() { "NO BLUETOOTH PROBLEMS LOGGED" } else { "ONLY ROUTINE EVENTS LOGGED" }
-                    } else if self.problems_only {
-                        "NO PROBLEMS IN THIS CAPTURE"
+                    ui.add_space(14.0);
+                    strip(ui, w, &view.spec, &view.ticks, &view.bursts, &self.tip);
+                    ui.add_space(14.0);
+                    if !view.cards.is_empty() {
+                        let cols_n = (((w + GAP) / (CARD_W + GAP)).floor() as usize).max(1);
+                        let cw = (w - GAP * (cols_n as f32 - 1.0)) / cols_n as f32;
+                        for (ri, row) in view.cards.chunks(cols_n).enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = GAP;
+                                for (ci, c) in row.iter().enumerate() {
+                                    let on = info.as_ref() == Some(&c.key);
+                                    let resp = compact(ui, c, on, cw);
+                                    if on {
+                                        card_rect = Some(resp.rect);
+                                    }
+                                    let dbg = std::env::var("AIRSCOPE_INFO")
+                                        .ok()
+                                        .and_then(|v| v.parse::<usize>().ok())
+                                        == Some(ri * cols_n + ci);
+                                    if resp.clicked() || (dbg && !self.dbg_done) {
+                                        click = Some((c.key.clone(), resp.rect));
+                                    }
+                                }
+                            });
+                            ui.add_space(GAP);
+                        }
+                    }
+                    // table toolbar: what it lists, then the filters
+                    let bar = self.table_toolbar(ui, w, cap, filter_name.as_deref());
+                    pulse |= bar.record_hint;
+                    flip_addrs |= bar.addrs;
+                    flip_problems |= bar.problems;
+                    clear_filter |= bar.clear_filter;
+                    if self.tl.is_empty() {
+                        let title = self.empty_title(cap);
+                        placeholder(
+                            ui,
+                            w,
+                            title,
+                            if !cap && self.log.job.is_some() {
+                                CYAN
+                            } else {
+                                GREEN
+                            },
+                            since,
+                        );
+                    } else if let (Some(s), true) = (s, cap) {
+                        let row = |i: usize| self.cap_row(s, i, names);
+                        let shown = self.tl_limit.min(self.tl.len());
+                        grow = table(
+                            ui,
+                            w,
+                            &self.tl[..shown],
+                            &self.ev_px,
+                            self.line_h,
+                            true,
+                            &row,
+                        );
                     } else {
-                        "NO EVENTS IN THIS CAPTURE"
-                    };
-                    placeholder(ui, w, title, if !cap && self.log.job.is_some() { CYAN } else { GREEN }, since);
-                } else if let (Some(s), true) = (s, cap) {
-                    let row = |i: usize| {
-                        let e = &s.events[i];
-                        Row { time: snoop::clock(e.unix), since: Some(snoop::offset(e)), who: self.who(&e.addr, names), msg: snoop::message(e), col: Self::colour(e), bar: Self::problem(e), tip: None }
-                    };
-                    let shown = self.tl_limit.min(self.tl.len());
-                    grow = table(ui, w, &self.tl[..shown], &self.ev_px, self.line_h, true, &row);
-                } else {
-                    let row = |i: usize| {
-                        let e = &self.log.entries[i];
-                        let col = match e.sev {
-                            Sev::Problem => RED,
-                            Sev::Symptom => AMBER,
-                            Sev::Info => DIM,
-                        };
-                        let who = self.log_who(&e.who, names);
-                        let mut sub = vec![format!("Device: {who}"), format!("Time: {}  {}", snoop::date(e.unix), snoop::clock(e.unix))];
-                        sub.push(if e.origin.is_empty() { format!("From: {}", e.source) } else { format!("From: {} ({})", e.source, e.origin) });
-                        sub.push(format!("Logged as: {}", e.detail));
-                        let time = if multi_day { format!("{}  {}", logview::short(e.unix as i64).split(',').next().unwrap_or(""), snoop::clock(e.unix)) } else { snoop::clock(e.unix) };
-                        Row { time, since: None, who, msg: e.text.clone(), col, bar: e.sev != Sev::Info, tip: Some((e.text.clone(), sub)) }
-                    };
-                    let shown = self.tl_limit.min(self.tl.len());
-                    grow = table(ui, w, &self.tl[..shown], &self.log_px, self.line_h, false, &row);
-                }
-                if self.tl_limit < self.tl.len() {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(format!("Showing the newest {} of {} events \u{00b7} scroll down for more", self.tl_limit, self.tl.len())).size(12.5).color(DIM));
-                    ui.add_space(8.0);
-                }
-            });
+                        let row = |i: usize| self.log_row(i, names, multi_day);
+                        let shown = self.tl_limit.min(self.tl.len());
+                        grow = table(
+                            ui,
+                            w,
+                            &self.tl[..shown],
+                            &self.log_px,
+                            self.line_h,
+                            false,
+                            &row,
+                        );
+                    }
+                    if self.tl_limit < self.tl.len() {
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Showing the newest {} of {} events \u{00b7} scroll down for more",
+                                self.tl_limit,
+                                self.tl.len()
+                            ))
+                            .size(12.5)
+                            .color(DIM),
+                        );
+                        ui.add_space(8.0);
+                    }
+                });
         });
         if pulse {
             self.rec_pulse = Some(Instant::now());
