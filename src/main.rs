@@ -633,6 +633,7 @@ impl App {
     }
 
     fn sync(&mut self) {
+        #[allow(clippy::unwrap_used)] // poisoned lock: another thread panicked, so crash (see data.rs)
         let s = self.h.lock().unwrap();
         if s.ver == self.ver {
             return;
@@ -1351,7 +1352,7 @@ impl App {
                 }
             })
             .collect();
-        nodes.sort_by(|a, b| b.dist.partial_cmp(&a.dist).unwrap());
+        nodes.sort_by(|a, b| b.dist.total_cmp(&a.dist));
         let cnt = nodes.len();
         let drag_ni = drag_id
             .as_ref()
@@ -1443,7 +1444,7 @@ impl App {
             .enumerate()
             .map(|(ri, m)| {
                 (
-                    key_of[ri].clone().unwrap(),
+                    key_of[ri].clone().unwrap_or_default(),
                     m.iter()
                         .map(|&i| self.latched[nodes[i].i].id.clone())
                         .collect(),
@@ -1471,7 +1472,7 @@ impl App {
                     center0
                 }
             }; // the group icon (radius 22) clears the PC orb too
-            let key = key_of[ri].clone().unwrap();
+            let key = key_of[ri].clone().unwrap_or_default();
             if let Some(r) = &reveal {
                 if mem.iter().any(|&i| &self.latched[nodes[i].i].id == r) {
                     self.open.insert(key.clone()); // a device picked from the list must be visible
@@ -1594,7 +1595,7 @@ impl App {
                 let mut ordered = g.members.clone();
                 ordered.sort_by(|&a, &b| {
                     let (va, vb) = (nodes[a].pos - g.center0, nodes[b].pos - g.center0);
-                    va.y.atan2(va.x).partial_cmp(&vb.y.atan2(vb.x)).unwrap()
+                    va.y.atan2(va.x).total_cmp(&vb.y.atan2(vb.x))
                 });
                 let v0 = nodes[ordered[0]].pos - g.center0;
                 let a0 = if v0.length() > 0.5 {
@@ -1731,8 +1732,7 @@ impl App {
                 db.connected.cmp(&da.connected).then(
                     db.dbm
                         .unwrap_or(-120.0)
-                        .partial_cmp(&da.dbm.unwrap_or(-120.0))
-                        .unwrap(),
+                        .total_cmp(&da.dbm.unwrap_or(-120.0)),
                 )
             });
             for i in order {
@@ -2398,13 +2398,13 @@ impl App {
             Kind::Wifi => {
                 // an AP radio of a device on our LAN (e.g. the router): its BSSID is derived from the device's MAC
                 let b = mac_bytes(&d.id);
-                (b.is_some()
-                    && self
-                        .devs
+                (b.is_some_and(|b| {
+                    self.devs
                         .iter()
                         .filter(|x| x.kind == Kind::Lan)
                         .filter_map(|x| mac_bytes(&x.id))
-                        .any(|m| same_device(b.unwrap(), m)))
+                        .any(|m| same_device(b, m))
+                }))
                     || (d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())))
             }
             _ => true,
@@ -2446,7 +2446,7 @@ impl App {
             }
         }
         let mut v: Vec<Net> = m.into_values().collect();
-        v.sort_by(|a, b| b.dbm.partial_cmp(&a.dbm).unwrap().then(a.name.cmp(&b.name)));
+        v.sort_by(|a, b| b.dbm.total_cmp(&a.dbm).then(a.name.cmp(&b.name)));
         v
     }
 

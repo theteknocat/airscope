@@ -2,6 +2,9 @@
 //! screenshots and trying the app out. Nothing here comes from the machine it runs on. MAC prefixes are real
 //! vendor prefixes (so vendors resolve) with made-up endings; SSIDs, names and addresses are fictional.
 //! The data goes through the same conversion code as live data, so the info boxes read the same.
+// A poisoned lock means another thread panicked while holding it, so crashing here surfaces that bug
+// instead of carrying on with half-updated shared state.
+#![allow(clippy::unwrap_used)]
 
 use crate::bluez::BtDev;
 use crate::data::{

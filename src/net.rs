@@ -13,6 +13,15 @@ pub struct Neigh {
     pub state: &'static str, // "REACHABLE", "STALE", ...
 }
 
+/// Native-endian `u16` / `u32` at byte offset `o` of a netlink message (panics past the end, like indexing).
+fn ne16(b: &[u8], o: usize) -> u16 {
+    u16::from_ne_bytes([b[o], b[o + 1]])
+}
+
+fn ne32(b: &[u8], o: usize) -> u32 {
+    u32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+
 fn state_name(s: u16) -> &'static str {
     match s {
         x if x & 0x02 != 0 => "REACHABLE",
@@ -82,8 +91,8 @@ pub fn neighbours() -> Vec<Neigh> {
             let b = &buf[..n as usize];
             let mut o = 0;
             while o + 16 <= b.len() {
-                let len = u32::from_ne_bytes(b[o..o + 4].try_into().unwrap()) as usize;
-                let ty = u16::from_ne_bytes(b[o + 4..o + 6].try_into().unwrap());
+                let len = ne32(b, o) as usize;
+                let ty = ne16(b, o + 4);
                 if len < 16 || o + len > b.len() {
                     break;
                 }
@@ -91,13 +100,13 @@ pub fn neighbours() -> Vec<Neigh> {
                     3 | 2 => return out, // DONE / ERROR
                     28 if len >= 28 => {
                         let m = &b[o + 16..o + len];
-                        let ifindex = i32::from_ne_bytes(m[4..8].try_into().unwrap());
-                        let state = u16::from_ne_bytes(m[8..10].try_into().unwrap());
+                        let ifindex = ne32(m, 4) as i32;
+                        let state = ne16(m, 8);
                         let (mut ip, mut mac) = (None, None);
                         let mut a = 12;
                         while a + 4 <= m.len() {
-                            let al = u16::from_ne_bytes(m[a..a + 2].try_into().unwrap()) as usize;
-                            let at = u16::from_ne_bytes(m[a + 2..a + 4].try_into().unwrap());
+                            let al = ne16(m, a) as usize;
+                            let at = ne16(m, a + 2);
                             if al < 4 || a + al > m.len() {
                                 break;
                             }

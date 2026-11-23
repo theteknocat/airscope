@@ -1,5 +1,8 @@
 //! Data collectors. Each runs in its own thread, shells out to a system tool,
 //! and publishes into `Shared`. The UI only ever reads the shared snapshot.
+// A poisoned lock means another thread panicked while holding it, so crashing here surfaces that bug
+// instead of carrying on with half-updated shared state.
+#![allow(clippy::unwrap_used)]
 use crate::net;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -279,7 +282,9 @@ impl Oui {
             return Err("No vendor entries found. Expected the IEEE oui.txt / oui.csv or a Wireshark manuf file.".into());
         }
         let dest = self.user.clone().ok_or("HOME is not set")?;
-        std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
         let tsv: String = list
             .iter()
             .map(|(k, v)| format!("{:06X}\t{}\n", k, v))
@@ -884,7 +889,7 @@ pub fn apply_events(
     let lqs: Vec<i32> = hist.iter().filter_map(|s| s.lq).collect();
     if lqs.len() >= 3 {
         let (min, avg) = (
-            *lqs.iter().min().unwrap(),
+            lqs.iter().copied().min().unwrap_or_default(),
             lqs.iter().sum::<i32>() / lqs.len() as i32,
         );
         let span = hist
