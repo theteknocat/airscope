@@ -89,6 +89,24 @@ pub struct Dev {
 }
 
 impl Dev {
+    /// Band and channel of a Wi-Fi access point ("5 GHz ch 52"), so several radios of one router can be told apart.
+    pub fn band_text(&self) -> Option<String> {
+        Some(format!("{} ch {}", band_name(self.freq?), self.chan?))
+    }
+
+    /// One line saying what the device is, shown under its name: its type, plus band and channel for Wi-Fi.
+    pub fn caption(&self) -> String {
+        let kind = self
+            .details
+            .first()
+            .map(|x| x.1.clone())
+            .unwrap_or_default();
+        match self.band_text() {
+            Some(band) => format!("{kind} · {band}"),
+            None => kind,
+        }
+    }
+
     fn new(id: &str, kind: Kind) -> Self {
         Dev {
             id: id.to_string(),
@@ -333,6 +351,15 @@ fn set(h: &Handle, f: impl FnOnce(&mut Shared)) {
 
 // ---------- Wi-Fi ----------
 
+/// "2.4 GHz", "5 GHz" or "6 GHz" for a Wi-Fi frequency in MHz.
+fn band_name(freq: u32) -> &'static str {
+    match freq {
+        f if f < 3000 => "2.4 GHz",
+        f if f < 5900 => "5 GHz",
+        _ => "6 GHz",
+    }
+}
+
 /// One Wi-Fi access point as a device (shared by the live collector and the demo data).
 pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
     let (inuse, ssid, bssid) = (ap.in_use, ap.ssid.clone(), ap.bssid.clone());
@@ -345,12 +372,7 @@ pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
     let vendor = oui.vendor(&bssid);
     let hidden = ssid.is_empty();
     let randomized = vendor.starts_with("Private");
-    let band = match freq {
-        Some(f) if f < 3000 => "2.4 GHz",
-        Some(f) if f < 5900 => "5 GHz",
-        Some(_) => "6 GHz",
-        None => "?",
-    };
+    let band = band_name(ap.freq);
     let mut d = Dev::new(&bssid, Kind::Wifi);
     d.cluster = bssid.rsplitn(3, ':').take(2).collect::<Vec<_>>().join(":");
     d.known = !hidden;
@@ -1462,6 +1484,22 @@ mod tests {
             Some(0.3),
             "poor signal drags a perfect link down"
         );
+    }
+
+    #[test]
+    fn wifi_radios_of_one_router_are_told_apart() {
+        assert_eq!(band_name(2412), "2.4 GHz");
+        assert_eq!(band_name(5260), "5 GHz");
+        assert_eq!(band_name(5955), "6 GHz");
+        let mut d = Dev::new("70:97:41:98:A5:1A", Kind::Wifi);
+        d.details = vec![("Type".into(), "Wi-Fi access point".into())];
+        assert_eq!(
+            d.caption(),
+            "Wi-Fi access point",
+            "no band without a frequency"
+        );
+        (d.freq, d.chan) = (Some(5260), Some(52));
+        assert_eq!(d.caption(), "Wi-Fi access point · 5 GHz ch 52");
     }
 
     #[test]

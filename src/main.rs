@@ -334,6 +334,13 @@ const SPECTRUM_HELP: [(Mark, &str, &str); 4] = [
     ),
 ];
 
+/// Whether a file dragged from a file manager can reach the window. winit 0.30 only reports drops on X11, so
+/// under Wayland (its default when `WAYLAND_DISPLAY` is set) the dialog doesn't offer drag and drop.
+fn file_drop_works() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_none()
+        || std::env::var("WINIT_UNIX_BACKEND").as_deref() == Ok("x11")
+}
+
 /// Where to download a newer vendor list: (name, file, address).
 const VENDOR_LINKS: [(&str, &str, &str); 3] = [
     (
@@ -1064,7 +1071,11 @@ impl App {
         p.text(
             pos2(l + 38.0, y + 26.0),
             Align2::LEFT_CENTER,
-            "Choose it with Open, or drag it onto this window.",
+            if file_drop_works() {
+                "Choose it with Open, or drag it onto this window."
+            } else {
+                "Choose it with Open."
+            },
             FontId::proportional(12.5),
             DIM,
         );
@@ -2279,10 +2290,10 @@ impl App {
         // --- hover pills (always on top)
         if let Some(ni) = ev.hover {
             let d = &self.latched[nodes[ni].i];
-            let sub = match d.dbm {
-                Some(x) => format!("{} · {:.0} dBm", d.vendor, x),
-                None => d.vendor.clone(),
-            };
+            let mut parts = vec![d.vendor.clone()];
+            parts.extend(d.band_text());
+            parts.extend(d.dbm.map(|x| format!("{x:.0} dBm")));
+            let sub = parts.join(" · ");
             let tc = TipC {
                 anchor: disp[ni] + vec2(0.0, -10.0),
                 col: kind_col(d.kind),
@@ -3702,12 +3713,10 @@ impl App {
                                         FontId::proportional(15.0),
                                         Color32::WHITE,
                                     );
-                                    let kindname =
-                                        d.details.first().map(|x| x.1.clone()).unwrap_or_default();
                                     p.text(
                                         pos2(r.left() + 66.0, r.center().y + 10.0),
                                         Align2::LEFT_CENTER,
-                                        format!("{} · {}", kindname, d.vendor),
+                                        format!("{} · {}", d.caption(), d.vendor),
                                         FontId::proportional(12.0),
                                         DIM,
                                     );
@@ -4387,11 +4396,10 @@ fn popup(
             FontId::proportional(19.0),
             Color32::WHITE,
         );
-        let kindname = d.details.first().map(|x| x.1.clone()).unwrap_or_default();
         p.text(
             pos2(r.left() + 80.0, r.top() + 53.0),
             Align2::LEFT_CENTER,
-            kindname,
+            d.caption(),
             FontId::proportional(12.5),
             col,
         );
