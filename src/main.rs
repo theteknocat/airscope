@@ -2584,7 +2584,11 @@ impl App {
                         .filter(|x| x.kind == Kind::Lan)
                         .filter_map(|x| mac_bytes(&x.id))
                         .any(|m| same_device(b, m))
-                }) || (d.known && self.mine.iter().any(|m| d.name.starts_with(m.as_str())))
+                }) || (d.known
+                    && (self.mine.iter().any(|m| d.name.starts_with(m.as_str()))
+                        || self.devs.iter().any(|x| {
+                            x.kind == Kind::Wifi && x.connected && same_network(&x.name, &d.name)
+                        })))
             }
             _ => true,
         }
@@ -2673,10 +2677,13 @@ impl App {
             if resp.clicked() {
                 clk = Some(li);
             }
+            let name = if l.name.is_empty() { &l.mac } else { &l.name };
+            // the label sits left of the rows and must stay inside the card: cut long names in the middle
+            let name = fit_middle(p, name, FontId::proportional(12.0), label_x - row_x.0 - 8.0);
             p.text(
                 pos2(label_x, y + 9.0),
                 Align2::RIGHT_CENTER,
-                if l.name.is_empty() { &l.mac } else { &l.name },
+                name,
                 FontId::proportional(12.0),
                 TEXT,
             );
@@ -4032,6 +4039,13 @@ impl Net {
     }
 }
 
+/// Two Wi-Fi names that belong to one network: the same name, or one is the other plus a suffix
+/// ("SkyNet" and "SkyNet 5 GHz"). Very short names never match by prefix, so "Sky" doesn't claim "SkyNet".
+fn same_network(a: &str, b: &str) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short.chars().count() >= 4 && long.starts_with(short)
+}
+
 /// The six bytes of a MAC address at the start of a device id (None if the id doesn't start with one).
 fn mac_bytes(s: &str) -> Option<[u8; 6]> {
     let v: Vec<u8> = s[..s.len().min(17)]
@@ -4864,6 +4878,18 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn network_names_of_one_router() {
+        assert!(same_network("SkyNet", "SkyNet 5 GHz"));
+        assert!(same_network("SkyNet 5 GHz", "SkyNet"));
+        assert!(same_network("SkyNet", "SkyNet"));
+        assert!(!same_network("BrackCabin", "SkyNet"));
+        assert!(
+            !same_network("Sky", "SkyNet"),
+            "short names do not match by prefix"
+        );
+    }
+
     #[test]
     fn router_radios_match_neighbours_do_not() {
         let gw = mac_bytes("B0:82:E2:B4:3A:56").unwrap();

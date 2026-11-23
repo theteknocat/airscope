@@ -361,8 +361,16 @@ fn table(
     rect.bottom() - clip.bottom() < 1500.0 // close to the end of what is listed
 }
 
-/// A centred title over ghost table rows: nothing to show (yet), and why.
-pub(super) fn placeholder(ui: &mut egui::Ui, w: f32, title: &str, col: Color32, since: bool) {
+/// A centred message saying why there is nothing to show. While `loading`, ghost table rows sit under it
+/// to show that something is on its way; otherwise it stands alone.
+pub(super) fn placeholder(
+    ui: &mut egui::Ui,
+    w: f32,
+    title: &str,
+    col: Color32,
+    since: bool,
+    loading: bool,
+) {
     let (tr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
     lcd(
         ui.painter(),
@@ -372,6 +380,9 @@ pub(super) fn placeholder(ui: &mut egui::Ui, w: f32, title: &str, col: Color32, 
         13.0,
         col,
     );
+    if !loading {
+        return; // nothing is coming: just the message, no empty table
+    }
     ui.add_space(8.0);
     let (x_time, x_off, x_dev, x_msg) = cols(since);
     let (hr, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
@@ -877,6 +888,7 @@ impl Diag {
                         },
                         CYAN,
                         true,
+                        true,
                     );
                 }
                 return;
@@ -888,7 +900,7 @@ impl Diag {
                 return;
             }
             let Some((ws, we)) = window else {
-                placeholder(ui, w0, "PICK A START TIME", CYAN, false);
+                placeholder(ui, w0, "PICK A START TIME", CYAN, false, false);
                 return;
             };
             self.refresh_log_devs(names);
@@ -1014,17 +1026,9 @@ impl Diag {
                     clear_filter |= bar.clear_filter;
                     if self.tl.is_empty() {
                         let title = self.empty_title(cap);
-                        placeholder(
-                            ui,
-                            w,
-                            title,
-                            if !cap && self.log.job.is_some() {
-                                CYAN
-                            } else {
-                                GREEN
-                            },
-                            since,
-                        );
+                        let reading = !cap && self.log.job.is_some();
+                        let col = if reading { CYAN } else { GREEN };
+                        placeholder(ui, w, title, col, since, reading);
                     } else if let (Some(s), true) = (s, cap) {
                         let row = |i: usize| self.cap_row(s, i, names);
                         let shown = self.tl_limit.min(self.tl.len());
