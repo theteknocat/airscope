@@ -2,6 +2,7 @@
 //! (the same list `iw dev <if> scan dump` prints; no root, no tool, and it never starts a scan). NetworkManager only
 //! reports a 0–100 percentage that tops out at about -50 dBm, so strong nearby sources all look the same.
 
+use crate::bytes::{ne16, ne32};
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -45,8 +46,8 @@ fn message(ty: u16, flags: u16, cmd: u8, attrs: &[u8]) -> Vec<u8> {
 fn attrs(mut b: &[u8]) -> Vec<(u16, &[u8])> {
     let mut v = vec![];
     while b.len() >= 4 {
-        let len = u16::from_ne_bytes([b[0], b[1]]) as usize;
-        let ty = u16::from_ne_bytes([b[2], b[3]]) & 0x3fff;
+        let len = ne16(b, 0) as usize;
+        let ty = ne16(b, 2) & 0x3fff;
         if len < 4 || len > b.len() {
             break;
         }
@@ -101,8 +102,8 @@ fn request(fd: &OwnedFd, req: &[u8], dump: bool) -> Option<Vec<Vec<u8>>> {
         let buf = &buf[..n as usize];
         let mut off = 0;
         while off + 16 <= buf.len() {
-            let len = u32::from_ne_bytes(buf[off..off + 4].try_into().ok()?) as usize;
-            let ty = u16::from_ne_bytes([buf[off + 4], buf[off + 5]]);
+            let len = ne32(buf, off) as usize;
+            let ty = ne16(buf, off + 4);
             if len < 16 || off + len > buf.len() {
                 return None;
             }
@@ -170,7 +171,7 @@ fn parse_scan(msgs: &[Vec<u8>]) -> HashMap<String, f32> {
                         )
                     }
                     NL80211_BSS_SIGNAL_MBM if d.len() == 4 => {
-                        dbm = Some(i32::from_ne_bytes([d[0], d[1], d[2], d[3]]) as f32 / 100.0)
+                        dbm = Some(ne32(d, 0) as i32 as f32 / 100.0)
                     }
                     _ => {}
                 }
@@ -202,7 +203,7 @@ pub fn signals() -> HashMap<String, f32> {
         attrs(m)
             .into_iter()
             .find(|(t, d)| *t == CTRL_ATTR_FAMILY_ID && d.len() >= 2)
-            .map(|(_, d)| u16::from_ne_bytes([d[0], d[1]]))
+            .map(|(_, d)| ne16(d, 0))
     }) else {
         return HashMap::new();
     };

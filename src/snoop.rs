@@ -3,6 +3,7 @@
 //! controller took to answer. The file may still be growing: call `feed` again with the larger file and it
 //! carries on where it stopped.
 
+use crate::bytes::le16;
 use std::collections::HashMap;
 
 /// Microseconds from the btsnoop epoch (year 0) to the Unix epoch.
@@ -78,9 +79,6 @@ pub struct Snoop {
 
 fn be32(b: &[u8]) -> u32 {
     u32::from_be_bytes([b[0], b[1], b[2], b[3]])
-}
-fn le16(b: &[u8]) -> u16 {
-    u16::from_le_bytes([b[0], b[1]])
 }
 fn addr6(b: &[u8]) -> Addr {
     [b[0], b[1], b[2], b[3], b[4], b[5]]
@@ -160,7 +158,7 @@ impl Snoop {
         let unix = (ts - BTSNOOP_EPOCH_US) as f64 / 1e6;
         match op {
             OP_ACL_TX | OP_ACL_RX if data.len() >= 2 => {
-                let h = le16(data) & 0x0fff;
+                let h = le16(data, 0) & 0x0fff;
                 self.acl += 1;
                 self.last_acl.insert(h, t);
                 if let Some((a, _)) = self.handles.get(&h) {
@@ -168,8 +166,8 @@ impl Snoop {
                     if op == OP_ACL_TX { e.0 += 1 } else { e.1 += 1 }
                 }
             }
-            OP_COMMAND if data.len() >= 5 && le16(data) == SNIFF_EXIT => {
-                let h = le16(&data[3..]) & 0x0fff;
+            OP_COMMAND if data.len() >= 5 && le16(data, 0) == SNIFF_EXIT => {
+                let h = le16(data, 3) & 0x0fff;
                 if let Some((a, _)) = self.handles.get(&h).copied() {
                     let i = self.push(t, unix, a, Kind::SniffExit { wait: None });
                     self.pending_exit.insert(h, (t, i));
@@ -184,7 +182,7 @@ impl Snoop {
         match code {
             // Connection Complete: status, handle, address, link type, encryption
             0x03 if p.len() >= 10 && p[0] == 0 => {
-                let h = le16(&p[1..]) & 0x0fff;
+                let h = le16(p, 1) & 0x0fff;
                 let a = addr6(&p[3..]);
                 self.handles.insert(h, (a, t));
                 self.last_acl.remove(&h);
@@ -198,7 +196,7 @@ impl Snoop {
             }
             // Disconnection Complete: status, handle, reason
             0x05 if p.len() >= 4 && p[0] == 0 => {
-                let h = le16(&p[1..]) & 0x0fff;
+                let h = le16(p, 1) & 0x0fff;
                 match self.handles.remove(&h) {
                     Some((a, ct)) => {
                         let quiet = Some(t - self.last_acl.get(&h).copied().unwrap_or(ct));
@@ -233,7 +231,7 @@ impl Snoop {
             }
             // Mode Change: status, handle, mode, interval
             0x14 if p.len() >= 6 => {
-                let h = le16(&p[1..]) & 0x0fff;
+                let h = le16(p, 1) & 0x0fff;
                 if p[0] != 0
                     && let Some((a, _)) = self.handles.get(&h).copied()
                 {
@@ -247,7 +245,7 @@ impl Snoop {
             }
             // LE Meta: connection complete (0x01) or enhanced connection complete (0x0a)
             0x3e if p.len() >= 12 && (p[0] == 0x01 || p[0] == 0x0a) && p[1] == 0 => {
-                let h = le16(&p[2..]) & 0x0fff;
+                let h = le16(p, 2) & 0x0fff;
                 let a = addr6(&p[6..]);
                 self.handles.insert(h, (a, t));
                 self.last_acl.remove(&h);

@@ -1,6 +1,7 @@
 //! LAN basics without external tools: IPv4 neighbour table (netlink), default gateway (/proc),
 //! unprivileged ICMP echo, reverse DNS (libc). Replaces `ip neigh`, `ip route`, `ping`, `getent`.
 
+use crate::bytes::{ne16, ne32};
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -11,15 +12,6 @@ pub struct Neigh {
     pub mac: String, // upper case
     pub dev: String,
     pub state: &'static str, // "REACHABLE", "STALE", ...
-}
-
-/// Native-endian `u16` / `u32` at byte offset `o` of a netlink message (panics past the end, like indexing).
-fn ne16(b: &[u8], o: usize) -> u16 {
-    u16::from_ne_bytes([b[o], b[o + 1]])
-}
-
-fn ne32(b: &[u8], o: usize) -> u32 {
-    u32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 
 fn state_name(s: u16) -> &'static str {

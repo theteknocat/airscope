@@ -4,6 +4,7 @@
 //! Only read-only commands are used. The kernel lets unprivileged sockets send these (same as `hcitool`),
 //! so no root is needed.
 
+use crate::bytes::le16;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
 
@@ -187,17 +188,11 @@ fn exchange(fd: RawFd, opcode: u16, params: &[u8], want_evt: Option<u8>) -> Opti
         let data = &buf[3..(3 + plen).min(n as usize)];
         match evt {
             EVT_CMD_COMPLETE
-                if want_evt.is_none()
-                    && data.len() >= 3
-                    && u16::from_le_bytes([data[1], data[2]]) == opcode =>
+                if want_evt.is_none() && data.len() >= 3 && le16(data, 1) == opcode =>
             {
                 return Some(data[3..].to_vec());
             }
-            EVT_CMD_STATUS
-                if data.len() >= 4
-                    && u16::from_le_bytes([data[2], data[3]]) == opcode
-                    && data[0] != 0 =>
-            {
+            EVT_CMD_STATUS if data.len() >= 4 && le16(data, 2) == opcode && data[0] != 0 => {
                 return None;
             }
             e if Some(e) == want_evt => return Some(data.to_vec()),
@@ -253,7 +248,7 @@ pub fn remote_version(c: &Conn) -> (String, String) {
         return Default::default();
     }
     let ver = d[3];
-    let company = u16::from_le_bytes([d[4], d[5]]);
+    let company = le16(&d, 4);
     (
         format!("{} (0x{:x})", version_name(ver), ver),
         format!("{} ({})", company_name(company), company),
@@ -355,7 +350,7 @@ pub fn watch(mut f: impl FnMut(Event)) {
                     0x03 if d.len() >= 11 => {
                         let mac = mac_str([d[3], d[4], d[5], d[6], d[7], d[8]]);
                         if d[0] == 0 {
-                            handles.insert((dev, u16::from_le_bytes([d[1], d[2]])), mac.clone());
+                            handles.insert((dev, le16(d, 1)), mac.clone());
                         }
                         f(Event {
                             mac: Some(mac),
@@ -364,7 +359,7 @@ pub fn watch(mut f: impl FnMut(Event)) {
                         });
                     }
                     0x05 if d.len() >= 4 => {
-                        let mac = handles.remove(&(dev, u16::from_le_bytes([d[1], d[2]])));
+                        let mac = handles.remove(&(dev, le16(d, 1)));
                         if d[0] == 0 {
                             f(Event {
                                 mac,

@@ -3,6 +3,7 @@
 #![allow(deprecated)]
 
 mod bluez;
+mod bytes;
 mod capture;
 mod data;
 mod demo;
@@ -1175,7 +1176,7 @@ impl App {
                 }
             });
             for (id, kind, known, dbm) in gone {
-                if let Some(&(w, in_icon)) = self.last_world.get(&id) {
+                if let Some((w, in_icon)) = self.last_world.remove(&id) {
                     let rad = if known {
                         17.0
                     } else {
@@ -1190,8 +1191,36 @@ impl App {
                         ghost: !in_icon,
                     });
                 }
+                // forget the device's animation state, so these maps don't grow for as long as the app runs;
+                // if it comes back it pops in fresh, like any new device
+                self.offs.remove(&id);
+                self.sdist.remove(&id);
+                self.label_a.remove(&id);
+                self.appear.remove(&id);
             }
         }
+    }
+
+    /// Colour of a group's icon: its devices' colour when they are all one kind, else a neutral blue-white.
+    fn group_col(&self, nodes: &[N], members: &[usize]) -> Color32 {
+        let kind = |i: usize| self.latched[nodes[i].i].kind;
+        if members.iter().all(|&i| kind(i) == kind(members[0])) {
+            kind_col(kind(members[0]))
+        } else {
+            Color32::from_rgb(190, 212, 240)
+        }
+    }
+
+    /// Where the connected Bluetooth devices among `members` are drawn (they get a link to the PC).
+    fn connected_bt_pos(&self, nodes: &[N], members: &[usize], disp: &[Pos2]) -> Vec<Pos2> {
+        members
+            .iter()
+            .filter(|&&i| {
+                let d = &self.latched[nodes[i].i];
+                d.kind == Kind::Bt && d.connected
+            })
+            .map(|&i| disp[i])
+            .collect()
     }
 
     fn radar(&mut self, ui: &mut egui::Ui, t: f32) {
@@ -1794,14 +1823,7 @@ impl App {
         }
         // a group holding a connected Bluetooth device gets the same link
         for (gi, g) in groups.iter().enumerate() {
-            let cm: Vec<Pos2> = g
-                .members
-                .iter()
-                .filter(|&&i| {
-                    self.latched[nodes[i].i].kind == Kind::Bt && self.latched[nodes[i].i].connected
-                })
-                .map(|&i| disp[i])
-                .collect();
+            let cm = self.connected_bt_pos(&nodes, &g.members, &disp);
             if cm.is_empty() {
                 continue;
             }
@@ -1846,16 +1868,7 @@ impl App {
             if !iconshown[gi] || !view.contains(g.center) {
                 continue;
             }
-            let kinds: Vec<Kind> = g
-                .members
-                .iter()
-                .map(|&i| self.latched[nodes[i].i].kind)
-                .collect();
-            let col = if kinds.iter().all(|x| *x == kinds[0]) {
-                kind_col(kinds[0])
-            } else {
-                Color32::from_rgb(190, 212, 240)
-            };
+            let col = self.group_col(&nodes, &g.members);
             let masked_icon = groups
                 .iter()
                 .filter(|o| o.open)
@@ -2004,15 +2017,7 @@ impl App {
             }
             soft_halo(&p, g.center, g.halo_r, amt);
             if g.open || closing[gi] {
-                let cm: Vec<Pos2> = g
-                    .members
-                    .iter()
-                    .filter(|&&i| {
-                        self.latched[nodes[i].i].kind == Kind::Bt
-                            && self.latched[nodes[i].i].connected
-                    })
-                    .map(|&i| disp[i])
-                    .collect();
+                let cm = self.connected_bt_pos(&nodes, &g.members, &disp);
                 group_member_links(&p, c, g.center, &cm, 27.0, t);
             }
             if !g.open {
@@ -2047,16 +2052,7 @@ impl App {
                     &mut ev,
                 );
             }
-            let kinds: Vec<Kind> = g
-                .members
-                .iter()
-                .map(|&i| self.latched[nodes[i].i].kind)
-                .collect();
-            let col = if kinds.iter().all(|x| *x == kinds[0]) {
-                kind_col(kinds[0])
-            } else {
-                Color32::from_rgb(190, 212, 240)
-            };
+            let col = self.group_col(&nodes, &g.members);
             let resp = hit(
                 ui,
                 Rect::from_center_size(g.center, Vec2::splat(40.0)),
@@ -3291,12 +3287,12 @@ impl App {
         ui.painter().rect_filled(rect, 0.0, BG);
         // --- filter + group
         let q = self.q.to_lowercase();
-        let groups: [(&str, &str, Color32); 5] = [
-            ("YOURS", "Bluetooth devices", BLUE),
-            ("YOURS", "Network devices (LAN)", GREEN),
-            ("YOURS", "Wi-Fi networks", AMBER),
-            ("NEARBY · not yours", "Wi-Fi networks", AMBER),
-            ("NEARBY · not yours", "Unnamed access points", DIM),
+        let groups: [(&str, Color32); 5] = [
+            ("Bluetooth devices", BLUE),
+            ("Network devices (LAN)", GREEN),
+            ("Wi-Fi networks", AMBER),
+            ("Wi-Fi networks", AMBER),
+            ("Unnamed access points", DIM),
         ];
         let mut items: Vec<Vec<usize>> = vec![vec![]; 5];
         for (i, d) in self.devs.iter().enumerate() {
@@ -3321,12 +3317,14 @@ impl App {
             items[g].push(i);
         }
         for v in items.iter_mut() {
-            v.sort_by_key(|&i| {
-                (
-                    !self.devs[i].connected as u8,
-                    std::cmp::Reverse(self.devs[i].dbm.map(|x| x as i32).unwrap_or(-200)),
-                    self.devs[i].name.clone(),
-                )
+            // connected first, then strongest, then by name (compared in place, no copies)
+            v.sort_by(|&a, &b| {
+                let (da, db) = (&self.devs[a], &self.devs[b]);
+                let strength = |d: &Dev| d.dbm.map(|x| x as i32).unwrap_or(-200);
+                db.connected
+                    .cmp(&da.connected)
+                    .then(strength(db).cmp(&strength(da)))
+                    .then(da.name.cmp(&db.name))
             });
         }
         let yours: usize = items[..3].iter().map(|v| v.len()).sum();
@@ -3426,7 +3424,7 @@ impl App {
                         .inner_margin(egui::Margin::symmetric(18, 0))
                         .show(ui, |ui| {
                             let w = ui.available_width();
-                            for (g, (_section, title, col)) in groups.iter().enumerate() {
+                            for (g, (title, col)) in groups.iter().enumerate() {
                                 if items[g].is_empty() {
                                     continue;
                                 }
