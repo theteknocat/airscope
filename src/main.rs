@@ -132,6 +132,9 @@ fn soft_halo(p: &egui::Painter, c: Pos2, r: f32, amt: f32) {
     p.circle_stroke(c, r, Stroke::new(1.0, alpha(CYAN, 0.22 * amt)));
 }
 
+/// Signal bars an info box draws for a Wi-Fi network; any more radios are listed in its rows only.
+const MAX_RADIO_BARS: usize = 6;
+
 const PC_R: f32 = 25.0; // radius of the PC orb at the centre, in screen px
 
 /// Nearest a device's centre may sit to the PC's centre: close is fine, but its edge never touches the PC orb.
@@ -3263,31 +3266,37 @@ impl App {
                     subs.push(format!("Also heard on {}", other.join(", ")));
                 }
             }
-            let stacked = under.len() > 1 && under.first() == Some(&h);
-            if stacked {
-                // other hills stacked under the same spot (point nearer a hill's edge to pick it)
-                let names: Vec<String> = under
-                    .iter()
-                    .skip(1)
-                    .take(4)
-                    .map(|j| {
-                        if nets[*j].name.is_empty() {
-                            "(hidden)".to_string()
-                        } else {
-                            nets[*j].name.clone()
-                        }
+            if under.first() == Some(&h) {
+                // other networks stacked under the same spot (point nearer a hill's edge to pick one);
+                // a network's own other hills are not "also here", and each network is listed once
+                let mut seen = vec![n.net];
+                let others: Vec<&Net> = (under.iter())
+                    .map(|&j| &nets[j])
+                    .filter(|o| {
+                        let new = !seen.contains(&o.net);
+                        seen.push(o.net);
+                        new
                     })
                     .collect();
-                let more = under.len() - 1 - names.len();
-                subs.push(format!(
-                    "Also here: {}{}",
-                    names.join(", "),
-                    if more > 0 {
-                        format!(" +{}", more)
+                if !others.is_empty() {
+                    let names: Vec<&str> = (others.iter())
+                        .take(4)
+                        .map(|o| {
+                            if o.name.is_empty() {
+                                "(hidden)"
+                            } else {
+                                o.name.as_str()
+                            }
+                        })
+                        .collect();
+                    let more = others.len() - names.len();
+                    let more = if more > 0 {
+                        format!(" +{more}")
                     } else {
                         String::new()
-                    }
-                ));
+                    };
+                    subs.push(format!("Also here: {}{}", names.join(", "), more));
+                }
             }
             let title = format!(
                 "{}{}",
@@ -4359,8 +4368,10 @@ fn popup(
     let why = lp.layout(d.why.clone(), FontId::proportional(12.5), TEXT, w - 44.0);
     let rows_h = kv_height(&rows, 7.0);
     // indicator rows under the name: one per radio (band, channel and dBm) for Wi-Fi; link, signal and channels for a connected Bluetooth device
+    let bars = d.radios.len().min(MAX_RADIO_BARS);
+    let more_radios = d.radios.len() - bars;
     let sig_rows = if !d.radios.is_empty() {
-        d.radios.len()
+        bars + (more_radios > 0) as usize
     } else if d.lq.is_some() {
         2 + d.rssi.is_some() as usize
     } else {
@@ -4495,12 +4506,21 @@ fn popup(
         let (x0, x1) = (r.left() + 22.0, r.right() - 22.0);
         let has = |k: &str| d.issue.iter().any(|row| row.0 == k);
         if !d.radios.is_empty() {
-            for (i, rd) in d.radios.iter().enumerate() {
+            for (i, rd) in d.radios.iter().take(bars).enumerate() {
                 let y = by + i as f32 * 18.0;
                 let value = format!("{:.0} dBm", rd.dbm);
                 let bar = (&rd.label()[..], data::signal_frac(rd.dbm), col, &value[..]);
                 // label column fits "ch 100, 2.4G", value column fits "-100 dBm"
                 meter_w(&p, (x0, x1), y, bar, (88.0, 76.0));
+            }
+            if more_radios > 0 {
+                p.text(
+                    pos2(x0, by + bars as f32 * 18.0 + 4.5),
+                    Align2::LEFT_CENTER,
+                    format!("+{more_radios} weaker radios, listed below"),
+                    FontId::monospace(10.5),
+                    DIM,
+                );
             }
         } else if let Some(q) = d.lq {
             let mut y = by;

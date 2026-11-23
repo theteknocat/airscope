@@ -178,6 +178,7 @@ pub fn start(h: &Handle, oui: &Oui) {
         ap("Oak & Ivy", "00:09:5B:6E:30:A4", 36, 46, 433, "WPA2", false),
     ]
     .iter()
+    .chain(&campus_guest())
     .map(|a| wifi_dev(a, oui))
     .collect();
 
@@ -459,4 +460,25 @@ pub fn start(h: &Handle, oui: &Oui) {
             std::thread::sleep(Duration::from_secs(1));
         }
     });
+}
+
+/// One name on eight radios (a campus or office), to try the info box's cap on signal bars.
+fn campus_guest() -> Vec<Ap> {
+    [
+        (1, 56),
+        (6, 49),
+        (11, 44),
+        (36, 61),
+        (40, 52),
+        (44, 47),
+        (149, 42),
+        (153, 38),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, &(ch, sig))| {
+        let mac = format!("00:07:AB:C4:0{i}:1F");
+        ap("Campus_Guest", &mac, ch, sig, 144, "WPA2", false)
+    })
+    .collect()
 }
