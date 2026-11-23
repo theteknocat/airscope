@@ -155,6 +155,15 @@ pub fn start(h: &Handle, oui: &Oui) {
             "WPA2",
             false,
         ),
+        ap(
+            "Riverside_Mesh",
+            "00:1A:11:9B:4E:5C",
+            8,
+            41,
+            144,
+            "WPA2",
+            false,
+        ),
         ap("Studio 7", "00:0A:EB:88:19:6F", 9, 48, 144, "WPA3", false),
         ap(
             "Community WiFi",

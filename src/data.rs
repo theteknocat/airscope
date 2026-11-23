@@ -62,6 +62,17 @@ pub enum Icon {
     Unknown,
 }
 
+/// One access point radio of a Wi-Fi network (a router on 2.4 and 5 GHz has one radio, and one BSSID, per band).
+#[derive(Clone, Debug)]
+pub struct Radio {
+    pub bssid: String,
+    pub freq: u32,
+    pub chan: u32,
+    pub dbm: f32,
+    pub rate_mbit: u32,
+    pub in_use: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Dev {
     pub id: String,
@@ -77,6 +88,7 @@ pub struct Dev {
     pub online: bool,
     pub chan: Option<u32>,
     pub freq: Option<u32>,
+    pub radios: Vec<Radio>, // Wi-Fi: every radio of this network that was heard (strongest first once merged)
     pub details: Vec<(String, String)>,
     pub why: String,
     pub lq: Option<i32>, // Bluetooth link quality as the controller reports it, 0..255; show with lq_pct (stands in for signal strength on connected Bluetooth devices)
@@ -89,8 +101,22 @@ pub struct Dev {
 }
 
 impl Dev {
-    /// Band and channel of a Wi-Fi access point ("5 GHz ch 52"), so several radios of one router can be told apart.
+    /// Where a Wi-Fi network is heard: "5 GHz ch 52" for one radio, "3 radios, 2.4 + 5 GHz" for a router that
+    /// broadcasts one name on several bands.
     pub fn band_text(&self) -> Option<String> {
+        if self.radios.len() > 1 {
+            let mut bands: Vec<&str> = self.radios.iter().map(|r| band_name(r.freq)).collect();
+            bands.sort(); // "2.4 GHz", "5 GHz", "6 GHz"
+            bands.dedup();
+            let last = bands.pop()?;
+            let head: Vec<&str> = bands.iter().map(|b| b.trim_end_matches(" GHz")).collect();
+            let list = if head.is_empty() {
+                last.to_string()
+            } else {
+                format!("{} + {}", head.join(" + "), last)
+            };
+            return Some(format!("{} radios, {}", self.radios.len(), list));
+        }
         Some(format!("{} ch {}", band_name(self.freq?), self.chan?))
     }
 
@@ -122,6 +148,7 @@ impl Dev {
             online: true,
             chan: None,
             freq: None,
+            radios: vec![],
             details: vec![],
             why: String::new(),
             lq: None,
@@ -352,12 +379,24 @@ fn set(h: &Handle, f: impl FnOnce(&mut Shared)) {
 // ---------- Wi-Fi ----------
 
 /// "2.4 GHz", "5 GHz" or "6 GHz" for a Wi-Fi frequency in MHz.
-fn band_name(freq: u32) -> &'static str {
+pub fn band_name(freq: u32) -> &'static str {
     match freq {
         f if f < 3000 => "2.4 GHz",
         f if f < 5900 => "5 GHz",
         _ => "6 GHz",
     }
+}
+
+const BT_OVERLAP_KEY: &str = "Bluetooth overlap";
+
+/// The info box row naming the Bluetooth channels a 2.4 GHz Wi-Fi radio at `freq` MHz covers.
+fn bt_overlap_row(freq: u32) -> (String, String) {
+    let lo = (freq as i32 - 10 - 2402).max(0);
+    let hi = (freq as i32 + 10 - 2402).min(78);
+    (
+        BT_OVERLAP_KEY.into(),
+        format!("ch {}-{} (20 MHz footprint)", lo, hi),
+    )
 }
 
 /// One Wi-Fi access point as a device (shared by the live collector and the demo data).
@@ -388,6 +427,14 @@ pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
     d.connected = inuse;
     d.chan = chan;
     d.freq = freq;
+    d.radios = vec![Radio {
+        bssid: bssid.clone(),
+        freq: ap.freq,
+        chan: ap.chan,
+        dbm,
+        rate_mbit: ap.rate_kbps / 1000,
+        in_use: inuse,
+    }];
     d.details = vec![
         ("Type".into(), "Wi-Fi access point".into()),
         (
@@ -431,13 +478,8 @@ pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
             },
         ),
     ];
-    if let (Some(fr), true) = (freq, band == "2.4 GHz") {
-        let lo = (fr as i32 - 10 - 2402).max(0);
-        let hi = (fr as i32 + 10 - 2402).min(78);
-        d.details.push((
-            "Overlaps Bluetooth ch".into(),
-            format!("{}-{} (20 MHz footprint)", lo, hi),
-        ));
+    if ap.freq < 3000 {
+        d.details.push(bt_overlap_row(ap.freq));
     }
     d.why = if hidden && randomized {
         "Hidden network with a randomized address. Typically a phone hotspot or a virtual access point on a mesh node or ISP gateway.".into()
@@ -453,6 +495,79 @@ pub fn wifi_dev(ap: &crate::nm::Ap, oui: &Oui) -> Dev {
     } else {
         "Wi-Fi access point seen in the last scan (cached, not an active probe).".into()
     };
+    d
+}
+
+/// Joins the access points that share one network name into a single device with several `radios`, the way a
+/// router that broadcasts one name on 2.4 and 5 GHz appears in a system's Wi-Fi menu. Hidden (unnamed) access
+/// points are never joined. The merged device takes its signal and details from the strongest radio, its id from
+/// the lowest BSSID (steady while the radios stay visible, and unchanged for a network with one radio), and is
+/// connected when any of its radios is.
+pub fn merge_networks(devs: Vec<Dev>) -> Vec<Dev> {
+    let mut out: Vec<Vec<Dev>> = vec![];
+    let mut by_name: HashMap<String, usize> = HashMap::new();
+    for d in devs {
+        if d.kind == Kind::Wifi && d.known {
+            let i = *by_name.entry(d.name.clone()).or_insert_with(|| {
+                out.push(vec![]);
+                out.len() - 1
+            });
+            out[i].push(d);
+        } else {
+            out.push(vec![d]);
+        }
+    }
+    out.into_iter().map(merge_group).collect()
+}
+
+fn merge_group(mut group: Vec<Dev>) -> Dev {
+    if group.len() == 1 {
+        return group.remove(0);
+    }
+    group.sort_by(|a, b| b.dbm.unwrap_or(-200.0).total_cmp(&a.dbm.unwrap_or(-200.0)));
+    let mut radios: Vec<Radio> = group.iter().flat_map(|d| d.radios.clone()).collect();
+    radios.sort_by(|a, b| b.dbm.total_cmp(&a.dbm));
+    let mut d = group.remove(0); // the strongest radio's device
+    d.id = radios.iter().map(|r| r.bssid.clone()).min().unwrap_or(d.id);
+    d.connected = radios.iter().any(|r| r.in_use);
+    // the rows that describe one radio are replaced by one row per radio
+    d.details
+        .retain(|(k, _)| !matches!(k.as_str(), "BSSID" | "Band / channel" | "Rate"));
+    let at = d
+        .details
+        .iter()
+        .position(|(k, _)| k == "Vendor")
+        .map_or(d.details.len(), |i| i + 1);
+    let rows = radios.iter().map(|r| {
+        let conn = if r.in_use { "  (connected)" } else { "" };
+        (
+            "Radio".to_string(),
+            format!(
+                "{} ch {} · {:.0} dBm · {} Mbit/s · {}{}",
+                band_name(r.freq),
+                r.chan,
+                r.dbm,
+                r.rate_mbit,
+                r.bssid,
+                conn
+            ),
+        )
+    });
+    d.details.splice(at..at, rows.collect::<Vec<_>>());
+    if let Some(r) = radios.iter().find(|r| r.freq < 3000) {
+        d.details.retain(|(k, _)| k != BT_OVERLAP_KEY);
+        d.details.push(bt_overlap_row(r.freq));
+    }
+    d.why = format!(
+        "{} radios share this name, so they are shown as one network on several bands, like your system's Wi-Fi menu. {}",
+        radios.len(),
+        if d.connected {
+            "This PC is connected to one of them."
+        } else {
+            "Each radio is a separate access point seen in the last scan (cached, not an active probe)."
+        }
+    );
+    d.radios = radios;
     d
 }
 
@@ -1500,6 +1615,52 @@ mod tests {
         );
         (d.freq, d.chan) = (Some(5260), Some(52));
         assert_eq!(d.caption(), "Wi-Fi access point · 5 GHz ch 52");
+    }
+
+    #[test]
+    fn radios_with_one_name_become_one_network() {
+        let radio = |ssid: &str, bssid: &str, chan: u32, freq: u32, dbm: f32, in_use: bool| {
+            let ap = crate::nm::Ap {
+                ssid: ssid.into(),
+                bssid: bssid.into(),
+                freq,
+                chan,
+                strength: 50,
+                dbm: Some(dbm),
+                rate_kbps: 144_000,
+                security: "WPA2".into(),
+                in_use,
+            };
+            wifi_dev(&ap, &Oui::at(None))
+        };
+        let devs = vec![
+            radio("Cabin", "70:97:41:98:A5:19", 1, 2412, -70.0, false),
+            radio("Other", "00:11:22:33:44:55", 6, 2437, -60.0, false),
+            radio("Cabin", "70:97:41:98:A5:1B", 100, 5500, -58.0, true),
+            radio("", "AA:BB:CC:00:00:01", 1, 2412, -80.0, false),
+            radio("", "AA:BB:CC:00:00:02", 1, 2412, -82.0, false),
+        ];
+        let out = merge_networks(devs);
+        assert_eq!(
+            out.len(),
+            4,
+            "Cabin merges; Other and the two hidden ones stay separate"
+        );
+        let cabin = out.iter().find(|d| d.name == "Cabin").unwrap();
+        assert_eq!(cabin.radios.len(), 2);
+        assert_eq!(
+            cabin.radios[0].chan, 100,
+            "radios are listed strongest first"
+        );
+        assert_eq!(cabin.id, "70:97:41:98:A5:19", "the id is the lowest BSSID");
+        assert_eq!(cabin.dbm, Some(-58.0), "signal is the strongest radio's");
+        assert!(cabin.connected, "connected when any radio is");
+        assert_eq!(cabin.band_text().as_deref(), Some("2 radios, 2.4 + 5 GHz"));
+        assert_eq!(
+            cabin.details.iter().filter(|(k, _)| k == "Radio").count(),
+            2
+        );
+        assert!(cabin.details.iter().all(|(k, _)| k != "BSSID"));
     }
 
     #[test]

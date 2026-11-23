@@ -18,7 +18,7 @@ mod picker;
 mod snoop;
 mod syslog;
 
-use data::{BtLink, Dev, Handle, Icon, Kind, hash64};
+use data::{BtLink, Dev, Handle, Icon, Kind, hash64, merge_networks};
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2,
 };
@@ -764,7 +764,7 @@ impl App {
         }
         self.ver = s.ver;
         self.devs.clear();
-        self.devs.extend(s.wifi.iter().cloned());
+        self.devs.extend(merge_networks(s.wifi.clone()));
         self.devs.extend(s.bt.iter().cloned());
         self.devs.extend(s.lan.iter().cloned());
         // a router's Wi-Fi BSSID can equal its LAN MAC: keep every device id unique (Wi-Fi keeps the original)
@@ -1198,7 +1198,10 @@ impl App {
             t.map(|t| format!("{}s", t.elapsed().as_secs()))
                 .unwrap_or("--".into())
         };
-        let wifi_n = self.devs.iter().filter(|d| d.kind == Kind::Wifi).count();
+        let wifi_n: usize = (self.devs.iter())
+            .filter(|d| d.kind == Kind::Wifi)
+            .map(|d| d.radios.len().max(1))
+            .sum(); // access points: a router with several radios counts once per radio
         let bt_n = self.links.len();
         let lan_n = self.devs.iter().filter(|d| d.kind == Kind::Lan).count();
         // each chip has three text levels (full, count only, name only); the full text is always in the tooltip
@@ -2588,33 +2591,33 @@ impl App {
         match d.kind {
             Kind::Wifi => {
                 // an AP radio of a device on our LAN (e.g. the router): its BSSID is derived from the device's MAC
-                let b = mac_bytes(&d.id);
-                b.is_some_and(|b| {
-                    self.devs
-                        .iter()
-                        .filter(|x| x.kind == Kind::Lan)
-                        .filter_map(|x| mac_bytes(&x.id))
-                        .any(|m| same_device(b, m))
-                }) || (d.known
-                    && (self.mine.iter().any(|m| d.name.starts_with(m.as_str()))
-                        || self.devs.iter().any(|x| {
-                            x.kind == Kind::Wifi && x.connected && same_network(&x.name, &d.name)
-                        })))
+                d.radios
+                    .iter()
+                    .filter_map(|r| mac_bytes(&r.bssid))
+                    .any(|b| {
+                        self.devs
+                            .iter()
+                            .filter(|x| x.kind == Kind::Lan)
+                            .filter_map(|x| mac_bytes(&x.id))
+                            .any(|m| same_device(b, m))
+                    })
+                    || (d.known
+                        && (self.mine.iter().any(|m| d.name.starts_with(m.as_str()))
+                            || self.devs.iter().any(|x| {
+                                x.kind == Kind::Wifi
+                                    && x.connected
+                                    && same_network(&x.name, &d.name)
+                            })))
             }
             _ => true,
         }
     }
 
-    /// 2.4 GHz networks (one per name+channel; unnamed access points are lumped per channel).
+    /// The 2.4 GHz hills of the Spectrum screen: one per radio's name and channel (unnamed access points are lumped
+    /// per channel), strongest first. Hills of one network share `net`, the index of its strongest hill.
     fn nets(&self) -> Vec<Net> {
         let mut m: HashMap<(String, u32), Net> = HashMap::new();
         for d in self.devs.iter().filter(|d| d.kind == Kind::Wifi) {
-            let (Some(f), Some(dbm), Some(ch)) = (d.freq, d.dbm, d.chan) else {
-                continue;
-            };
-            if f >= 3000 {
-                continue;
-            }
             let hidden = !d.known;
             let name = if hidden {
                 "(unnamed)".to_string()
@@ -2622,25 +2625,32 @@ impl App {
                 d.name.clone()
             };
             let mine = self.is_mine(d);
-            let e = m.entry((name.clone(), ch)).or_insert(Net {
-                id: d.id.clone(),
-                name,
-                chan: ch,
-                f: f as f32,
-                dbm,
-                aps: 0,
-                mine,
-                hidden,
-            });
-            e.aps += 1;
-            e.mine |= mine;
-            if dbm > e.dbm {
-                e.dbm = dbm;
-                e.id = d.id.clone();
+            for r in d.radios.iter().filter(|r| r.freq < 3000) {
+                let e = m.entry((name.clone(), r.chan)).or_insert(Net {
+                    id: d.id.clone(),
+                    name: name.clone(),
+                    chan: r.chan,
+                    f: r.freq as f32,
+                    dbm: r.dbm,
+                    aps: 0,
+                    mine,
+                    hidden,
+                    net: 0,
+                });
+                e.aps += 1;
+                e.mine |= mine;
+                if r.dbm > e.dbm {
+                    e.dbm = r.dbm;
+                    e.id = d.id.clone();
+                }
             }
         }
         let mut v: Vec<Net> = m.into_values().collect();
         v.sort_by(|a, b| b.dbm.total_cmp(&a.dbm).then(a.name.cmp(&b.name)));
+        let mut first: HashMap<String, usize> = HashMap::new();
+        for (i, n) in v.iter_mut().enumerate() {
+            n.net = *first.entry(n.id.clone()).or_insert(i);
+        }
         v
     }
 
@@ -2912,12 +2922,13 @@ impl App {
         panel(&p, card, 14.0, CYAN);
         let ly0 = card.top() + 12.0;
         let max_rows = (((card.height() - 24.0) / 24.0) as usize).max(1);
-        // legend: every network, scrollable when there are more than fit
+        // legend: every network once (its strongest hill stands for it), scrollable when there are more than fit
+        let reps: Vec<usize> = (0..nets.len()).filter(|&i| nets[i].net == i).collect();
         let lview = Rect::from_min_max(
             pos2(lx, ly0),
             pos2(card.right() - 14.0, ly0 + max_rows as f32 * 24.0),
         );
-        let lmax = (nets.len() as f32 - max_rows as f32).max(0.0) * 24.0;
+        let lmax = (reps.len() as f32 - max_rows as f32).max(0.0) * 24.0;
         let lid = egui::Id::new("spectrum_legend_scroll");
         let mut loff: f32 = ui.ctx().data(|d| d.get_temp(lid)).unwrap_or(0.0);
         if lmax > 0.0 && ptr.is_some_and(|q| lview.contains(q)) {
@@ -2926,9 +2937,9 @@ impl App {
         loff = loff.clamp(0.0, lmax);
         ui.ctx().data_mut(|d| d.insert_temp(lid, loff));
         let mut legend: Vec<(Rect, usize)> = vec![];
-        for i in 0..nets.len() {
+        for (row, &i) in reps.iter().enumerate() {
             let r = Rect::from_min_size(
-                pos2(lx, ly0 + i as f32 * 24.0 - loff),
+                pos2(lx, ly0 + row as f32 * 24.0 - loff),
                 vec2(lview.width(), 22.0),
             );
             if r.bottom() > lview.top() && r.top() < lview.bottom() {
@@ -2978,6 +2989,8 @@ impl App {
             under = c.into_iter().map(|x| x.0).collect();
             hover = under.first().copied();
         }
+        // the hills of one network light up together, and so does its legend row
+        let lit = hover.map(|h| nets[h].net);
         if let Some(h) = hover {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             if let Some(q) = ptr.filter(|q| {
@@ -2988,9 +3001,9 @@ impl App {
             }
         }
         // hills, weakest first so strong ones sit on top
-        for (i, n) in nets.iter().enumerate().rev() {
+        for n in nets.iter().rev() {
             let col = col_of(n);
-            let dim = hover.map_or(1.0, |h| if h == i { 1.0 } else { 0.28 });
+            let dim = lit.map_or(1.0, |g| if n.net == g { 1.0 } else { 0.28 });
             let pts: Vec<Pos2> = (-22..=22)
                 .map(|k| {
                     let dx = k as f32 / 2.0;
@@ -3022,10 +3035,10 @@ impl App {
         }
         // labels above the peaks (placed before hover detection; drawn here)
         for (i, r, shown, crowded) in &labels {
-            if *crowded && hover != Some(*i) {
+            let n = &nets[*i];
+            if *crowded && lit != Some(n.net) {
                 continue;
             }
-            let n = &nets[*i];
             let col = col_of(n);
             let g = p.layout_no_wrap(shown.clone(), FontId::proportional(11.5), Color32::WHITE);
             p.rect_filled(*r, 6.0, Color32::from_rgba_unmultiplied(6, 12, 26, 190));
@@ -3036,7 +3049,7 @@ impl App {
                     1.0,
                     alpha(
                         col,
-                        if hover.is_none_or(|h| h == *i) {
+                        if lit.is_none_or(|g| g == n.net) {
                             0.9
                         } else {
                             0.3
@@ -3155,7 +3168,7 @@ impl App {
         for (r, i) in &legend {
             let n = &nets[*i];
             let col = col_of(n);
-            if hover == Some(*i) {
+            if lit == Some(n.net) {
                 pl.rect_filled(*r, 6.0, alpha(col, 0.16));
             }
             dot(&pl, pos2(r.left() + 10.0, r.center().y), 5.0, col, 0.0);
@@ -3166,8 +3179,15 @@ impl App {
             } else {
                 n.name.clone()
             };
+            let mut chans: Vec<u32> = (nets.iter())
+                .filter(|o| o.net == n.net)
+                .map(|o| o.chan)
+                .collect();
+            chans.sort();
+            chans.dedup();
+            let chans: Vec<String> = chans.iter().map(u32::to_string).collect();
             let info = pl.layout_no_wrap(
-                format!("ch{} {:.0}", n.chan, n.dbm),
+                format!("ch{} {:.0}", chans.join("/"), n.dbm),
                 FontId::monospace(10.5),
                 DIM,
             );
@@ -3225,6 +3245,23 @@ impl App {
                 ov.len() - same
             );
             let mut subs = vec![sub];
+            // the same network on other bands (5 GHz radios are not on this graph)
+            if let Some(dev) = self.devs.iter().find(|d| d.id == n.id) {
+                let other: Vec<String> = (dev.radios.iter())
+                    .filter(|r| r.freq >= 3000)
+                    .map(|r| {
+                        format!(
+                            "{} ch {} ({:.0} dBm)",
+                            data::band_name(r.freq),
+                            r.chan,
+                            r.dbm
+                        )
+                    })
+                    .collect();
+                if !other.is_empty() {
+                    subs.push(format!("Also heard on {}", other.join(", ")));
+                }
+            }
             let stacked = under.len() > 1 && under.first() == Some(&h);
             if stacked {
                 // other hills stacked under the same spot (point nearer a hill's edge to pick it)
@@ -4033,7 +4070,7 @@ fn tip(
 }
 
 struct Net {
-    id: String, // strongest access point of this network (for the info box)
+    id: String, // the network's device id (for the info box)
     name: String,
     chan: u32,
     f: f32, // centre MHz
@@ -4041,6 +4078,7 @@ struct Net {
     aps: usize,
     mine: bool,
     hidden: bool,
+    net: usize, // index of the strongest hill of the same network (itself, for a network with one hill)
 }
 impl Net {
     fn strength(&self) -> f32 {
