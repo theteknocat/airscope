@@ -11,3 +11,8 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "wa
 libc = "0.2"
 mdns-sd = "0.21.7"
 zbus = "5"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
