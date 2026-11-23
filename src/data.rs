@@ -73,6 +73,17 @@ pub struct Radio {
     pub in_use: bool,
 }
 
+impl Radio {
+    /// Short band and channel for the left end of a signal bar: "2.4G ch 1", "5G ch 100".
+    pub fn label(&self) -> String {
+        format!(
+            "{}G ch {}",
+            band_name(self.freq).trim_end_matches(" GHz"),
+            self.chan
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Dev {
     pub id: String,
@@ -538,19 +549,12 @@ fn merge_group(mut group: Vec<Dev>) -> Dev {
         .iter()
         .position(|(k, _)| k == "Vendor")
         .map_or(d.details.len(), |i| i + 1);
+    // the signal bars say band, channel and strength, so these rows add what they don't: speed and address
     let rows = radios.iter().map(|r| {
         let conn = if r.in_use { "  (connected)" } else { "" };
         (
-            "Radio".to_string(),
-            format!(
-                "{} ch {} · {:.0} dBm · {} Mbit/s · {}{}",
-                band_name(r.freq),
-                r.chan,
-                r.dbm,
-                r.rate_mbit,
-                r.bssid,
-                conn
-            ),
+            r.label(),
+            format!("{} Mbit/s · {}{}", r.rate_mbit, r.bssid, conn),
         )
     });
     d.details.splice(at..at, rows.collect::<Vec<_>>());
@@ -1656,9 +1660,10 @@ mod tests {
         assert_eq!(cabin.dbm, Some(-58.0), "signal is the strongest radio's");
         assert!(cabin.connected, "connected when any radio is");
         assert_eq!(cabin.band_text().as_deref(), Some("2 radios, 2.4 + 5 GHz"));
-        assert_eq!(
-            cabin.details.iter().filter(|(k, _)| k == "Radio").count(),
-            2
+        let keys: Vec<&str> = cabin.details.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            keys.contains(&"2.4G ch 1") && keys.contains(&"5G ch 100"),
+            "one row per radio"
         );
         assert!(cabin.details.iter().all(|(k, _)| k != "BSSID"));
     }

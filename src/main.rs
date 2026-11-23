@@ -4342,9 +4342,9 @@ fn popup(
     let rows = kv_layout(&lp, &d.details, alpha(CYAN, 0.8), w - 44.0 - kw);
     let why = lp.layout(d.why.clone(), FontId::proportional(12.5), TEXT, w - 44.0);
     let rows_h = kv_height(&rows, 7.0);
-    // indicator rows under the name: dBm for Wi-Fi; link, signal and channels for a connected Bluetooth device
-    let sig_rows = if d.dbm.is_some() {
-        1
+    // indicator rows under the name: one per radio (band, channel and dBm) for Wi-Fi; link, signal and channels for a connected Bluetooth device
+    let sig_rows = if !d.radios.is_empty() {
+        d.radios.len()
     } else if d.lq.is_some() {
         2 + d.rssi.is_some() as usize
     } else {
@@ -4478,21 +4478,21 @@ fn popup(
         let by = r.top() + 84.0;
         let (x0, x1) = (r.left() + 22.0, r.right() - 22.0);
         let has = |k: &str| d.issue.iter().any(|row| row.0 == k);
-        if let Some(dbm) = d.dbm {
-            led_bar(
-                &p,
-                Rect::from_min_size(pos2(x0, by), vec2(w - 130.0, 9.0)),
-                data::signal_frac(dbm),
-                col,
-                24,
-            );
-            p.text(
-                pos2(x1, by + 4.5),
-                Align2::RIGHT_CENTER,
-                format!("{:.0} dBm", dbm),
-                FontId::monospace(13.0),
-                TEXT,
-            );
+        if !d.radios.is_empty() {
+            for (i, rd) in d.radios.iter().enumerate() {
+                let y = by + i as f32 * 18.0;
+                let value = format!("{:.0} dBm", rd.dbm);
+                meter(
+                    &p,
+                    x0,
+                    x1,
+                    y,
+                    &rd.label(),
+                    data::signal_frac(rd.dbm),
+                    col,
+                    &value,
+                );
+            }
         } else if let Some(q) = d.lq {
             let mut y = by;
             meter(
