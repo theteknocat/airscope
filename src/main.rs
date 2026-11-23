@@ -2619,42 +2619,11 @@ impl App {
     /// The 2.4 GHz hills of the Spectrum screen: one per radio's name and channel (unnamed access points are lumped
     /// per channel), strongest first. Hills of one network share `net`, the index of its strongest hill.
     fn nets(&self) -> Vec<Net> {
-        let mut m: HashMap<(String, u32), Net> = HashMap::new();
-        for d in self.devs.iter().filter(|d| d.kind == Kind::Wifi) {
-            let hidden = !d.known;
-            let name = if hidden {
-                "(unnamed)".to_string()
-            } else {
-                d.name.clone()
-            };
-            let mine = self.is_mine(d);
-            for r in d.radios.iter().filter(|r| r.freq < 3000) {
-                let e = m.entry((name.clone(), r.chan)).or_insert(Net {
-                    id: d.id.clone(),
-                    name: name.clone(),
-                    chan: r.chan,
-                    f: r.freq as f32,
-                    dbm: r.dbm,
-                    aps: 0,
-                    mine,
-                    hidden,
-                    net: 0,
-                });
-                e.aps += 1;
-                e.mine |= mine;
-                if r.dbm > e.dbm {
-                    e.dbm = r.dbm;
-                    e.id = d.id.clone();
-                }
-            }
-        }
-        let mut v: Vec<Net> = m.into_values().collect();
-        v.sort_by(|a, b| b.dbm.total_cmp(&a.dbm).then(a.name.cmp(&b.name)));
-        let mut first: HashMap<String, usize> = HashMap::new();
-        for (i, n) in v.iter_mut().enumerate() {
-            n.net = *first.entry(n.id.clone()).or_insert(i);
-        }
-        v
+        let wifi: Vec<(&Dev, bool)> = (self.devs.iter())
+            .filter(|d| d.kind == Kind::Wifi)
+            .map(|d| (d, self.is_mine(d)))
+            .collect();
+        hills(&wifi)
     }
 
     /// Bluetooth channel i (0..78) sits at 2402+i MHz. How crowded is Wi-Fi there? (0 = quiet)
@@ -4079,6 +4048,45 @@ fn tip(
     }
 }
 
+/// Groups Wi-Fi devices (each with its "mine" flag) into 2.4 GHz hills, see `App::nets`.
+fn hills(wifi: &[(&Dev, bool)]) -> Vec<Net> {
+    let mut m: HashMap<(String, u32), Net> = HashMap::new();
+    for &(d, mine) in wifi {
+        let hidden = !d.known;
+        let name = if hidden {
+            "(unnamed)".to_string()
+        } else {
+            d.name.clone()
+        };
+        for r in d.radios.iter().filter(|r| r.freq < 3000) {
+            let e = m.entry((name.clone(), r.chan)).or_insert(Net {
+                id: d.id.clone(),
+                name: name.clone(),
+                chan: r.chan,
+                f: r.freq as f32,
+                dbm: r.dbm,
+                aps: 0,
+                mine,
+                hidden,
+                net: 0,
+            });
+            e.aps += 1;
+            e.mine |= mine;
+            if r.dbm > e.dbm {
+                e.dbm = r.dbm;
+                e.id = d.id.clone();
+            }
+        }
+    }
+    let mut v: Vec<Net> = m.into_values().collect();
+    v.sort_by(|a, b| b.dbm.total_cmp(&a.dbm).then(a.name.cmp(&b.name)));
+    let mut first: HashMap<String, usize> = HashMap::new();
+    for (i, n) in v.iter_mut().enumerate() {
+        n.net = *first.entry(n.id.clone()).or_insert(i);
+    }
+    v
+}
+
 struct Net {
     id: String, // the network's device id (for the info box)
     name: String,
@@ -4953,6 +4961,44 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hills_one_per_radio_channel_sharing_a_network() {
+        let radio = |ssid: &str, bssid: &str, chan: u32, freq: u32, dbm: f32| {
+            let ap = crate::nm::Ap {
+                ssid: ssid.into(),
+                bssid: bssid.into(),
+                freq,
+                chan,
+                strength: 50,
+                dbm: Some(dbm),
+                rate_kbps: 144_000,
+                security: "WPA2".into(),
+                in_use: false,
+            };
+            data::wifi_dev(&ap, &data::Oui::at(None))
+        };
+        let devs = merge_networks(vec![
+            radio("Cabin", "70:97:41:98:A5:19", 1, 2412, -70.0),
+            radio("Cabin", "70:97:41:98:A5:1B", 6, 2437, -55.0),
+            radio("Cabin", "70:97:41:98:A5:1D", 36, 5180, -50.0),
+            radio("Other", "00:11:22:33:44:55", 6, 2437, -60.0),
+            radio("", "AA:BB:CC:00:00:01", 1, 2412, -80.0),
+            radio("", "AA:BB:CC:00:00:02", 1, 2412, -82.0),
+        ]);
+        let wifi: Vec<(&Dev, bool)> = devs.iter().map(|d| (d, false)).collect();
+        let v = hills(&wifi);
+        let key: Vec<(&str, u32)> = v.iter().map(|n| (&n.name[..], n.chan)).collect();
+        assert_eq!(
+            key,
+            [("Cabin", 6), ("Other", 6), ("Cabin", 1), ("(unnamed)", 1)],
+            "5 GHz left out, hidden ones lumped per channel, strongest first"
+        );
+        assert_eq!(v[2].net, 0, "Cabin's weaker hill points at its strongest");
+        assert_eq!(v[0].net, 0);
+        assert_eq!(v[1].net, 1);
+        assert_eq!(v[3].aps, 2);
+    }
     #[test]
     fn network_names_of_one_router() {
         assert!(same_network("SkyNet", "SkyNet 5 GHz"));

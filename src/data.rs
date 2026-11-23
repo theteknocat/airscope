@@ -294,7 +294,7 @@ impl Oui {
     pub fn load() -> Self {
         Self::at(user_oui_path())
     }
-    fn at(user: Option<std::path::PathBuf>) -> Self {
+    pub(crate) fn at(user: Option<std::path::PathBuf>) -> Self {
         let o = Oui {
             map: Default::default(),
             counts: Default::default(),
