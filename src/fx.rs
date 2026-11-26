@@ -9,6 +9,8 @@ use eframe::egui::{
 };
 use std::f32::consts::{PI, TAU};
 
+/// Frame interval for the slow pulses (lamps, issue ring): smooth enough for them at a third of the work of 60 fps.
+pub const PULSE_FRAME: std::time::Duration = std::time::Duration::from_millis(50);
 pub const BG: Color32 = Color32::from_rgb(5, 9, 18);
 pub const PANEL_TOP: Color32 = Color32::from_rgb(24, 38, 64);
 pub const PANEL_BOT: Color32 = Color32::from_rgb(9, 15, 29);

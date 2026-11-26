@@ -206,7 +206,7 @@ impl Diag {
     /// Reads the file in chunks, one per frame while there is more to read, so a huge capture loads without freezing
     /// the window; once caught up it looks for new data every 2 s (the capture may still be running) and reads only
     /// the new bytes.
-    fn pump(&mut self) {
+    fn pump(&mut self, ui_ctx: &egui::Context) {
         const CHUNK: u64 = 4 << 20;
         if self.snoop.is_none() {
             return;
@@ -237,6 +237,7 @@ impl Diag {
             return;
         }
         self.pos += buf.len() as u64;
+        ui_ctx.request_repaint(); // draw the new data, and fetch the next chunk if there is one
         self.grew = Some(Instant::now());
         if let Some(s) = self.snoop.as_mut()
             && let Err(e) = s.feed(&buf)
@@ -760,6 +761,9 @@ impl Diag {
                             .as_ref()
                             .filter(|f| f.1 == idx && f.0.elapsed() < Duration::from_millis(2500));
                         let el = f.map_or(0.0, |f| f.0.elapsed().as_secs_f32());
+                        if f.is_some() {
+                            ui.ctx().request_repaint(); // the button's result is fading
+                        }
                         // fade in over 0.15 s, hold, fade out over the last 0.5 s
                         let fade = if f.is_none() {
                             0.0
@@ -904,7 +908,7 @@ impl Diag {
             self.rec_msg = None;
             self.open_path(f.display().to_string());
         }
-        self.pump();
+        self.pump(ui.ctx());
         let s = self.snoop.take();
         if let Some(res) = self.save_pick.as_ref().and_then(|(p, _)| p.poll()) {
             let log = self.save_pick.take().is_some_and(|x| x.1);
@@ -1512,6 +1516,7 @@ fn lamp(ui: &mut egui::Ui, col: Color32, label: &str, pulse: bool) {
         .layout_no_wrap(label.to_string(), FontId::proportional(13.0), col);
     let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 22.0, 22.0), Sense::hover());
     let t = if pulse {
+        ui.ctx().request_repaint_after(PULSE_FRAME);
         0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 4.0).sin()
     } else {
         1.0

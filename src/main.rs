@@ -4485,6 +4485,7 @@ fn popup(
                     "Warning: click for details"
                 },
             );
+            ui.ctx().request_repaint_after(PULSE_FRAME);
             let pulse = (ui.input(|i| i.time) as f32 * 4.0).sin() * 0.5 + 0.5;
             let c = chip.center();
             glow(&p, c, 17.0 + pulse * 4.0, acc, 0.3 + 0.2 * pulse);
@@ -4706,7 +4707,14 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _f: &mut eframe::Frame) {
         self.sync();
         let sel_before = self.sel.clone();
-        ui.ctx().request_repaint();
+        // The radar sweeps all the time. Elsewhere a frame is drawn for input, for whatever asks for one while it
+        // animates, and twice a second so data from the collector threads shows up.
+        if self.screen == Screen::Radar || ui.input(|i| !i.events.is_empty()) {
+            ui.ctx().request_repaint(); // after input too: some of it only shows on the next frame
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(500));
+        }
         // the wheel belongs to an info box (or the vendor dialog) when the mouse is over one, not to what is behind it
         self.wheel = 0.0;
         if let Some(q) = ui.input(|i| i.pointer.hover_pos())
@@ -4819,6 +4827,9 @@ impl eframe::App for App {
         }
         self.pops
             .retain(|p| p.a > 0.0 || want.as_deref() == Some(p.id.as_str()));
+        if self.pops.iter().any(|p| p.a < 1.0) {
+            ui.ctx().request_repaint(); // a box is fading in or out
+        }
         let mut close = false;
         for p in &self.pops {
             let mut c = false;
@@ -4873,6 +4884,9 @@ impl eframe::App for App {
         } else {
             self.tip_a = (self.tip_a - dt / 0.15).max(0.0);
         }
+        if self.tip_a > 0.0 && self.tip_a < 1.0 {
+            ui.ctx().request_repaint();
+        }
         if self.tip_a > 0.0
             && let Some(c) = &self.tip_last
         {
@@ -4909,7 +4923,7 @@ fn main() -> eframe::Result {
         std::env::var("AIRSCOPE_MSAA")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(4)
+            .unwrap_or(2)
     };
     // set once the window and graphics config exist: a failure after that is a crash while running, not a start-up problem
     let started = std::sync::atomic::AtomicBool::new(false);
